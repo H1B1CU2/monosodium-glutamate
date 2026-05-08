@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -project Ricer.xcodeproj -scheme Ricer -configuration Debug build)"
+    ]
+  }
+}
