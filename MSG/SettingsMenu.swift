@@ -119,7 +119,17 @@ class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         
         // ── Quit ───────────────────────────────────
-        let quit = NSMenuItem(title: "Quit MSG", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
+        let fullString = "No added MSG"
+        let attrTitle = NSMutableAttributedString(string: fullString)
+        
+        // "No added " (Normal)
+        attrTitle.addAttribute(.font, value: NSFont.menuFont(ofSize: 0), range: NSRange(location: 0, length: 9))
+        
+        // "MSG" (Terminal)
+        attrTitle.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular), range: NSRange(location: 9, length: 3))
+        
+        quit.attributedTitle = attrTitle
         quit.target = self
         menu.addItem(quit)
         
