@@ -47,22 +47,13 @@ class CornerWindow: NSWindow {
         setFrame(targetScreen.frame, display: true)
         cornerView?.targetScreen = targetScreen
     }
-
-    /// Update the associated screen reference (used when rebuilding).
-    func updateScreen(_ screen: NSScreen) {
-        targetScreen = screen
-        cornerView?.targetScreen = screen
-        updateFrame()
-    }
 }
 
 // MARK: - CornerView
 
-/// Draws four black rounded-corner masks at the edges of the screen.
 class CornerView: NSView {
 
     weak var appDelegate: AppDelegate?
-    /// The screen this view draws corners for.
     var targetScreen: NSScreen
 
     init(appDelegate: AppDelegate, screen: NSScreen) {
@@ -70,36 +61,38 @@ class CornerView: NSView {
         self.targetScreen = screen
         super.init(frame: .zero)
     }
-    required init?(coder: NSCoder) { fatalError() }
 
-    override var isFlipped: Bool { false } // macOS bottom-up by default
-
-    /// Whether this view's screen is the main screen (has menu bar).
-    private var isMainScreen: Bool {
-        targetScreen == NSScreen.main
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ad = appDelegate else { return }
 
-        NSColor.black.setFill()
-
-        let r      = ad.cornerRadius
         let bounds = self.bounds
         let W      = bounds.width
         let H      = bounds.height
+        let screen = targetScreen
 
-        let skipTopCorners = ad.topCornersUnderMenuBar && ad.fullscreenOnly && !ad.isFullscreen
+        let isBuiltin = screen.isBuiltin
+        let r = isBuiltin ? ad.cornerRadius : ad.extCornerRadius
+        let topEnabled = isBuiltin ? ad.topCornersEnabled : ad.extTopCornersEnabled
+        let bottomEnabled = isBuiltin ? ad.bottomCornersEnabled : ad.extBottomCornersEnabled
+        let underBar = isBuiltin ? ad.topCornersUnderMenuBar : ad.extTopCornersUnderMenuBar
 
-        // Menu bar offset applies to any screen that has one
-        let topY: CGFloat
-        if ad.topCornersUnderMenuBar, !ad.isFullscreen {
-            topY = targetScreen.frame.maxY - targetScreen.visibleFrame.maxY
-        } else {
-            topY = 0
+        NSColor.black.setFill()
+
+        // ── Top Offset ────────────────────────────────────────────────────────
+        let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
+        
+        // Hide top corners if menu bar is not visible (fullscreen)
+        var skipTopCorners = false
+        if underBar && !NSMenu.menuBarVisible() {
+            skipTopCorners = true
         }
 
-        if ad.topCornersEnabled && !skipTopCorners {
+        if topEnabled && !skipTopCorners {
+            // Top-left
             let path = NSBezierPath()
             path.move(to: NSPoint(x: 0,   y: H - topY))
             path.line(to: NSPoint(x: r,   y: H - topY))
@@ -113,7 +106,7 @@ class CornerView: NSView {
             path.close()
             path.fill()
 
-            // ── Top-right ─────────────────────────────────────────────────────
+            // Top-right
             let path2 = NSBezierPath()
             path2.move(to: NSPoint(x: W,     y: H - topY))
             path2.line(to: NSPoint(x: W - r, y: H - topY))
@@ -129,8 +122,9 @@ class CornerView: NSView {
             path2.fill()
         }
 
-        // ── Bottom-left ───────────────────────────────────────────────────────
-        if ad.bottomCornersEnabled {
+        // ── Bottom ────────────────────────────────────────────────────────────
+        if bottomEnabled {
+            // Bottom-left
             let path3 = NSBezierPath()
             path3.move(to: NSPoint(x: 0, y: 0))
             path3.line(to: NSPoint(x: r, y: 0))
@@ -145,7 +139,7 @@ class CornerView: NSView {
             path3.close()
             path3.fill()
 
-            // ── Bottom-right ──────────────────────────────────────────────────
+            // Bottom-right
             let path4 = NSBezierPath()
             path4.move(to: NSPoint(x: W,     y: 0))
             path4.line(to: NSPoint(x: W - r, y: 0))
@@ -182,7 +176,7 @@ class MenuBarWindow: NSWindow {
         isOpaque           = false
         hasShadow          = false
         ignoresMouseEvents = true
-        level              = .init(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
+        level              = .init(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) - 1)
 
         collectionBehavior = [
             .canJoinAllSpaces,
@@ -227,5 +221,13 @@ class MenuBarView: NSView {
             )
             barRect.fill()
         }
+    }
+}
+
+extension NSScreen {
+    var isBuiltin: Bool {
+        return localizedName.localizedCaseInsensitiveContains("Built-in") ||
+               localizedName.localizedCaseInsensitiveContains("Retina") ||
+               self == NSScreen.screens.first
     }
 }

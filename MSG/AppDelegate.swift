@@ -21,11 +21,16 @@ private enum SettingsKey {
     static let topCornersEnabled    = "topCornersEnabled"
     static let bottomCornersEnabled = "bottomCornersEnabled"
     static let topCornersUnderMenuBar = "topCornersUnderMenuBar"
+    static let extTopCornersUnderMenuBar = "extTopCornersUnderMenuBar"
     static let darkMenuBarEnabled   = "darkMenuBarEnabled"
     static let fullscreenOnly       = "fullscreenOnly"
     static let hideInMissionControl = "hideInMissionControl"
     static let displayStyle         = "displayStyle"
     static let externalMonitorCorners = "externalMonitorCorners"
+    static let extTopCornersEnabled    = "extTopCornersEnabled"
+    static let extBottomCornersEnabled = "extBottomCornersEnabled"
+    static let extCornerRadius         = "extCornerRadius"
+    static let mirrorMainDisplay       = "mirrorMainDisplay"
     static let prioritizeMainDisplay = "prioritizeMainDisplay"
     static let springAnimationEnabled = "springAnimationEnabled"
 }
@@ -35,10 +40,29 @@ private enum SettingsKey {
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Cornermizer Settings ────────────────────────────────────
-    var cornerRadius: CGFloat { didSet { save(); refreshOverlays() } }
-    var topCornersEnabled: Bool { didSet { save(); refreshOverlays() } }
-    var bottomCornersEnabled: Bool { didSet { save(); refreshOverlays() } }
-    var topCornersUnderMenuBar: Bool { didSet { save(); refreshOverlays() } }
+    var cornerRadius: CGFloat { didSet { save(); if mirrorMainDisplay { extCornerRadius = cornerRadius }; refreshOverlays() } }
+    var topCornersEnabled: Bool { didSet { save(); if mirrorMainDisplay { extTopCornersEnabled = topCornersEnabled }; refreshOverlays() } }
+    var bottomCornersEnabled: Bool { didSet { save(); if mirrorMainDisplay { extBottomCornersEnabled = bottomCornersEnabled }; refreshOverlays() } }
+    
+    var extCornerRadius: CGFloat { didSet { save(); refreshOverlays() } }
+    var extTopCornersEnabled: Bool { didSet { save(); refreshOverlays() } }
+    var extBottomCornersEnabled: Bool { didSet { save(); refreshOverlays() } }
+
+    var topCornersUnderMenuBar: Bool { didSet { save(); if mirrorMainDisplay { extTopCornersUnderMenuBar = topCornersUnderMenuBar }; refreshOverlays() } }
+    var extTopCornersUnderMenuBar: Bool { didSet { save(); refreshOverlays() } }
+    
+    var mirrorMainDisplay: Bool { 
+        didSet { 
+            save()
+            if mirrorMainDisplay {
+                extCornerRadius = cornerRadius
+                extTopCornersEnabled = topCornersEnabled
+                extBottomCornersEnabled = bottomCornersEnabled
+                extTopCornersUnderMenuBar = topCornersUnderMenuBar
+            }
+            NotificationCenter.default.post(name: NSNotification.Name("SettingsChanged"), object: nil)
+        } 
+    }
     var darkMenuBarEnabled: Bool { didSet { 
         save()
         updateWallpaperHack()
@@ -89,11 +113,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             SettingsKey.topCornersEnabled:      true,
             SettingsKey.bottomCornersEnabled:   true,
             SettingsKey.topCornersUnderMenuBar: false,
+            SettingsKey.extTopCornersUnderMenuBar: false,
+            SettingsKey.mirrorMainDisplay:      false,
             SettingsKey.darkMenuBarEnabled:     false,
             SettingsKey.fullscreenOnly:         false,
             SettingsKey.hideInMissionControl:   true,
             SettingsKey.displayStyle:           DisplayStyle.pill.rawValue,
             SettingsKey.externalMonitorCorners: false,
+            SettingsKey.extTopCornersEnabled:    true,
+            SettingsKey.extBottomCornersEnabled: true,
+            SettingsKey.extCornerRadius:         10.0,
             SettingsKey.prioritizeMainDisplay:  true,
             SettingsKey.springAnimationEnabled: false,
         ])
@@ -101,10 +130,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         topCornersEnabled      = d.bool(forKey: SettingsKey.topCornersEnabled)
         bottomCornersEnabled   = d.bool(forKey: SettingsKey.bottomCornersEnabled)
         topCornersUnderMenuBar = d.bool(forKey: SettingsKey.topCornersUnderMenuBar)
+        extTopCornersUnderMenuBar = d.bool(forKey: SettingsKey.extTopCornersUnderMenuBar)
+        mirrorMainDisplay      = d.bool(forKey: SettingsKey.mirrorMainDisplay)
         darkMenuBarEnabled     = d.bool(forKey: SettingsKey.darkMenuBarEnabled)
         fullscreenOnly         = d.bool(forKey: SettingsKey.fullscreenOnly)
         hideInMissionControl   = d.bool(forKey: SettingsKey.hideInMissionControl)
         externalMonitorCorners = d.bool(forKey: SettingsKey.externalMonitorCorners)
+        extTopCornersEnabled    = d.bool(forKey: SettingsKey.extTopCornersEnabled)
+        extBottomCornersEnabled = d.bool(forKey: SettingsKey.extBottomCornersEnabled)
+        extCornerRadius         = CGFloat(d.float(forKey: SettingsKey.extCornerRadius))
+        
         prioritizeMainDisplay  = d.bool(forKey: SettingsKey.prioritizeMainDisplay)
         springAnimationEnabled = d.bool(forKey: SettingsKey.springAnimationEnabled)
         let styleRaw = d.string(forKey: SettingsKey.displayStyle) ?? DisplayStyle.pill.rawValue
@@ -212,7 +247,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func setupSettingsMenu() { settingsMenu = SettingsMenu(delegate: self) }
+    private func setupSettingsMenu() { settingsMenu = SettingsMenu(ad: self) }
 
     private func rebuildCornerWindows() {
         for win in cornerWindows { win.orderOut(nil) }
@@ -282,11 +317,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         d.set(topCornersEnabled,         forKey: SettingsKey.topCornersEnabled)
         d.set(bottomCornersEnabled,      forKey: SettingsKey.bottomCornersEnabled)
         d.set(topCornersUnderMenuBar,    forKey: SettingsKey.topCornersUnderMenuBar)
+        d.set(extTopCornersUnderMenuBar, forKey: SettingsKey.extTopCornersUnderMenuBar)
+        d.set(mirrorMainDisplay,         forKey: SettingsKey.mirrorMainDisplay)
         d.set(darkMenuBarEnabled,        forKey: SettingsKey.darkMenuBarEnabled)
         d.set(fullscreenOnly,            forKey: SettingsKey.fullscreenOnly)
         d.set(hideInMissionControl,      forKey: SettingsKey.hideInMissionControl)
         d.set(displayStyle.rawValue,     forKey: SettingsKey.displayStyle)
         d.set(externalMonitorCorners,    forKey: SettingsKey.externalMonitorCorners)
+        d.set(Float(extCornerRadius),    forKey: SettingsKey.extCornerRadius)
+        d.set(extTopCornersEnabled,      forKey: SettingsKey.extTopCornersEnabled)
+        d.set(extBottomCornersEnabled,   forKey: SettingsKey.extBottomCornersEnabled)
+        
         d.set(prioritizeMainDisplay,     forKey: SettingsKey.prioritizeMainDisplay)
         d.set(springAnimationEnabled,    forKey: SettingsKey.springAnimationEnabled)
     }

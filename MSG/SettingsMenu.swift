@@ -1,46 +1,18 @@
 import AppKit
 
-// MARK: - Dot indicators for the slider track
-
-private class SliderDotsView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        let knobInset: CGFloat = 9
-        let trackWidth = bounds.width - 2 * knobInset
-        let minVal: Double = 1
-        let maxVal: Double = 30
-        let interval: Double = 2
-
-        let dotSize: CGFloat = 2
-        NSColor.tertiaryLabelColor.setFill()
-
-        var value = interval
-        while value <= maxVal {
-            let fraction = CGFloat((value - minVal) / (maxVal - minVal))
-            let x = knobInset + fraction * trackWidth
-            let dotRect = NSRect(x: x - dotSize / 2, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)
-            NSBezierPath(ovalIn: dotRect).fill()
-            value += interval
-        }
-    }
-}
-
-// MARK: - Settings Menu
-
 class SettingsMenu: NSObject, NSMenuDelegate {
 
-    private weak var ad: AppDelegate?
-    var radiusSlider: NSSlider?
-    var radiusLabel: NSTextField?
-    private var sliderItem: NSMenuItem?
-    private var lastHapticValue: Int = 0
+    let menu = NSMenu()
+    weak var ad: AppDelegate?
 
-    let menu: NSMenu
-
-    init(delegate: AppDelegate) {
-        self.ad = delegate
-        self.menu = NSMenu()
+    init(ad: AppDelegate) {
+        self.ad = ad
         super.init()
         menu.delegate = self
+        
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.menu.update() }
+        nc.addObserver(forName: NSNotification.Name("SettingsChanged"), object: nil, queue: .main) { [weak self] _ in self?.updateAllVisibilities() }
     }
 
     // MARK: - NSMenuDelegate
@@ -66,7 +38,7 @@ class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(styleItem)
 
         if NSScreen.screens.count > 1 {
-            addToggleItem("Prioritize Main Display",
+            addToggleItem("Built-in Display",
                           state: ad.prioritizeMainDisplay,
                           action: #selector(prioritizeMainChanged(_:)))
         }
@@ -80,39 +52,59 @@ class SettingsMenu: NSObject, NSMenuDelegate {
         // ── Cornermization ──────────
         addHeaderItem("Cornermization", to: menu)
         
+        // --- Built-in Display ---
+        let model = getModelName()
+        addHeaderItem(model, to: menu)
+        
+        let topPosMenu = createPositionMenu(isExternal: false)
         addToggleItem("Top Corners",
                       state: ad.topCornersEnabled,
-                      action: #selector(topToggleChanged(_:)))
+                      action: #selector(topToggleChanged(_:)),
+                      submenu: topPosMenu,
+                      isExternal: false,
+                      isTopToggle: true)
 
         addToggleItem("Bottom Corners",
                       state: ad.bottomCornersEnabled,
-                      action: #selector(bottomToggleChanged(_:)))
+                      action: #selector(bottomToggleChanged(_:)),
+                      isExternal: false,
+                      isBottomToggle: true)
 
-        addSliderItem(value: ad.cornerRadius)
-
-        addToggleItem("External Monitor Corners",
-                      state: ad.externalMonitorCorners,
-                      action: #selector(externalMonitorChanged(_:)))
-
-        let positionItem = NSMenuItem(title: "Top Position", action: nil, keyEquivalent: "")
-        let positionSub = NSMenu()
-        let atEdge = NSMenuItem(title: "At Screen Edge", action: #selector(positionScreenEdge), keyEquivalent: "")
-        atEdge.target = self
-        atEdge.state = ad.topCornersUnderMenuBar ? .off : .on
-        positionSub.addItem(atEdge)
-        let belowBar = NSMenuItem(title: "Below Menu Bar", action: #selector(positionBelowMenuBar), keyEquivalent: "")
-        belowBar.target = self
-        belowBar.state = ad.topCornersUnderMenuBar ? .on : .off
-        positionSub.addItem(belowBar)
-        positionItem.submenu = positionSub
-        menu.addItem(positionItem)
+        addSliderItem(value: ad.cornerRadius, isExternal: false)
 
         menu.addItem(.separator())
+        
+        // --- External Monitors ---
+        if NSScreen.screens.count > 1 {
+            addHeaderItem("External Monitors", to: menu)
+            
+            let extTopPosMenu = createPositionMenu(isExternal: true)
+            addToggleItem("Top Corners",
+                          state: ad.extTopCornersEnabled,
+                          action: #selector(extTopToggleChanged(_:)),
+                          submenu: extTopPosMenu,
+                          isExternal: true,
+                          isTopToggle: true)
 
+            addToggleItem("Bottom Corners",
+                          state: ad.extBottomCornersEnabled,
+                          action: #selector(extBottomToggleChanged(_:)),
+                          isExternal: true,
+                          isBottomToggle: true)
+
+            addSliderItem(value: ad.extCornerRadius, isExternal: true)
+
+            addToggleItem("Mirror \(model) settings",
+                          state: ad.mirrorMainDisplay,
+                          action: #selector(mirrorToggleChanged(_:)))
+
+            menu.addItem(.separator())
+        }
+        
         // ── Laboratory ──────────────
         addHeaderItem("Laboratory", to: menu, showWarning: true)
 
-        addToggleItem("Dark Menu Bar",
+        addToggleItem("Black Menu Bar",
                       state: ad.darkMenuBarEnabled,
                       action: #selector(darkMenuBarChanged(_:)))
 
@@ -125,11 +117,19 @@ class SettingsMenu: NSObject, NSMenuDelegate {
                       action: #selector(missionControlChanged(_:)))
 
         menu.addItem(.separator())
-
+        
         // ── Quit ───────────────────────────────────
         let quit = NSMenuItem(title: "Quit MSG", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
+        
+        updateAllVisibilities()
+    }
+
+    private func updateAllVisibilities() {
+        updateSliderItemVisibility()
+        updateExtSliderVisibility()
+        updateExtTogglesVisibility()
     }
 
     // MARK: - Helpers
@@ -137,22 +137,16 @@ class SettingsMenu: NSObject, NSMenuDelegate {
     private func addHeaderItem(_ title: String, to targetMenu: NSMenu, showWarning: Bool = false) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 20))
-        
         let text = title.uppercased() + (showWarning ? " ⚠️" : "")
         let asTitle = NSMutableAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: 10, weight: .bold),
             .foregroundColor: NSColor.secondaryLabelColor
         ])
-        
         if showWarning, let range = text.range(of: "⚠️") {
             let nsRange = NSRange(range, in: text)
-            asTitle.addAttributes([
-                .font: NSFont.systemFont(ofSize: 8),
-                .baselineOffset: 0.5
-            ], range: nsRange)
+            asTitle.addAttributes([.font: NSFont.systemFont(ofSize: 8), .baselineOffset: 0.5], range: nsRange)
             container.toolTip = "The features in this section are work in progress"
         }
-        
         let label = NSTextField(labelWithAttributedString: asTitle)
         label.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(label)
@@ -165,205 +159,156 @@ class SettingsMenu: NSObject, NSMenuDelegate {
         targetMenu.addItem(item)
     }
 
-    private func addSliderItem(value: CGFloat) {
+    private func addSliderItem(value: CGFloat, isExternal: Bool) {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
-        let menuFontSize = NSFont.menuFont(ofSize: 0).pointSize
-
-        let title = NSTextField(labelWithString: "Corner Radius")
-        title.font = .menuFont(ofSize: 0)
-        title.textColor = .labelColor
-        title.translatesAutoresizingMaskIntoConstraints = false
-
+        container.wantsLayer = true
+        let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30, target: self, action: isExternal ? #selector(extRadiusChanged(_:)) : #selector(radiusChanged(_:)))
+        slider.controlSize = .mini
+        slider.numberOfTickMarks = 15
+        slider.tickMarkPosition = .below
+        slider.allowsTickMarkValuesOnly = false
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(slider)
         let label = NSTextField(labelWithString: "\(Int(value)) px")
-        label.font = .monospacedDigitSystemFont(ofSize: menuFontSize, weight: .regular)
+        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         label.textColor = .secondaryLabelColor
         label.alignment = .right
         label.translatesAutoresizingMaskIntoConstraints = false
-        radiusLabel = label
-
-        let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
-                              target: self, action: #selector(radiusChanged(_:)))
-        slider.controlSize = NSControl.ControlSize.mini
-        slider.isContinuous = true
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        radiusSlider = slider
-
-        let dots = SliderDotsView()
-        dots.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(title)
         container.addSubview(label)
-        container.addSubview(slider)
-        container.addSubview(dots)
-
+        let title = NSTextField(labelWithString: "Corner Radius")
+        title.font = .menuFont(ofSize: 0)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(title)
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
             title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             label.centerYAnchor.constraint(equalTo: title.centerYAnchor),
             label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            label.widthAnchor.constraint(equalToConstant: 44),
             slider.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
             slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            dots.topAnchor.constraint(equalTo: slider.bottomAnchor, constant: 0),
-            dots.leadingAnchor.constraint(equalTo: slider.leadingAnchor),
-            dots.trailingAnchor.constraint(equalTo: slider.trailingAnchor),
-            dots.heightAnchor.constraint(equalToConstant: 8),
-            dots.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4)
+            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20)
         ])
-
         item.view = container
-        item.isHidden = !(ad?.topCornersEnabled ?? true) && !(ad?.bottomCornersEnabled ?? true)
-        sliderItem = item
         menu.addItem(item)
+        if isExternal { extSliderItem = item } else { sliderItem = item }
     }
 
-    private func addExperimentalToggleItem(_ title: String, state: Bool, action: Selector, to targetMenu: NSMenu) {
+    private func createPositionMenu(isExternal: Bool) -> NSMenu {
+        guard let ad = ad else { return NSMenu() }
+        let underBar = isExternal ? ad.extTopCornersUnderMenuBar : ad.topCornersUnderMenuBar
+        let sub = NSMenu()
+        let atEdge = NSMenuItem(title: "At Screen Edge", action: isExternal ? #selector(extPositionScreenEdge) : #selector(positionScreenEdge), keyEquivalent: "")
+        atEdge.target = self
+        atEdge.state = underBar ? .off : .on
+        sub.addItem(atEdge)
+        let belowBar = NSMenuItem(title: "Below Menu Bar", action: isExternal ? #selector(extPositionBelowMenuBar) : #selector(positionBelowMenuBar), keyEquivalent: "")
+        belowBar.target = self
+        belowBar.state = underBar ? .on : .off
+        sub.addItem(belowBar)
+        return sub
+    }
+
+    private func addToggleItem(_ title: String, state: Bool, action: Selector, to targetMenu: NSMenu? = nil, submenu: NSMenu? = nil, isExternal: Bool = false, isTopToggle: Bool = false, isBottomToggle: Bool = false) {
+        let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        // Tooltip on the view ensures it works with custom views
-        container.toolTip = "This feature is under development"
-
-        let button = NSButton(checkboxWithTitle: "", target: self, action: action)
+        container.wantsLayer = true
+        let button = NSButton(checkboxWithTitle: title, target: self, action: action)
         button.state = state ? .on : .off
+        button.font = .menuFont(ofSize: 0)
         button.translatesAutoresizingMaskIntoConstraints = false
-        
-        let asTitle = NSMutableAttributedString(string: title, attributes: [
-            .font: NSFont.menuFont(ofSize: 0),
-            .foregroundColor: NSColor.labelColor
-        ])
-        if let range = title.range(of: "⚠️") {
-            let nsRange = NSRange(range, in: title)
-            asTitle.addAttributes([
-                .font: NSFont.systemFont(ofSize: 9),
-                .baselineOffset: 1.5 
-            ], range: nsRange)
-        }
-        button.attributedTitle = asTitle
-
         container.addSubview(button)
-
         NSLayoutConstraint.activate([
             button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
         ])
-
-        let item = NSMenuItem()
         item.view = container
-        targetMenu.addItem(item)
-    }
-
-    private func addToggleItem(_ title: String, state: Bool, action: Selector, to targetMenu: NSMenu? = nil) {
-        let item = NSMenuItem()
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-
-        let button = NSButton(checkboxWithTitle: title, target: self, action: action)
-        button.state = state ? .on : .off
-        button.font = .menuFont(ofSize: 0)
-        button.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(button)
-        NSLayoutConstraint.activate([
-            button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-        ])
-
-        item.view = container
+        item.submenu = submenu
         (targetMenu ?? menu).addItem(item)
+        if isExternal { if isTopToggle { extTopToggleItem = item } else if isBottomToggle { extBottomToggleItem = item } }
     }
 
-    // MARK: - Actions
-
-    @objc private func selectStyle(_ sender: NSMenuItem) {
-        guard let style = sender.representedObject as? DisplayStyle else { return }
-        ad?.displayStyle = style
+    private func getModelName() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var model = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &model, &size, nil, 0)
+        let identifier = String(cString: model)
+        if identifier.contains("MacBookAir") { return "MacBook Air" }
+        if identifier.contains("MacBookPro") { return "MacBook Pro" }
+        if identifier.contains("Macmini") { return "Mac mini" }
+        if identifier.contains("iMac") { return "iMac" }
+        if identifier.contains("MacStudio") { return "Mac Studio" }
+        if identifier.contains("MacPro") { return "Mac Pro" }
+        return "Built-in Display"
     }
 
-    @objc func radiusChanged(_ sender: NSSlider) {
-        let v = CGFloat(sender.intValue)
-        radiusLabel?.stringValue = "\(Int(v)) px"
-        ad?.cornerRadius = v
-        let intVal = Int(v)
-        if intVal != lastHapticValue {
-            lastHapticValue = intVal
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        }
-    }
-
-    @objc private func topToggleChanged(_ sender: NSButton) {
-        ad?.topCornersEnabled = sender.state == .on
-        updateSliderItemVisibility()
-    }
-
-    @objc private func bottomToggleChanged(_ sender: NSButton) {
-        ad?.bottomCornersEnabled = sender.state == .on
-        updateSliderItemVisibility()
-    }
+    private var sliderItem: NSMenuItem?
+    private var extSliderItem: NSMenuItem?
+    private var extTopToggleItem: NSMenuItem?
+    private var extBottomToggleItem: NSMenuItem?
 
     private func updateSliderItemVisibility() {
         let visible = (ad?.topCornersEnabled ?? true) || (ad?.bottomCornersEnabled ?? true)
-        guard let item = sliderItem, let view = item.view else { return }
-        
-        view.wantsLayer = true // Ensure layer-backed for animation
-        
+        animateItemVisibility(sliderItem, visible: visible)
+    }
+
+    private func updateExtSliderVisibility() {
+        let mirroring = ad?.mirrorMainDisplay ?? false
+        let visible = !mirroring && ((ad?.extTopCornersEnabled ?? true) || (ad?.extBottomCornersEnabled ?? true))
+        animateItemVisibility(extSliderItem, visible: visible)
+    }
+
+    private func updateExtTogglesVisibility() {
+        let mirroring = ad?.mirrorMainDisplay ?? false
+        animateItemVisibility(extTopToggleItem, visible: !mirroring)
+        animateItemVisibility(extBottomToggleItem, visible: !mirroring)
+    }
+
+    private func animateItemVisibility(_ item: NSMenuItem?, visible: Bool) {
+        guard let item = item, let view = item.view else { return }
+        view.wantsLayer = true
         if visible {
-            if item.isHidden {
-                view.alphaValue = 0
-                item.isHidden = false
-                // Delay slightly to allow the menu to register the unhidden item
-                DispatchQueue.main.async {
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.25
-                        view.animator().alphaValue = 1
-                    }
-                }
+            if item.isHidden { view.alphaValue = 0; item.isHidden = false
+                DispatchQueue.main.async { NSAnimationContext.runAnimationGroup { context in context.duration = 0.25; view.animator().alphaValue = 1 } }
             }
         } else {
             if !item.isHidden {
-                NSAnimationContext.runAnimationGroup({ context in
-                    context.duration = 0.2
-                    view.animator().alphaValue = 0
-                }, completionHandler: {
-                    item.isHidden = true
-                })
+                NSAnimationContext.runAnimationGroup({ context in context.duration = 0.2; view.animator().alphaValue = 0 }, completionHandler: { item.isHidden = true })
             }
         }
     }
 
-    @objc private func positionScreenEdge() {
-        ad?.topCornersUnderMenuBar = false
+    // MARK: - Actions
+    @objc func selectStyle(_ sender: NSMenuItem) { if let style = sender.representedObject as? DisplayStyle { ad?.displayStyle = style } }
+    @objc func prioritizeMainChanged(_ sender: NSButton) { ad?.prioritizeMainDisplay = (sender.state == .on) }
+    @objc func springAnimationChanged(_ sender: NSButton) { ad?.springAnimationEnabled = (sender.state == .on) }
+    @objc func radiusChanged(_ sender: NSSlider) { 
+        let val = Int(sender.doubleValue); if val != lastHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastHapticValue = val }
+        ad?.cornerRadius = CGFloat(sender.doubleValue); updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
-
-    @objc private func positionBelowMenuBar() {
-        ad?.topCornersUnderMenuBar = true
+    @objc func extRadiusChanged(_ sender: NSSlider) { 
+        let val = Int(sender.doubleValue); if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
+        ad?.extCornerRadius = CGFloat(sender.doubleValue); updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
-
-    @objc private func fullscreenOnlyChanged(_ sender: NSButton) {
-        ad?.fullscreenOnly = sender.state == .on
+    private var lastHapticValue: Int = -1
+    private var lastExtHapticValue: Int = -1
+    private func updateSliderLabels(in container: NSView?, value: Double) {
+        guard let container = container else { return }
+        for v in container.subviews { if let label = v as? NSTextField, label.alignment == .right { label.stringValue = "\(Int(value)) px" } }
     }
-
-    @objc private func darkMenuBarChanged(_ sender: NSButton) {
-        ad?.darkMenuBarEnabled = sender.state == .on
-    }
-
-    @objc private func missionControlChanged(_ sender: NSButton) {
-        ad?.hideInMissionControl = sender.state == .on
-    }
-
-    @objc private func externalMonitorChanged(_ sender: NSButton) {
-        ad?.externalMonitorCorners = sender.state == .on
-    }
-
-    @objc private func prioritizeMainChanged(_ sender: NSButton) {
-        ad?.prioritizeMainDisplay = sender.state == .on
-    }
-
-    @objc private func springAnimationChanged(_ sender: NSButton) {
-        ad?.springAnimationEnabled = sender.state == .on
-    }
-
-    @objc private func quitApp() {
-        NSApp.terminate(nil)
-    }
+    @objc func topToggleChanged(_ sender: NSButton) { ad?.topCornersEnabled = (sender.state == .on); updateSliderItemVisibility() }
+    @objc func bottomToggleChanged(_ sender: NSButton) { ad?.bottomCornersEnabled = (sender.state == .on); updateSliderItemVisibility() }
+    @objc func extTopToggleChanged(_ sender: NSButton) { ad?.extTopCornersEnabled = (sender.state == .on); updateExtSliderVisibility() }
+    @objc func extBottomToggleChanged(_ sender: NSButton) { ad?.extBottomCornersEnabled = (sender.state == .on); updateExtSliderVisibility() }
+    @objc func mirrorToggleChanged(_ sender: NSButton) { ad?.mirrorMainDisplay = (sender.state == .on) }
+    @objc func positionScreenEdge() { ad?.topCornersUnderMenuBar = false }
+    @objc func positionBelowMenuBar() { ad?.topCornersUnderMenuBar = true }
+    @objc func extPositionScreenEdge() { ad?.extTopCornersUnderMenuBar = false }
+    @objc func extPositionBelowMenuBar() { ad?.extTopCornersUnderMenuBar = true }
+    @objc func darkMenuBarChanged(_ sender: NSButton) { ad?.darkMenuBarEnabled = (sender.state == .on) }
+    @objc func fullscreenOnlyChanged(_ sender: NSButton) { ad?.fullscreenOnly = (sender.state == .on) }
+    @objc func missionControlChanged(_ sender: NSButton) { ad?.hideInMissionControl = (sender.state == .on) }
+    @objc func quitApp() { NSApplication.shared.terminate(nil) }
 }
