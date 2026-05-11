@@ -12,47 +12,64 @@ struct GridDims {
 
 // MARK: - Indicator
 
-/// Spaceman-style indicator: read CGS → draw static icon → set on button.
-/// No diff-based animation, no previous-state tracking, no MC workarounds.
-/// Each refresh simply renders whatever SpaceWatcher reports right now.
 final class Indicator {
 
     let statusItem: NSStatusItem
     let spaceWatcher: SpaceWatcher
     private let settings: Settings
+    private let systemState: SystemState
     private let renderer: IndicatorRenderer
 
     var onStatusBarClicked: (() -> Void)?
 
-    // Layout state (no animation, just current configuration)
-    var currentGridLayout: [GridRow] = []
-    private var lastSetLength: CGFloat = 0
+    // MARK: Animation state
 
-    // These exist only because IndicatorRenderer reads them. We keep them
-    // at their neutral/default values — no animation ever runs.
     var animSpacePillProgress: CGFloat = 1.0
     var animSpacePillDisplay: Int = -1
     var animSpacePillOldActive: Int = 0
     var animSpacePillNewActive: Int = 0
+    private var animSpacePillTimer: Timer?
+    private var animSpacePillCaptured: SpaceInfo?
+    private var animSpacePillCapturedGrid: [GridRow] = []
+    private var animSpacePillIsDots: Bool = false
+
     var animTextProgress: CGFloat = 1.0
     var animTextDisplay: Int = -1
     var animTextOldActive: Int = -1
     var animTextNewActive: Int = -1
+    private var animTextTimer: Timer?
+
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
     var animLayoutMorphNewW: CGFloat = 0
+    private var animLayoutTimer: Timer?
+
     var animRowMorphProgress: CGFloat = 1.0
     var animRowMorphFromStacked: Bool = false
     var animRowMorphFromCount: Int = 1
+    private var animRowMorphTimer: Timer?
+    private var animRowMorphPending: DispatchWorkItem?
+
     var animFocusProgress: CGFloat = 1.0
     var animFocusOldDisplay: Int = -1
     var animFocusNewDisplay: Int = -1
+    private var animFocusTimer: Timer?
+
+    // MARK: Snapshot state (only mutated when systemState.isStable)
+
+    private var previousSpaces: [Int] = []
+    private var previousActiveDisplayIndex: Int = -1
+    private var fullPreviousDisplays: [SpaceInfo.DisplayInfo] = []
     var previousLayoutDisplays: [SpaceInfo.DisplayInfo] = []
+    private var previousEffectiveRowCount: Int = 1
+    var currentGridLayout: [GridRow] = []
+    private var lastSetLength: CGFloat = 0
 
     // MARK: Init
 
     init(settings: Settings) {
         self.settings = settings
+        self.systemState = SystemState()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.spaceWatcher = SpaceWatcher()
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
@@ -66,14 +83,53 @@ final class Indicator {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
         spaceWatcher.prioritizeMain = settings.displayOrderMode == .prioritizeMain
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
-        spaceWatcher.onChange = { [weak self] in self?.refresh() }
+        spaceWatcher.onChange = { [weak self] in
+            guard let self else { return }
+            guard self.systemState.isStable else { return }
+            self.refresh()
+        }
         spaceWatcher.start()
+
+        systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
+        systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
+        systemState.start()
 
         refresh()
     }
 
-    @objc private func buttonClicked(_ sender: NSStatusBarButton) {
-        onStatusBarClicked?()
+    @objc private func buttonClicked(_ sender: NSStatusBarButton) { onStatusBarClicked?() }
+
+    // MARK: - Stability
+
+    private func killAllAnimations() {
+        animSpacePillTimer?.invalidate(); animSpacePillTimer = nil
+        animSpacePillProgress = 1.0; animSpacePillDisplay = -1
+        animSpacePillOldActive = 0; animSpacePillNewActive = 0
+        animSpacePillCaptured = nil
+
+        animTextTimer?.invalidate(); animTextTimer = nil
+        animTextProgress = 1.0; animTextDisplay = -1
+        animTextOldActive = -1; animTextNewActive = -1
+
+        animLayoutTimer?.invalidate(); animLayoutTimer = nil
+        animLayoutProgress = 1.0
+
+        animRowMorphTimer?.invalidate(); animRowMorphTimer = nil
+        animRowMorphPending?.cancel(); animRowMorphPending = nil
+        animRowMorphProgress = 1.0
+
+        animFocusTimer?.invalidate(); animFocusTimer = nil
+        animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
+    }
+
+    private func resyncSnapshotAfterStabilize() {
+        let info = spaceWatcher.currentInfo
+        previousSpaces = info.displays.map { $0.current }
+        previousActiveDisplayIndex = info.activeDisplayIndex
+        fullPreviousDisplays = info.displays
+        previousLayoutDisplays = info.displays
+        previousEffectiveRowCount = effectiveRowCount(for: info.displays)
+        refresh()
     }
 
     // MARK: - Public hooks
@@ -85,9 +141,7 @@ final class Indicator {
         refresh()
     }
 
-    func setFocusedUUID(_ uuid: String?) {
-        spaceWatcher.currentFocusedUUID = uuid
-    }
+    func setFocusedUUID(_ uuid: String?) { spaceWatcher.currentFocusedUUID = uuid }
 
     // MARK: - Computed
 
@@ -113,25 +167,56 @@ final class Indicator {
             && NSScreen.screens.count >= 3
     }
 
+    private func effectiveRowCount(for displays: [SpaceInfo.DisplayInfo]) -> Int {
+        return stackIndicators ? displays.count : 1
+    }
+
     // MARK: - Refresh
 
     func refresh() {
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
 
-        // Keep previousLayoutDisplays in sync so renderer width calcs work
-        if previousLayoutDisplays.isEmpty || previousLayoutDisplays.count != info.displays.count {
+        let stable = systemState.isStable
+
+        // Layout morph
+        let countChanged = fullPreviousDisplays.count != info.displays.count
+        let totalsChanged = fullPreviousDisplays.map { $0.total } != info.displays.map { $0.total }
+
+        if !fullPreviousDisplays.isEmpty && countChanged && stable {
+            startLayoutMorph(from: fullPreviousDisplays, to: info.displays)
+            fullPreviousDisplays = info.displays
+        } else if !fullPreviousDisplays.isEmpty && (totalsChanged || (countChanged && !stable)) {
+            if stable {
+                fullPreviousDisplays = info.displays
+                previousLayoutDisplays = info.displays
+            }
+        } else if fullPreviousDisplays.isEmpty {
+            fullPreviousDisplays = info.displays
             previousLayoutDisplays = info.displays
+            animLayoutMorphOldW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
+            animLayoutMorphNewW = animLayoutMorphOldW
+            if !shouldUseGridLayout { previousEffectiveRowCount = effectiveRowCount(for: info.displays) }
         }
 
-        // Grid layout
-        if shouldUseGridLayout {
+        // Grid
+        if shouldUseGridLayout && animLayoutProgress >= 1.0 {
             currentGridLayout = computeGridLayout(for: info.displays)
-        } else {
+        } else if !shouldUseGridLayout {
             currentGridLayout = []
         }
 
-        // Clear old button state when switching style families
+        // Row morph
+        if stable && !shouldUseGridLayout && (settings.displayStyle == .pill || settings.displayStyle == .dots)
+            && animLayoutProgress >= 1.0 {
+            let cur = effectiveRowCount(for: info.displays)
+            if animRowMorphProgress >= 1.0 && cur != previousEffectiveRowCount {
+                startRowMorph(fromCount: previousEffectiveRowCount, fromStacked: previousEffectiveRowCount > 1)
+                previousEffectiveRowCount = cur
+            }
+        }
+
+        // Clear old state
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
         if isImageStyle {
             if button.image == nil || !button.title.isEmpty {
@@ -142,32 +227,82 @@ final class Indicator {
             button.image = nil
         }
 
-        // Width
         applyStatusItemLength(info: info)
 
-        // Draw
+        // Render + animation triggers
         switch settings.displayStyle {
         case .pill:
+            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if stable { tryStartFocusChange(info: info) }
+            if stable { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(indicator: self, info: info, isDots: false)
+
         case .numbers:
+            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if stable { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
+
         case .boldNumber:
+            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if stable { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
+
         case .dots:
+            if stable { tryStartSpaceChange(info: info, isDots: true) }
+            if stable { tryStartFocusChange(info: info) }
+            if stable { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
         }
+    }
+
+    // MARK: - Animation triggers
+
+    private func tryStartSpaceChange(info: SpaceInfo, isDots: Bool) {
+        guard previousSpaces.count == info.displays.count else { return }
+        for i in 0..<info.displays.count {
+            let prev = previousSpaces[i]
+            let cur = info.displays[i].current
+            if prev != cur && prev >= 1 && prev <= info.displays[i].total {
+                previousSpaces = info.displays.map { $0.current }
+                switch settings.displayStyle {
+                case .pill:
+                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
+                case .dots:
+                    if settings.animationStyle == .solid {
+                        startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
+                    } else {
+                        startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
+                    }
+                case .numbers, .boldNumber:
+                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
+                }
+                return
+            }
+        }
+    }
+
+    private func tryStartFocusChange(info: SpaceInfo) {
+        guard animFocusProgress >= 1.0,
+              previousActiveDisplayIndex >= 0,
+              info.activeDisplayIndex != previousActiveDisplayIndex else { return }
+        startFocusAnimation(from: previousActiveDisplayIndex, to: info.activeDisplayIndex)
     }
 
     // MARK: - Width
 
     private func applyStatusItemLength(info: SpaceInfo) {
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
-        let naturalW: CGFloat
-        if shouldUseGridLayout {
+        var naturalW: CGFloat
+        if animLayoutProgress < 1.0 {
+            naturalW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
+        } else if shouldUseGridLayout {
             let dims = gridDimensions(for: currentGridLayout, isDots: settings.displayStyle == .dots)
             naturalW = renderer.gnomePillFixedWidth(
-                for: info.displays,
-                isDots: settings.displayStyle == .dots,
+                for: info.displays, isDots: settings.displayStyle == .dots,
                 stackIndicators: stackIndicators,
                 gridRows: currentGridLayout,
                 gridDotD: dims.dotD, gridPillW: dims.pillW, gridSp: dims.sp
@@ -176,12 +311,19 @@ final class Indicator {
             naturalW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
         }
 
+        let finalLen = isImageStyle ? max(24, naturalW) : naturalW
+
         if isImageStyle {
             let pad: CGFloat = 4
-            let lenToSet = max(24, naturalW) + pad * 2
+            let lenToSet = finalLen + pad * 2
             if abs(lenToSet - lastSetLength) > 0.1 {
                 lastSetLength = lenToSet
                 DispatchQueue.main.async { [weak self] in self?.statusItem.length = lenToSet }
+            }
+        } else if animLayoutProgress < 1.0 {
+            if abs(finalLen - lastSetLength) > 0.5 {
+                lastSetLength = finalLen
+                DispatchQueue.main.async { [weak self] in self?.statusItem.length = finalLen }
             }
         } else if lastSetLength != -1 {
             lastSetLength = -1
@@ -189,46 +331,151 @@ final class Indicator {
         }
     }
 
-    // MARK: - Grid Layout
+    // MARK: - Animations
+
+    private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int, isDots: Bool) {
+        guard settings.animationStyle != .none else { refresh(); return }
+        animSpacePillTimer?.invalidate()
+        animSpacePillProgress = 0
+        animSpacePillDisplay = displayIndex
+        animSpacePillOldActive = oldSpace
+        animSpacePillNewActive = newSpace
+        animSpacePillCaptured = info
+        animSpacePillCapturedGrid = currentGridLayout
+        animSpacePillIsDots = isDots
+
+        let style = settings.animationStyle
+        let distance = abs(newSpace - oldSpace)
+        let duration: TimeInterval = style == .solid ? 0.18 : (style == .jelly ? (0.6 + Double(distance) * 0.2) : 0.5)
+        let useSpring = style == .jelly
+
+        animSpacePillTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.animSpacePillProgress += CGFloat((1.0 / 60.0) / duration)
+            if self.animSpacePillProgress >= 1.0 {
+                t.invalidate(); self.animSpacePillTimer = nil; self.animSpacePillDisplay = -1
+                self.refresh(); return
+            }
+            let p = useSpring ? Easing.spring(self.animSpacePillProgress) : Easing.outQuart(self.animSpacePillProgress)
+            if let cap = self.animSpacePillCaptured {
+                self.statusItem.button?.image = self.renderer.makePillFrame(
+                    indicator: self, info: cap, isDots: isDots,
+                    animatingDisplay: displayIndex,
+                    spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
+                    spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
+                )
+            }
+        }
+    }
+
+    private func startTextAnimation(displayIndex: Int, oldActive: Int, newActive: Int) {
+        animTextTimer?.invalidate()
+        guard settings.animationStyle != .none else {
+            animTextOldActive = -1; animTextNewActive = -1; animTextProgress = 1.0; animTextDisplay = -1
+            refresh(); return
+        }
+        animTextDisplay = displayIndex
+        animTextOldActive = oldActive
+        animTextNewActive = newActive
+        animTextProgress = 0
+        let distance = abs(newActive - oldActive)
+        let base = settings.animationStyle == .solid
+            ? (settings.displayStyle == .dots ? 0.075 : 0.18)
+            : (settings.displayStyle == .dots ? 0.4 : 0.16)
+        let duration = (settings.displayStyle == .dots && settings.animationStyle == .solid)
+            ? (0.075 + Double(distance) * 0.025) : (base + Double(distance) * base)
+        animTextTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.animTextProgress += CGFloat(0.016 / duration)
+            if self.animTextProgress >= 1.0 {
+                self.animTextProgress = 1.0; t.invalidate()
+                self.animTextOldActive = -1; self.animTextNewActive = -1; self.animTextDisplay = -1
+            }
+            self.refresh()
+        }
+    }
+
+    private func startLayoutMorph(from old: [SpaceInfo.DisplayInfo], to new: [SpaceInfo.DisplayInfo]) {
+        animLayoutTimer?.invalidate()
+        if animLayoutProgress < 1.0 {
+            animLayoutMorphOldW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
+        } else {
+            animLayoutMorphOldW = renderer.targetWidth(for: old, style: settings.displayStyle, stackIndicators: stackIndicators)
+        }
+        animLayoutMorphNewW = renderer.targetWidth(for: new, style: settings.displayStyle, stackIndicators: stackIndicators)
+        previousLayoutDisplays = old
+        animLayoutProgress = 0
+        animLayoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.animLayoutProgress += CGFloat((1.0 / 60.0) / 0.4)
+            if self.animLayoutProgress >= 1.0 { self.animLayoutProgress = 1.0; t.invalidate(); self.animLayoutTimer = nil }
+            self.refresh()
+        }
+    }
+
+    private func startRowMorph(fromCount: Int, fromStacked: Bool) {
+        let capFromCount = fromCount; let capFromStacked = fromStacked
+        animRowMorphPending?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.animRowMorphTimer?.invalidate()
+            self.animRowMorphFromCount = capFromCount
+            self.animRowMorphFromStacked = capFromStacked
+            self.animRowMorphProgress = 0.0
+            self.animRowMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+                guard let self else { return }
+                self.animRowMorphProgress += 0.05
+                if self.animRowMorphProgress >= 1.0 { self.animRowMorphProgress = 1.0; t.invalidate() }
+                self.refresh(); self.statusItem.button?.display()
+            }
+            if let t = self.animRowMorphTimer { RunLoop.current.add(t, forMode: .common) }
+        }
+        animRowMorphPending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func startFocusAnimation(from: Int, to: Int) {
+        animFocusTimer?.invalidate()
+        animFocusOldDisplay = from; animFocusNewDisplay = to; animFocusProgress = 0.0
+        animFocusTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+            guard let self else { return }
+            self.animFocusProgress += 0.06
+            if self.animFocusProgress >= 1.0 { self.animFocusProgress = 1.0; t.invalidate()
+                self.animFocusOldDisplay = -1; self.animFocusNewDisplay = -1 }
+            self.refresh()
+        }
+        if let t = animFocusTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
+    // MARK: - Grid
 
     func computeGridLayout(for displays: [SpaceInfo.DisplayInfo]) -> [GridRow] {
         let screens = NSScreen.screens
         guard screens.count >= 2 else { return [GridRow(displayIndices: Array(0..<displays.count))] }
-
         var uuidToDisplayIndex: [String: Int] = [:]
         for (i, d) in displays.enumerated() { uuidToDisplayIndex[d.uuid] = i }
-
         let builtIn = screens[0]
         var mainIdx = -1
-        var above: [(Int, CGFloat)] = []
-        var below: [(Int, CGFloat)] = []
-        var left:  [(Int, CGFloat)] = []
-        var right: [(Int, CGFloat)] = []
-
+        var above: [(Int, CGFloat)] = []; var below: [(Int, CGFloat)] = []
+        var left:  [(Int, CGFloat)] = []; var right: [(Int, CGFloat)] = []
         for (screenIdx, screen) in screens.enumerated() {
-            guard let uuid = Self.screenUUID(screen),
-                  let displayIdx = uuidToDisplayIndex[uuid] else { continue }
-            if screenIdx == 0 { mainIdx = displayIdx; continue }
+            guard let uuid = Self.screenUUID(screen), let di = uuidToDisplayIndex[uuid] else { continue }
+            if screenIdx == 0 { mainIdx = di; continue }
             let f = screen.frame, b = builtIn.frame
-            if f.minY >= b.maxY { above.append((displayIdx, f.minX)) }
-            else if f.maxY <= b.minY { below.append((displayIdx, f.minX)) }
-            else if f.maxX <= b.minX { left.append((displayIdx, f.minX)) }
-            else { right.append((displayIdx, f.minX)) }
+            if f.minY >= b.maxY       { above.append((di, f.minX)) }
+            else if f.maxY <= b.minY  { below.append((di, f.minX)) }
+            else if f.maxX <= b.minX  { left.append((di, f.minX)) }
+            else                       { right.append((di, f.minX)) }
         }
-
-        above.sort { $0.1 < $1.1 }
-        below.sort { $0.1 < $1.1 }
-        left.sort  { $0.1 < $1.1 }
-        right.sort { $0.1 < $1.1 }
-
+        above.sort { $0.1 < $1.1 }; below.sort { $0.1 < $1.1 }
+        left.sort  { $0.1 < $1.1 }; right.sort { $0.1 < $1.1 }
         var rows: [GridRow] = []
         if !above.isEmpty { rows.append(GridRow(displayIndices: above.map { $0.0 })) }
-        var mainRow: [Int] = left.map { $0.0 }
+        var mainRow = left.map { $0.0 }
         if mainIdx >= 0 { mainRow.append(mainIdx) }
         mainRow.append(contentsOf: right.map { $0.0 })
         if !mainRow.isEmpty { rows.append(GridRow(displayIndices: mainRow)) }
         if !below.isEmpty { rows.append(GridRow(displayIndices: below.map { $0.0 })) }
-
         let covered = rows.reduce(0) { $0 + $1.displayIndices.count }
         if covered < displays.count { return [GridRow(displayIndices: Array(0..<displays.count))] }
         return rows
@@ -236,8 +483,7 @@ final class Indicator {
 
     func gridDimensions(for rows: [GridRow], isDots: Bool) -> GridDims {
         let imgH = statusItem.button?.bounds.height ?? 22
-        let dotD: CGFloat, pillW: CGFloat, pillH: CGFloat, sp: CGFloat, rowH: CGFloat
-        let gap: CGFloat = 1
+        let dotD: CGFloat, pillW: CGFloat, pillH: CGFloat, sp: CGFloat, rowH: CGFloat, gap: CGFloat = 1
         if isDots { dotD = 6; pillW = 6; pillH = 6; sp = 6; rowH = 8 }
         else      { dotD = 4; pillW = 18; pillH = 4; sp = 4; rowH = 8 }
         let neededH = CGFloat(rows.count) * rowH + CGFloat(rows.count - 1) * gap
@@ -252,11 +498,9 @@ final class Indicator {
 
     static func screenUUID(_ screen: NSScreen) -> String? {
         guard let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-              let uuidUnmanaged = CGDisplayCreateUUIDFromDisplayID(dID),
-              let uuidString = CFUUIDCreateString(nil, uuidUnmanaged.takeRetainedValue()) as String? else {
-            return nil
-        }
-        return uuidString
+              let u = CGDisplayCreateUUIDFromDisplayID(dID),
+              let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
+        return s
     }
 }
 
@@ -264,13 +508,10 @@ final class Indicator {
 
 enum Easing {
     static func outQuart(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 4) }
-    static func inOutQuart(_ t: CGFloat) -> CGFloat {
-        return t < 0.5 ? 8 * t * t * t * t : 1 - pow(-2 * t + 2, 4) / 2
-    }
+    static func inOutQuart(_ t: CGFloat) -> CGFloat { t < 0.5 ? 8 * t * t * t * t : 1 - pow(-2 * t + 2, 4) / 2 }
     static func outExpo(_ t: CGFloat) -> CGFloat { t == 1 ? 1 : 1 - pow(2, -10 * t) }
     static func spring(_ t: CGFloat) -> CGFloat {
-        if t == 0 { return 0 }
-        if t == 1 { return 1 }
+        if t == 0 { return 0 }; if t == 1 { return 1 }
         return pow(2, -2.5 * t) * 0.35 * sin((t - 0.03) * (2 * .pi) / 0.22) + 1
     }
 }

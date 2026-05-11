@@ -1,151 +1,108 @@
 import AppKit
 import ApplicationServices
 
-/// Tracks Mission Control + fullscreen state and surfaces a single
-/// `isStable` flag that downstream consumers should gate on.
+/// Tracks Mission Control + fullscreen state so consumers can gate
+/// snapshot mutations and animation triggers.
 ///
-/// The animation bug this solves:
-/// When Mission Control is dismissed from a fullscreen app, the system
-/// briefly reports a different "active display" before settling back. If
-/// downstream state (previousActiveDisplayIndex, previousSpaces) is updated
-/// with these transient values, exit‑MC triggers a spurious focus animation.
-///
-/// SystemState exposes two pieces of information consumers need:
-///   1. `isStable` — current snapshot is trustworthy
-///   2. `didStabilize` — fires once when the system returns to a stable
-///      state; consumers should use it to atomically resync without
-///      triggering animation
+/// MC detection uses CGWindowList: during Mission Control, Dock creates
+/// temporary windows at CGWindowLayer 15-25 for space previews. These
+/// windows exist only during MC. This is reliable where Dock-frontmost
+/// and didActivate/didDeactivate are not.
 final class SystemState {
 
     // MARK: Public
 
-    /// True when MC is not active and we're past any post‑MC settling window.
     private(set) var isStable: Bool = true
-
-    /// Cached fullscreen flag for the currently focused display.
     private(set) var isFullscreen: Bool = false
-
-    /// Cached Mission Control flag.
     private(set) var isMissionControl: Bool = false
 
-    /// Fired when entering unstable state (MC open or fullscreen detected).
-    /// Consumers should kill any in-flight animations immediately.
     var didEnterUnstable: (() -> Void)?
-
-    /// Fired on any stability/fullscreen change. Consumers re-render.
     var onChange: (() -> Void)?
-
-    /// Fired exactly once when the system transitions from unstable to stable.
-    /// Consumers should resync their "previous state" to current observations
-    /// without triggering any animations.
     var didStabilize: (() -> Void)?
 
     // MARK: Internals
 
-    private var dockActivateObs: NSObjectProtocol?
-    private var dockDeactivateObs: NSObjectProtocol?
     private var pollTimer: Timer?
     private var quiesceWorkItem: DispatchWorkItem?
-
-    /// Time after MC exits that we still consider unstable. Lets CGS settle.
-    /// Fullscreen transitions cause longer CGS turbulence, hence the generous window.
-    private let quiesceWindowSec: TimeInterval = 1.0
+    private let quiesceWindowSec: TimeInterval = 0
 
     func start() {
-        let nc = NSWorkspace.shared.notificationCenter
-        dockActivateObs = nc.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil, queue: .main
-        ) { [weak self] note in
-            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.bundleIdentifier == "com.apple.dock" else { return }
-            self?.enterUnstable()
-        }
-        dockDeactivateObs = nc.addObserver(
-            forName: NSWorkspace.didDeactivateApplicationNotification,
-            object: nil, queue: .main
-        ) { [weak self] note in
-            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.bundleIdentifier == "com.apple.dock" else { return }
-            self?.scheduleStabilize()
-        }
-
-        // Light poll for fullscreen state (menubar/AXFullScreen). 0.3s is fine,
-        // since fullscreen toggles are user‑driven and not perf‑critical.
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-            self?.refreshDerivedState()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.refreshState()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
-        refreshDerivedState()
+        refreshState()
     }
 
     func stop() {
-        if let o = dockActivateObs   { NSWorkspace.shared.notificationCenter.removeObserver(o) }
-        if let o = dockDeactivateObs { NSWorkspace.shared.notificationCenter.removeObserver(o) }
-        dockActivateObs = nil; dockDeactivateObs = nil
         pollTimer?.invalidate(); pollTimer = nil
         quiesceWorkItem?.cancel(); quiesceWorkItem = nil
     }
 
     deinit { stop() }
 
-    // MARK: - State transitions
+    // MARK: - State refresh
 
-    private func enterUnstable() {
-        quiesceWorkItem?.cancel(); quiesceWorkItem = nil
+    private func refreshState() {
+        let mc = Self.detectMissionControl()
+        let fs = Self.detectFullscreen()
         let wasStable = isStable
-        isMissionControl = true
-        isStable = false
-        if wasStable {
-            didEnterUnstable?()
+
+        if mc != isMissionControl {
+            isMissionControl = mc
+            if mc {
+                // Entering MC
+                quiesceWorkItem?.cancel(); quiesceWorkItem = nil
+                isStable = false
+                if wasStable { didEnterUnstable?() }
+                Diagnostics.shared.event("🚨 MC ENTERED — isStable=false")
+            } else {
+                // Exiting MC — quiesce before declaring stable
+                scheduleStabilize()
+                Diagnostics.shared.event("🚨 MC EXITED — quiescing...")
+            }
+            onChange?()
+        }
+
+        if fs != isFullscreen {
+            isFullscreen = fs
             onChange?()
         }
     }
 
     private func scheduleStabilize() {
-        isMissionControl = false
-        // Even after Dock loses focus, CGS reads may not have caught up yet.
-        // Wait a short window before declaring ourselves stable again.
         quiesceWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.isStable = true
-            self.refreshDerivedState()
             self.didStabilize?()
             self.onChange?()
         }
         quiesceWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + quiesceWindowSec, execute: work)
-        // Push a re-render so UI doesn't look frozen during the quiesce window.
         onChange?()
     }
 
-    // MARK: - Fullscreen sensing
+    // MARK: - Detection
 
-    private func refreshDerivedState() {
-        let fs = Self.detectFullscreen()
-        if fs != isFullscreen {
-            let wasStable = isStable
-            isFullscreen = fs
-            // Entering fullscreen → extend the unstable window. CGS is turbulent
-            // during fullscreen transitions just like MC transitions.
-            if fs {
-                quiesceWorkItem?.cancel(); quiesceWorkItem = nil
-                isStable = false
-                if wasStable {
-                    didEnterUnstable?()
-                }
-            } else if !isMissionControl {
-                // Fullscreen just ended — schedule stabilization
-                scheduleStabilize()
-            }
-            onChange?()
+    /// True when Dock owns on-screen windows at positive CGWindowLevel < 1000.
+    /// These are MC space-preview thumbnails (typically layer 15–25) and only
+    /// exist while Mission Control is open.
+    static func detectMissionControl() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return false
         }
+        for w in list {
+            let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+            guard owner == "Dock" else { continue }
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            if layer > 0 && layer < 1000 {
+                return true
+            }
+        }
+        return false
     }
 
-    /// True if the focused app is in macOS fullscreen mode. Two signals:
-    ///   1. Menu bar hidden — robust default
-    ///   2. AXFullScreen on the focused window — backup
     static func detectFullscreen() -> Bool {
         if !NSMenu.menuBarVisible() { return true }
         guard AXIsProcessTrusted(),
