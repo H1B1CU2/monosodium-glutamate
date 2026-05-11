@@ -374,13 +374,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
     private func sliderLabelText(value: Int) -> NSAttributedString {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let color = NSColor.secondaryLabelColor
         let full = NSMutableAttributedString(string: "Corner Radius: ", attributes: [
-            .font: NSFont.menuFont(ofSize: 0),
-            .foregroundColor: NSColor.labelColor
+            .font: font, .foregroundColor: color
         ])
         full.append(NSAttributedString(string: "\(value) px", attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor
+            .font: font, .foregroundColor: color
         ]))
         return full
     }
