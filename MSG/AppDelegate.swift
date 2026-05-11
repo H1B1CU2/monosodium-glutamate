@@ -20,8 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var arrangementPollSource: DispatchSourceTimer?
     private var previousScreenFrames: [CGRect] = []
 
-    private var pollTimer: Timer?
-
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -191,8 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyFocusDetectionMode() {
         if let m = clickMonitorGlobal { NSEvent.removeMonitor(m); clickMonitorGlobal = nil }
         if let m = clickMonitorLocal  { NSEvent.removeMonitor(m); clickMonitorLocal = nil }
-        pollTimer?.invalidate(); pollTimer = nil
-        focusPollTimer?.invalidate(); focusPollTimer = nil
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(pollWindowState), object: nil)
 
         switch settings.focusDetectionMode {
         case .off:
@@ -206,20 +203,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return e
             }
         case .dynamic:
-            startFocusPolling()
+            pollWindowState()
         }
     }
 
-    private func startFocusPolling() {
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-            guard let self, self.settings.focusDetectionMode == .dynamic else { return }
-            let uuid = self.screenUUID(at: NSEvent.mouseLocation)
-            guard let uuid, uuid != self.indicator.spaceWatcher.currentFocusedUUID else { return }
-            self.indicator.spaceWatcher.currentFocusedUUID = uuid
-            self.indicator.spaceWatcher.updateInfo()
+    @objc private func pollWindowState() {
+        guard settings.focusDetectionMode == .dynamic else { return }
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(pollWindowState), object: nil)
+        perform(#selector(pollWindowState), with: nil, afterDelay: 0.3)
+
+        let uuid = screenUUID(at: NSEvent.mouseLocation)
+        if let uuid, uuid != indicator.spaceWatcher.currentFocusedUUID {
+            indicator.spaceWatcher.currentFocusedUUID = uuid
+            indicator.spaceWatcher.updateInfo()
         }
-        if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     private func handleFocusClick(_ event: NSEvent) {
