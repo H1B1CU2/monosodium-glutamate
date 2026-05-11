@@ -61,12 +61,23 @@ final class SpaceWatcher {
     private var spaceObs: NSObjectProtocol?
     private var screenObs: NSObjectProtocol?
 
+    private var chaseWork: DispatchWorkItem?
+
     func start() {
         updateInfo()
         spaceObs = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.updateInfo()
+            // Chase read: CGS may update external displays with a slight delay.
+            // A second read 100ms later catches any lagging display state.
+            self?.chaseWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.chaseWork = nil
+                self?.updateInfo()
+            }
+            self?.chaseWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
         }
 
         screenObs = NotificationCenter.default.addObserver(
