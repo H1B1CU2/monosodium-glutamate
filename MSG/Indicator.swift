@@ -66,16 +66,6 @@ final class Indicator {
 
     private var previousSpaces: [Int] = []
     private var previousActiveDisplayIndex: Int = -1
-
-    // Space-change debounce: prevents transient MC reads from triggering
-    // false animations. When a space diff is first seen, we wait 400ms and
-    // verify the new value is still current before animating.
-    private var spaceDebounceTimer: Timer?
-    private var spaceDebounceDisplay: Int = -1
-    private var spaceDebounceOldValue: Int = 0
-    private var spaceDebounceNewValue: Int = 0
-    private var spaceDebounceIsDots: Bool = false
-    private var isSpaceDebouncing: Bool { spaceDebounceTimer != nil }
     private var fullPreviousDisplays: [SpaceInfo.DisplayInfo] = []
     var previousLayoutDisplays: [SpaceInfo.DisplayInfo] = []
     private var previousEffectiveRowCount: Int = 1
@@ -130,9 +120,6 @@ final class Indicator {
 
         animFocusTimer?.invalidate(); animFocusTimer = nil
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
-
-        spaceDebounceTimer?.invalidate(); spaceDebounceTimer = nil
-        spaceDebounceDisplay = -1
     }
 
     @objc private func buttonClicked(_ sender: NSStatusBarButton) {
@@ -263,7 +250,7 @@ final class Indicator {
         case .pill:
             if stable { tryStartSpaceChange(info: info, isDots: false) }
             if stable { tryStartFocusChange(info: info) }
-            if stable && !isSpaceDebouncing { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(
                 indicator: self, info: info, isDots: false
@@ -271,20 +258,20 @@ final class Indicator {
 
         case .numbers:
             if stable { tryStartSpaceChange(info: info, isDots: false) }
-            if stable && !isSpaceDebouncing { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
 
         case .boldNumber:
             if stable { tryStartSpaceChange(info: info, isDots: false) }
-            if stable && !isSpaceDebouncing { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
 
         case .dots:
             if stable { tryStartSpaceChange(info: info, isDots: true) }
             if stable { tryStartFocusChange(info: info) }
-            if stable && !isSpaceDebouncing { previousSpaces = info.displays.map { $0.current } }
+            if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(
                 indicator: self, info: info, isDots: true
@@ -296,66 +283,24 @@ final class Indicator {
 
     private func tryStartSpaceChange(info: SpaceInfo, isDots: Bool) {
         guard previousSpaces.count == info.displays.count else { return }
-
-        // If a debounce timer is already running, check whether the diff
-        // it was tracking is still valid — if the target space changed again,
-        // cancel and re-arm on the latest diff.
-        if let timer = spaceDebounceTimer {
-            guard spaceDebounceDisplay < info.displays.count else {
-                timer.invalidate(); spaceDebounceTimer = nil; spaceDebounceDisplay = -1
-                return
-            }
-            let currentVal = info.displays[spaceDebounceDisplay].current
-            if currentVal == spaceDebounceNewValue {
-                return // same diff — let the timer run
-            }
-            // The space changed again before the verification window expired.
-            // Cancel the old timer and treat this as a new diff below.
-            timer.invalidate(); spaceDebounceTimer = nil; spaceDebounceDisplay = -1
-        }
-
         for i in 0..<info.displays.count {
             let prev = previousSpaces[i]
             let cur = info.displays[i].current
             if prev != cur && prev >= 1 && prev <= info.displays[i].total {
-                let displayIdx = i
-                spaceDebounceOldValue = prev
-                spaceDebounceNewValue = cur
-                spaceDebounceDisplay = displayIdx
-                spaceDebounceIsDots = isDots
-
-                spaceDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
-                    guard let self else { return }
-                    self.spaceDebounceTimer = nil
-                    let settledInfo = self.spaceWatcher.currentInfo
-                    guard displayIdx < settledInfo.displays.count else {
-                        self.spaceDebounceDisplay = -1
-                        return
-                    }
-                    let settled = settledInfo.displays[displayIdx].current
-                    let old = self.spaceDebounceOldValue
-                    self.spaceDebounceDisplay = -1
-
-                    // The space is still at the new value — this is a real change.
-                    if settled == self.spaceDebounceNewValue && settled != old {
-                        self.previousSpaces = settledInfo.displays.map { $0.current }
-                        switch self.settings.displayStyle {
-                        case .pill:
-                            self.startPillAnimation(info: settledInfo, displayIndex: displayIdx, from: old, to: settled, isDots: false)
-                        case .dots:
-                            if self.settings.animationStyle == .solid {
-                                self.startTextAnimation(displayIndex: displayIdx, oldActive: old, newActive: settled)
-                            } else {
-                                self.startPillAnimation(info: settledInfo, displayIndex: displayIdx, from: old, to: settled, isDots: true)
-                            }
-                        case .numbers, .boldNumber:
-                            self.startTextAnimation(displayIndex: displayIdx, oldActive: old, newActive: settled)
-                        }
+                // commit snapshot before starting animation (so a re-entry
+                // through onChange doesn't retrigger)
+                previousSpaces = info.displays.map { $0.current }
+                switch settings.displayStyle {
+                case .pill:
+                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
+                case .dots:
+                    if settings.animationStyle == .solid {
+                        startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
                     } else {
-                        // Transient — value changed again during the window.
-                        // Silently sync to current without animation.
-                        self.previousSpaces = settledInfo.displays.map { $0.current }
+                        startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
                     }
+                case .numbers, .boldNumber:
+                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
                 }
                 return
             }
