@@ -102,13 +102,19 @@ final class CornerView: NSView {
 
     var targetScreen: NSScreen
     var skipTopCorners = false
-    var animProgress: CGFloat = 1.0  // 0→1 during grow-in animation
+    var animProgress: CGFloat = 1.0
+    var displayUUID: String?
     private let settings: Settings
 
     init(screen: NSScreen, settings: Settings) {
         self.targetScreen = screen
         self.settings = settings
         super.init(frame: .zero)
+        if let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+           let u = CGDisplayCreateUUIDFromDisplayID(dID),
+           let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? {
+            displayUUID = s
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
@@ -119,11 +125,12 @@ final class CornerView: NSView {
         let screen = targetScreen
         let isBuiltin = screen.isBuiltin
 
-        let targetR = isBuiltin ? settings.cornerRadius : settings.extCornerRadius
+        let uuid = displayUUID ?? "_default"
+        let targetR = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
         let r = targetR * animProgress
-        let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled
-        let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled
-        let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
+        let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
+        let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
+        let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)
 
         NSColor.black.setFill()
 
