@@ -105,15 +105,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var wasFullscreen = false
+
     private func isMissionControlActive() -> Bool {
-        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return false
+        // Primary: Dock windows at positive layers
+        if let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+            for w in list {
+                guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
+                let layer = w[kCGWindowLayer as String] as? Int ?? 0
+                if layer > 0 && layer < 1000 { return true }
+            }
         }
-        for w in list {
-            guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
-            let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            if layer > 0 && layer < 1000 { return true }
-        }
+        // Backup: menu bar just appeared while in fullscreen = MC entering
+        let fs = !NSMenu.menuBarVisible()
+        if wasFullscreen && !fs { return true }
+        wasFullscreen = fs
         return false
     }
 
