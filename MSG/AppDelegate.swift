@@ -216,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pollFocusFromCursor() {
         guard settings.focusDetectionMode == .click else { return }
         let uuid = screenUUID(at: NSEvent.mouseLocation)
-        if uuid != indicator.spaceWatcher.currentFocusedUUID {
+        if uuid != nil, uuid != indicator.spaceWatcher.currentFocusedUUID {
             indicator.spaceWatcher.currentFocusedUUID = uuid
             indicator.spaceWatcher.updateInfo()
         }

@@ -225,7 +225,7 @@ final class SpaceWatcher {
         let displays = temps.map { $0.info }
         var activeIdx: Int = 0
         if focusDetection, let fUUID = focusedUUID,
-           let idx = temps.firstIndex(where: { $0.identifier == fUUID }) {
+           let idx = temps.firstIndex(where: { $0.identifier.caseInsensitiveCompare(fUUID) == .orderedSame }) {
             activeIdx = idx
         } else {
             activeIdx = temps.firstIndex(where: { $0.containsActive }) ?? 0
