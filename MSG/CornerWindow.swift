@@ -35,8 +35,8 @@ final class CornerWindow: NSWindow {
         isOpaque           = false
         hasShadow          = false
         ignoresMouseEvents = true
-        // Above everything including Mission Control overlays
-        level              = NSWindow.Level(Int(CGWindowLevelForKey(.maximumWindow)) + 100)
+        // kCGAssistiveTechHighWindowLevel sits above everything short of the cursor
+        level              = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
         contentView = view
