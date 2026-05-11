@@ -113,7 +113,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addHeaderItem("Cornermization", to: menu)
 
         let model = modelName()
-        addHeaderItem(model, to: menu)
+        addHeaderItem(model, to: menu, indent: true)
 
         let topPosMenu = createPositionMenu(isExternal: false)
         addToggleItem("Top Corners", state: settings.topCornersEnabled, action: #selector(topToggle(_:)), submenu: topPosMenu)
@@ -131,15 +131,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addHeaderItem("External Monitors", to: menu)
         externalHeaderItem = menu.items.last
 
-        addToggleItem("Enable External Monitor Corners",
-                      state: settings.externalMonitorCorners,
-                      action: #selector(extMonitorToggle(_:)))
-
-        if let builtIn = NSScreen.screens.first {
-            for (idx, screen) in NSScreen.screens.enumerated() where idx > 0 {
-                addDisplayPositionItem(screen: screen, index: idx, relativeTo: builtIn)
-            }
-        }
+        addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
 
         let extTopPosMenu = createPositionMenu(isExternal: true)
         addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu)
@@ -148,7 +140,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addSliderItem(value: settings.extCornerRadius, isExternal: true)
 
-        addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+        if let builtIn = NSScreen.screens.first {
+            for (idx, screen) in NSScreen.screens.enumerated() where idx > 0 {
+                addDisplayPositionItem(screen: screen, index: idx, relativeTo: builtIn)
+            }
+        }
 
         externalSepItem = NSMenuItem.separator()
         menu.addItem(externalSepItem!)
@@ -195,10 +191,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     // MARK: - Helpers
 
-    private func addHeaderItem(_ title: String, to targetMenu: NSMenu) {
+    private func addHeaderItem(_ title: String, to targetMenu: NSMenu, indent: Bool = false) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 20))
-        let attr = NSAttributedString(string: title.uppercased(), attributes: [
+        let attr = NSAttributedString(string: indent ? "  \(title.uppercased())" : title.uppercased(), attributes: [
             .font: NSFont.systemFont(ofSize: 10, weight: .bold),
             .foregroundColor: NSColor.secondaryLabelColor
         ])
@@ -207,7 +203,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(label)
         NSLayoutConstraint.activate([
             label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14)
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: indent ? 20 : 14)
         ])
         item.view = container
         item.isEnabled = false
@@ -331,27 +327,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         animateItemVisibility(extBottomToggleItem, visible: visible, animated: animated)
     }
 
-    private func animateItemVisibility(_ item: NSMenuItem?, visible: Bool, animated: Bool = true) {
+    private func animateItemVisibility(_ item: NSMenuItem?, visible: Bool, animated: Bool = false) {
         guard let item = item, let view = item.view else { return }
-        view.wantsLayer = true
-        if visible {
-            if item.isHidden {
-                view.alphaValue = 0; item.isHidden = false
-                if animated {
-                    DispatchQueue.main.async {
-                        NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; view.animator().alphaValue = 1 }
-                    }
-                } else { view.alphaValue = 1 }
-            }
-        } else {
-            if !item.isHidden {
-                if animated {
-                    NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.2; view.animator().alphaValue = 0 }) {
-                        item.isHidden = true
-                    }
-                } else { view.alphaValue = 0; item.isHidden = true }
-            }
-        }
+        if visible { item.isHidden = false; view.alphaValue = 1 }
+        else       { item.isHidden = true }
     }
 
     // MARK: - Actions
@@ -403,6 +382,5 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
-    @objc func extMonitorToggle(_ sender: NSButton) { settings.externalMonitorCorners = (sender.state == .on) }
     @objc func quitApp() { NSApplication.shared.terminate(nil) }
 }
