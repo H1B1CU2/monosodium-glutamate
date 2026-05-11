@@ -122,10 +122,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let isBuiltin = win.targetScreen.isBuiltin
             let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
             // During MC the menu bar is visible. If top corners sit below the
-            // menu bar they briefly overlap — hide only those, keep the rest.
-            let hideTopInMC = inMC && underBar
-            win.redraw(skipTop: hideTopInMC)
-            if !win.isVisible { win.orderFront(nil) }
+            // menu bar they overlap with the MC chrome. Hide the entire window
+            // during MC rather than selectively hiding within it — buffered
+            // fullScreenAuxiliary windows don't reliably process display updates
+            // during the MC animation.
+            if inMC && underBar {
+                win.orderOut(nil)
+            } else {
+                if !win.isVisible { win.orderFront(nil) }
+                win.redraw()
+            }
         }
     }
 

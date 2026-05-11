@@ -47,8 +47,8 @@ final class CornerWindow: NSWindow {
         view.needsDisplay = true
     }
 
-    func redraw(skipTop: Bool = false) {
-        view.skipTopCorners = skipTop
+    func redraw() {
+        view.skipTopCorners = false
         view.needsDisplay = true
     }
 }
