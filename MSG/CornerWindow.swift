@@ -57,18 +57,18 @@ final class CornerWindow: NSWindow {
 
     /// Fade the corner content in/out using the content view's alpha.
     func animateAlpha(to target: CGFloat, duration: TimeInterval = 0.35) {
+        guard let cv = contentView else { return }
         fadeTimer?.invalidate()
-        let startAlpha = view.alphaValue
+        let startAlpha = cv.alphaValue
         let delta = target - startAlpha
         if delta == 0 { return }
         let start = ProcessInfo.processInfo.systemUptime
         fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
+            guard let self, let cv = self.contentView else { t.invalidate(); return }
             let elapsed = ProcessInfo.processInfo.systemUptime - start
             let raw = min(1.0, elapsed / duration)
-            // Ease-out curve for fluid feel
             let curve = 1.0 - pow(1.0 - raw, 3)
-            self.view.alphaValue = startAlpha + delta * CGFloat(curve)
+            cv.alphaValue = startAlpha + delta * CGFloat(curve)
             if raw >= 1.0 {
                 t.invalidate()
                 self.fadeTimer = nil
