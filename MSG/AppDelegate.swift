@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for win in cornerWindows { win.orderOut(nil) }
         } else {
             for win in cornerWindows {
+                win.updateFrame()
                 if !win.isVisible { win.orderFront(nil) }
                 win.redraw()
             }

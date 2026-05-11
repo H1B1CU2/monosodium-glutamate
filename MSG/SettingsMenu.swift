@@ -131,6 +131,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addHeaderItem("External Monitors", to: menu)
         externalHeaderItem = menu.items.last
 
+        addToggleItem("Enable External Monitor Corners",
+                      state: settings.externalMonitorCorners,
+                      action: #selector(extMonitorToggle(_:)))
+
         if let builtIn = NSScreen.screens.first {
             for (idx, screen) in NSScreen.screens.enumerated() where idx > 0 {
                 addDisplayPositionItem(screen: screen, index: idx, relativeTo: builtIn)
@@ -404,6 +408,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
+    @objc func extMonitorToggle(_ sender: NSButton) { settings.externalMonitorCorners = (sender.state == .on) }
     @objc func hideMCToggle(_ sender: NSButton)  { settings.hideInMissionControl = (sender.state == .on) }
     @objc func quitApp()                         { NSApplication.shared.terminate(nil) }
 }
