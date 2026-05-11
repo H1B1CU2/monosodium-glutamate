@@ -82,6 +82,12 @@ final class Indicator {
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
     }
 
+    // True only in the refresh() immediately following a space-change
+    // notification from the system. Only this path triggers animations.
+    // All other refresh calls (screen changes, polling, stabilisation)
+    // silently sync state without animating.
+    private var userChangedSpace = false
+
     func start() {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(buttonClicked(_:))
@@ -90,7 +96,14 @@ final class Indicator {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
         spaceWatcher.prioritizeMain = settings.displayOrderMode == .prioritizeMain
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
-        spaceWatcher.onChange = { [weak self] in self?.refresh() }
+
+        // The onChange callback fires from both activeSpaceDidChangeNotification
+        // and didChangeScreenParametersNotification. In both cases we mark the
+        // next refresh as animation-eligible so space-change animations work.
+        spaceWatcher.onChange = { [weak self] in
+            self?.userChangedSpace = true
+            self?.refresh()
+        }
         spaceWatcher.start()
 
         systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
@@ -252,11 +265,21 @@ final class Indicator {
         // Width management
         applyStatusItemLength(info: info)
 
-        // Style-specific rendering + animation triggers
+        // Style-specific rendering + animation triggers.
+        //
+        // Animation only fires when userChangedSpace is true (set by
+        // activeSpaceDidChangeNotification). Every other refresh path
+        // (screen changes, MC exit, polling, stabilisation) silently
+        // syncs the snapshot without animation. This is the key fix for
+        // the MC exit bug — transient CGS reads during MC never trigger
+        // animations because they don't carry the userChangedSpace flag.
+        let allowSpaceAnim = stable && userChangedSpace
+        let allowFocusAnim = stable   // focus changes from clicks too
+
         switch settings.displayStyle {
         case .pill:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { tryStartFocusChange(info: info) }
+            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
+            if allowFocusAnim { tryStartFocusChange(info: info) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(
@@ -264,26 +287,29 @@ final class Indicator {
             )
 
         case .numbers:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
 
         case .boldNumber:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
 
         case .dots:
-            if stable { tryStartSpaceChange(info: info, isDots: true) }
-            if stable { tryStartFocusChange(info: info) }
+            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: true) }
+            if allowFocusAnim { tryStartFocusChange(info: info) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(
                 indicator: self, info: info, isDots: true
             )
         }
+
+        // Consume the flag — it was set for this specific refresh.
+        userChangedSpace = false
     }
 
     // MARK: - Animation triggers
