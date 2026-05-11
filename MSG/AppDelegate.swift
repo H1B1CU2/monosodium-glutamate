@@ -185,9 +185,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Focus detection
 
+    private var focusPollTimer: Timer?
+
     private func applyFocusDetectionMode() {
         if let m = clickMonitorGlobal { NSEvent.removeMonitor(m); clickMonitorGlobal = nil }
         if let m = clickMonitorLocal  { NSEvent.removeMonitor(m); clickMonitorLocal = nil }
+        focusPollTimer?.invalidate(); focusPollTimer = nil
 
         switch settings.focusDetectionMode {
         case .off:
@@ -200,8 +203,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleFocusClick(e)
                 return e
             }
+            // Also poll as fallback — global monitors need accessibility permissions
+            focusPollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+                self?.pollFocusFromCursor()
+            }
+            if let t = focusPollTimer { RunLoop.current.add(t, forMode: .common) }
         case .dynamic:
             startFocusPolling()
+        }
+    }
+
+    private func pollFocusFromCursor() {
+        guard settings.focusDetectionMode == .click else { return }
+        let uuid = screenUUID(at: NSEvent.mouseLocation)
+        if uuid != indicator.spaceWatcher.currentFocusedUUID {
+            indicator.spaceWatcher.currentFocusedUUID = uuid
+            indicator.spaceWatcher.updateInfo()
         }
     }
 
