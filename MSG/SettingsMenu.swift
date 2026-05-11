@@ -41,6 +41,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         // ── Spacer ──────────────────
         addHeaderItem("Spacer", to: menu)
 
+        addSpaceItem()
+
         let styleMenu = NSMenu()
         for style in DisplayStyle.allCases {
             let item = NSMenuItem(title: style.rawValue, action: #selector(selectStyle(_:)), keyEquivalent: "")
@@ -60,7 +62,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             }
             styleMenu.addItem(item)
         }
-        let styleItem = NSMenuItem(title: "Indicator Style", action: nil, keyEquivalent: "")
+        let styleItem = NSMenuItem(title: "  Indicator Style", action: nil, keyEquivalent: "")
         styleItem.submenu = styleMenu
         menu.addItem(styleItem)
 
@@ -74,7 +76,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             item.state = (style == settings.animationStyle) ? .on : .off
             animMenu.addItem(item)
         }
-        let animItem = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
+        let animItem = NSMenuItem(title: "  Animation", action: nil, keyEquivalent: "")
         animItem.submenu = animMenu
         menu.addItem(animItem)
 
@@ -86,7 +88,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             item.state = (mode == settings.focusDetectionMode) ? .on : .off
             detectionMenu.addItem(item)
         }
-        let detectionItem = NSMenuItem(title: "Focus Detection", action: nil, keyEquivalent: "")
+        let detectionItem = NSMenuItem(title: "  Focus Detection", action: nil, keyEquivalent: "")
         detectionItem.submenu = detectionMenu
         menu.addItem(detectionItem)
         focusDetectionItem = detectionItem
@@ -99,10 +101,12 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             item.state = (mode == settings.displayOrderMode) ? .on : .off
             orderMenu.addItem(item)
         }
-        let orderItem = NSMenuItem(title: "Display Order", action: nil, keyEquivalent: "")
+        let orderItem = NSMenuItem(title: "  Display Order", action: nil, keyEquivalent: "")
         orderItem.submenu = orderMenu
         menu.addItem(orderItem)
         displayOrderItem = orderItem
+
+        addSpaceItem()
 
         menu.addItem(.separator())
 
