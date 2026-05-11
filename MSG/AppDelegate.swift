@@ -33,37 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settingsMenu = SettingsMenu(settings: settings)
 
-        // Poll for MC signals every 200ms: log all running app bundle IDs,
-        // their isActive state, and the owningBundleName of on-screen windows.
-        var lastSnapshot = ""
-        Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-            let apps = NSWorkspace.shared.runningApplications
-            let activeBundle = apps.first { $0.isActive }?.bundleIdentifier ?? "nil"
-            let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
-            let fs = !NSMenu.menuBarVisible()
-
-            // Check CGWindowList for windows at the exposé/MC level
-            var exoticWindows: [String] = []
-            if let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
-                for w in list {
-                    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
-                    let name  = w[kCGWindowName as String] as? String ?? ""
-                    let layer = w[kCGWindowLayer as String] as? Int ?? 0
-                    let alpha = w[kCGWindowAlpha as String] as? Double ?? 1.0
-                    // Look for unusual system overlays (layer > 1000, or Dock windows)
-                    if layer > 1000 || owner == "Dock" {
-                        exoticWindows.append("owner=\(owner) name=\(name.prefix(30)) layer=\(layer) alpha=\(alpha)")
-                    }
-                }
-            }
-
-            let snapshot = "active=\(activeBundle) front=\(frontmost) fs=\(fs) exotic=\(exoticWindows)"
-            if snapshot != lastSnapshot {
-                lastSnapshot = snapshot
-                Diagnostics.shared.event("POLL: \(snapshot)")
-            }
-        }
-
         settings.onChange = { [weak self] category in
             guard let self else { return }
             switch category {
@@ -131,8 +100,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func isMissionControlActive() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        for w in list {
+            guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            if layer > 0 && layer < 1000 { return true }
+        }
+        return false
+    }
+
     private func redrawCornerWindows() {
-        for win in cornerWindows { win.redraw() }
+        if settings.hideInMissionControl && isMissionControlActive() {
+            for win in cornerWindows { win.orderOut(nil) }
+        } else {
+            for win in cornerWindows {
+                if !win.isVisible { win.orderFront(nil) }
+                win.redraw()
+            }
+        }
     }
 
     // MARK: - Screen arrangement

@@ -66,7 +66,6 @@ final class SpaceWatcher {
         spaceObs = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Diagnostics.shared.notificationFired(debounced: false)
             self?.updateInfo()
         }
 
@@ -84,14 +83,6 @@ final class SpaceWatcher {
     deinit { stop() }
 
     func updateInfo(forceNotify: Bool = false) {
-        // Dump raw CGS data to the diagnostic log on every update
-        let cid = CGSMainConnectionID()
-        if let raw = CGSCopyManagedDisplaySpaces(cid),
-           let displayDicts = raw as? [[String: Any]] {
-            Diagnostics.shared.dumpCGS(displayDicts, activeID: CGSGetActiveSpace(cid))
-        }
-
-        let oldInfo = currentInfo
         let newInfo = Self.readSpaceInfo(
             prioritizeMain: prioritizeMain,
             customOrder: customOrder,
@@ -103,7 +94,6 @@ final class SpaceWatcher {
             if forceNotify { DispatchQueue.main.async { self.onChange?() } }
             return
         }
-        Diagnostics.shared.spaceInfoChange(old: oldInfo, new: newInfo)
         currentInfo = newInfo
         DispatchQueue.main.async { self.onChange?() }
     }

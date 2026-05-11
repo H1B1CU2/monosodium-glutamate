@@ -61,6 +61,7 @@ final class Settings {
         static let animationStyle           = "animationStyle"
         static let stackMode                = "stackMode"
         static let displayOrderMode         = "displayOrderMode"
+        static let hideInMissionControl      = "hideInMissionControl"
         static let focusDetectionMode       = "focusDetectionMode"
         static let displayOrder             = "displayOrder"
     }
@@ -102,6 +103,7 @@ final class Settings {
         }
     }
     var externalMonitorCorners: Bool { didSet { save(); onChange?(.structural) } }
+    var hideInMissionControl: Bool    { didSet { save(); onChange?(.corners) } }
 
     // MARK: Indicator
     var displayStyle: DisplayStyle {
@@ -135,6 +137,7 @@ final class Settings {
             Key.extTopCornersUnderMenuBar: false,
             Key.mirrorMainDisplay:      false,
             Key.externalMonitorCorners: false,
+            Key.hideInMissionControl:   true,
             Key.displayStyle:           DisplayStyle.pill.rawValue,
             Key.animationStyle:         AnimationStyle.liquid.rawValue,
             Key.stackMode:              StackMode.stack.rawValue,
@@ -153,6 +156,7 @@ final class Settings {
         extTopCornersUnderMenuBar = d.bool(forKey: Key.extTopCornersUnderMenuBar)
         mirrorMainDisplay        = d.bool(forKey: Key.mirrorMainDisplay)
         externalMonitorCorners   = d.bool(forKey: Key.externalMonitorCorners)
+        hideInMissionControl     = d.bool(forKey: Key.hideInMissionControl)
 
         displayStyle      = DisplayStyle(rawValue: d.string(forKey: Key.displayStyle) ?? "") ?? .pill
         animationStyle    = AnimationStyle(rawValue: d.string(forKey: Key.animationStyle) ?? "") ?? .liquid
@@ -174,6 +178,7 @@ final class Settings {
         d.set(extTopCornersUnderMenuBar,    forKey: Key.extTopCornersUnderMenuBar)
         d.set(mirrorMainDisplay,            forKey: Key.mirrorMainDisplay)
         d.set(externalMonitorCorners,       forKey: Key.externalMonitorCorners)
+        d.set(hideInMissionControl,         forKey: Key.hideInMissionControl)
         d.set(displayStyle.rawValue,        forKey: Key.displayStyle)
         d.set(animationStyle.rawValue,      forKey: Key.animationStyle)
         d.set(stackMode.rawValue,           forKey: Key.stackMode)

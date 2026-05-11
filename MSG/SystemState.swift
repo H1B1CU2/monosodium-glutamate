@@ -55,11 +55,9 @@ final class SystemState {
                 quiesceWorkItem?.cancel(); quiesceWorkItem = nil
                 isStable = false
                 if wasStable { didEnterUnstable?() }
-                Diagnostics.shared.event("🚨 MC ENTERED — isStable=false")
             } else {
                 // Exiting MC — quiesce before declaring stable
                 scheduleStabilize()
-                Diagnostics.shared.event("🚨 MC EXITED — quiescing...")
             }
             onChange?()
         }

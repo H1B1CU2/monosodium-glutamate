@@ -159,6 +159,12 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         updateExternalMonitorVisibility(animated: false)
 
+        menu.addItem(.separator())
+
+        addToggleItem("Hide Corners in Mission Control",
+                      state: settings.hideInMissionControl,
+                      action: #selector(hideMCToggle(_:)))
+
         // ── Quit ────────────────────
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
@@ -367,11 +373,18 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         if let s = sender.representedObject as? DisplayOrderMode { settings.displayOrderMode = s }
     }
 
+    private var lastHapticValue: Int = -1
+    private var lastExtHapticValue: Int = -1
+
     @objc func radiusChanged(_ sender: NSSlider) {
+        let val = Int(sender.doubleValue)
+        if val != lastHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastHapticValue = val }
         settings.cornerRadius = CGFloat(sender.doubleValue)
         updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
     @objc func extRadiusChanged(_ sender: NSSlider) {
+        let val = Int(sender.doubleValue)
+        if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
         settings.extCornerRadius = CGFloat(sender.doubleValue)
         updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
@@ -391,5 +404,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
+    @objc func hideMCToggle(_ sender: NSButton)  { settings.hideInMissionControl = (sender.state == .on) }
     @objc func quitApp()                         { NSApplication.shared.terminate(nil) }
 }

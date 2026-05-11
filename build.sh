@@ -22,7 +22,6 @@ swiftc \
     Settings.swift \
     SystemState.swift \
     SpaceWatcher.swift \
-    Diagnostics.swift \
     Indicator.swift \
     IndicatorRenderer.swift \
     CornerWindow.swift \
