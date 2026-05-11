@@ -98,9 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screens = settings.externalMonitorCorners ? NSScreen.screens : [NSScreen.main ?? NSScreen.screens[0]]
         for screen in screens {
             let win = CornerWindow(screen: screen, settings: settings)
+            win.alphaValue = 0
             win.orderFront(nil)
-            win.fadeIn()
             cornerWindows.append(win)
+            win.animateAlpha(to: 1)
         }
     }
 
@@ -122,8 +123,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.updateFrame()
             let isBuiltin = win.targetScreen.isBuiltin
             let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
-            // During MC the menu bar is visible. If top corners sit below the
-            // menu bar they overlap with the MC chrome — skip only the top.
             win.redraw(skipTop: inMC && underBar)
             if !win.isVisible { win.orderFront(nil) }
         }

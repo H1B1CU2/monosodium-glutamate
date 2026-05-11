@@ -41,7 +41,7 @@ final class CornerWindow: NSWindow {
         contentView = view
     }
 
-    private var didFadeIn = false
+    private var fadeTimer: Timer?
 
     func updateFrame() {
         setFrame(targetScreen.frame, display: true)
@@ -55,15 +55,23 @@ final class CornerWindow: NSWindow {
         view.displayIfNeeded()
     }
 
-    /// Fade the window in on first appearance.
-    func fadeIn() {
-        guard !didFadeIn else { return }
-        didFadeIn = true
-        alphaValue = 0
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            animator().alphaValue = 1
+    /// Fade the window in over `duration` seconds. Use negative to fade out.
+    func animateAlpha(to target: CGFloat, duration: TimeInterval = 0.3) {
+        fadeTimer?.invalidate()
+        let startAlpha = alphaValue
+        let delta = target - startAlpha
+        let start = ProcessInfo.processInfo.systemUptime
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            let progress = min(1.0, elapsed / duration)
+            self.alphaValue = startAlpha + delta * CGFloat(progress)
+            if progress >= 1.0 {
+                t.invalidate()
+                self.fadeTimer = nil
+            }
         }
+        if let t = fadeTimer { RunLoop.current.add(t, forMode: .common) }
     }
 }
 

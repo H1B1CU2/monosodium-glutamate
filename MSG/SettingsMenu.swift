@@ -308,8 +308,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     private func addDisplayPositionItem(screen: NSScreen, index: Int, relativeTo builtIn: NSScreen) {
+        let name = screen.localizedName
         let pos = displayPosition(for: screen, relativeTo: builtIn)
-        let item = NSMenuItem(title: "Display \(index): \(pos)", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "\(name): \(pos)", action: nil, keyEquivalent: "")
         item.isEnabled = false
         menu.addItem(item)
     }
