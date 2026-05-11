@@ -25,11 +25,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
         ) { [weak self] _ in self?.updateExternalMonitorVisibility() }
-
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("SettingsChanged"),
-            object: nil, queue: .main
-        ) { [weak self] _ in self?.updateAllVisibilities() }
     }
 
     // MARK: - NSMenuDelegate
@@ -270,7 +265,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(button)
         NSLayoutConstraint.activate([
             button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
         ])
         item.view = container
@@ -329,8 +324,20 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     private func animateItemVisibility(_ item: NSMenuItem?, visible: Bool, animated: Bool = false) {
         guard let item = item, let view = item.view else { return }
-        if visible { item.isHidden = false; view.alphaValue = 1 }
-        else       { item.isHidden = true }
+        view.wantsLayer = true
+        if visible {
+            if item.isHidden { view.alphaValue = 0; item.isHidden = false
+                if animated {
+                    DispatchQueue.main.async { NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; view.animator().alphaValue = 1 } }
+                } else { view.alphaValue = 1 }
+            }
+        } else {
+            if !item.isHidden {
+                if animated {
+                    NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.2; view.animator().alphaValue = 0 }, completionHandler: { item.isHidden = true })
+                } else { view.alphaValue = 0; item.isHidden = true }
+            }
+        }
     }
 
     // MARK: - Actions
