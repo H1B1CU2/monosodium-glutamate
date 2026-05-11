@@ -7,15 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BB000101 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101 /* Settings.swift */; };
-		BB000102 /* SystemState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000102 /* SystemState.swift */; };
-		BB000103 /* SpaceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000103 /* SpaceWatcher.swift */; };
-		BB000104 /* Indicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000104 /* Indicator.swift */; };
-		BB000105 /* IndicatorRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000105 /* IndicatorRenderer.swift */; };
-		BB000106 /* CornerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000106 /* CornerWindow.swift */; };
-		BB000107 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000107 /* AppDelegate.swift */; };
-		BB000108 /* SettingsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000108 /* SettingsMenu.swift */; };
-		BB000109 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000109 /* main.swift */; };
+		BB000001 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101 /* Settings.swift */; };
+		BB000002 /* SystemState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000102 /* SystemState.swift */; };
+		BB000003 /* SpaceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000103 /* SpaceWatcher.swift */; };
+		BB000004 /* Indicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000104 /* Indicator.swift */; };
+		BB000005 /* IndicatorRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000105 /* IndicatorRenderer.swift */; };
+		BB000006 /* CornerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000106 /* CornerWindow.swift */; };
+		BB000007 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000107 /* AppDelegate.swift */; };
+		BB000008 /* SettingsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000108 /* SettingsMenu.swift */; };
+		BB000009 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000109 /* main.swift */; };
 		18B729E92FADF4A400CEDD2A /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18B729E82FADF4A400CEDD2A /* Media.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -59,7 +59,6 @@
 				BB000109 /* main.swift */,
 				189478512FADD198007A7799 /* Info.plist */,
 				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
-
 			);
 			path = MSG;
 			sourceTree = "<group>";
@@ -153,16 +152,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BB000101 /* Settings.swift in Sources */,
-				BB000102 /* SystemState.swift in Sources */,
-				BB000103 /* SpaceWatcher.swift in Sources */,
-				BB000104 /* Indicator.swift in Sources */,
-				BB000105 /* IndicatorRenderer.swift in Sources */,
-				BB000106 /* CornerWindow.swift in Sources */,
-				BB000107 /* AppDelegate.swift in Sources */,
-				BB000108 /* SettingsMenu.swift in Sources */,
-				BB000109 /* main.swift in Sources */,
-
+				BB000001 /* Settings.swift in Sources */,
+				BB000002 /* SystemState.swift in Sources */,
+				BB000003 /* SpaceWatcher.swift in Sources */,
+				BB000004 /* Indicator.swift in Sources */,
+				BB000005 /* IndicatorRenderer.swift in Sources */,
+				BB000006 /* CornerWindow.swift in Sources */,
+				BB000007 /* AppDelegate.swift in Sources */,
+				BB000008 /* SettingsMenu.swift in Sources */,
+				BB000009 /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
