@@ -69,15 +69,19 @@ final class SpaceWatcher {
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.updateInfo()
-            // Chase read: CGS may update external displays with a slight delay.
-            // A second read 100ms later catches any lagging display state.
+            // Chase reads: CGS may update external displays later than built-in.
+            // Two quick follow-up reads catch lagging display state.
             self?.chaseWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 self?.chaseWork = nil
                 self?.updateInfo()
+                // Second chase at 50ms
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self?.updateInfo()
+                }
             }
             self?.chaseWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.016, execute: work)
         }
 
         screenObs = NotificationCenter.default.addObserver(
@@ -102,11 +106,11 @@ final class SpaceWatcher {
             previous: currentInfo
         )
         guard newInfo != currentInfo else {
-            if forceNotify { DispatchQueue.main.async { self.onChange?() } }
+            if forceNotify { onChange?() }
             return
         }
         currentInfo = newInfo
-        DispatchQueue.main.async { self.onChange?() }
+        onChange?()
     }
 
     // MARK: - CGS read
