@@ -220,9 +220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleFocusClick(_ event: NSEvent) {
         guard settings.focusDetectionMode == .click else { return }
         let uuid = screenUUID(at: NSEvent.mouseLocation)
-        if uuid != indicator.spaceWatcher.currentFocusedUUID {
-            indicator.setFocusedUUID(uuid)
-        }
+        if uuid == indicator.spaceWatcher.currentFocusedUUID { return }
+        indicator.spaceWatcher.currentFocusedUUID = uuid
+        indicator.spaceWatcher.updateInfo()
     }
 
     private func screenUUID(at point: NSPoint) -> String? {
