@@ -147,10 +147,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
 
             let extTopPosMenu = createPositionMenu(isExternal: true)
-            addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu)
+            addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu, isExtTop: true)
             extMirrorFadeItems.append(menu.items.last!)
 
-            addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)))
+            addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)), isExtBottom: true)
             extMirrorFadeItems.append(menu.items.last!)
 
             addSliderItem(value: settings.extCornerRadius, isExternal: true)
@@ -270,7 +270,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return sub
     }
 
-    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil) {
+    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, isExtTop: Bool = false, isExtBottom: Bool = false) {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         container.wantsLayer = true
@@ -287,6 +287,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         item.view = container
         item.submenu = submenu
         menu.addItem(item)
+        if isExtTop { extTopToggleItem = item }
+        if isExtBottom { extBottomToggleItem = item }
     }
 
     private func modelName() -> String {
