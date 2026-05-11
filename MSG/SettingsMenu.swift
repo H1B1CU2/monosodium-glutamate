@@ -119,7 +119,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addSliderItem(value: settings.cornerRadius, isExternal: false)
 
-        menu.addItem(.separator())
+        addSpaceItem()
 
         // ── External Monitors ───────
         externalSectionItems.removeAll()
@@ -147,6 +147,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addSliderItem(value: settings.extCornerRadius, isExternal: true)
         extMirrorFadeItems.append(menu.items.last!)
+
+        addSpaceItem()
 
         externalSepItem = NSMenuItem.separator()
         menu.addItem(externalSepItem!)
@@ -192,6 +194,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Helpers
+
+    private func addSpaceItem() {
+        let item = NSMenuItem()
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 8))
+        item.view = v
+        menu.addItem(item)
+    }
 
     private func addHeaderItem(_ title: String, to targetMenu: NSMenu, indent: Bool = false) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
