@@ -407,10 +407,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
-        let mirroring = sender.state == .on
-        for item in extMirrorFadeItems {
-            animateItemVisibility(item, visible: !mirroring, animated: true)
-        }
+        updateExtTogglesVisibility(animated: true)
+        updateExtSliderVisibility(animated: true)
     }
     @objc func posEdge()                         { settings.topCornersUnderMenuBar = false }
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
