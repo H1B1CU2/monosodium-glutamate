@@ -184,6 +184,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         updateSliderVisibility(animated: animated)
         updateExtSliderVisibility(animated: animated)
         updateExtTogglesVisibility(animated: animated)
+        // Per-display slider visibility
+        let builtIn = NSScreen.screens.first
+        for ext in NSScreen.screens where ext != builtIn {
+            if let uuid = screenUUID(ext) {
+                updateExtSliderForUUID(uuid)
+            }
+        }
     }
 
     func updateExternalMonitorVisibility(animated: Bool = true) {
