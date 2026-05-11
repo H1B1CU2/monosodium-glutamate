@@ -232,11 +232,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             label.centerYAnchor.constraint(equalTo: title.centerYAnchor),
             label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             slider.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
-            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20)
         ])
         item.view = container
@@ -265,7 +265,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(button)
         NSLayoutConstraint.activate([
             button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14)
         ])
         item.view = container
@@ -301,7 +301,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private func addDisplayPositionItem(screen: NSScreen, index: Int, relativeTo builtIn: NSScreen) {
         let name = screen.localizedName
         let pos = displayPosition(for: screen, relativeTo: builtIn)
-        let item = NSMenuItem(title: "\(name): \(pos)", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "  \(name): \(pos)", action: nil, keyEquivalent: "")
         item.isEnabled = false
         menu.addItem(item)
     }
