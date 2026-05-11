@@ -135,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 win.orderFrontRegardless()
                 let isBuiltin = win.targetScreen.isBuiltin
                 let underBar = isBuiltin ? self.settings.topCornersUnderMenuBar : self.settings.extTopCornersUnderMenuBar
-                win.redraw(skipTop: inMC && underBar, animated: false)
+                win.redraw(skipTop: inMC && underBar)
             }
             if !inMC {
                 self.mcRedrawTimer?.invalidate()
@@ -147,16 +147,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func redrawCornerWindows() {
         let inMC = isMissionControlActive()
-        let fs = !NSMenu.menuBarVisible()
         if inMC { startMCRedrawPoll() }
         for win in cornerWindows {
             win.updateFrame()
             win.orderFrontRegardless()
             let isBuiltin = win.targetScreen.isBuiltin
             let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
-            // Only animate when the change is from fullscreen (not MC alone)
-            let shouldAnimate = fs && inMC
-            win.redraw(skipTop: inMC && underBar, animated: shouldAnimate)
+            win.redraw(skipTop: inMC && underBar)
         }
     }
 

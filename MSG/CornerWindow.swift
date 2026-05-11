@@ -51,16 +51,17 @@ final class CornerWindow: NSWindow {
         view.needsDisplay = true
     }
 
-    func redraw(skipTop: Bool = false, animated: Bool = true) {
-        if animated, skipTop != lastSkipTop {
-            lastSkipTop = skipTop
+    func redraw(skipTop: Bool = false) {
+        if lastSkipTop == nil { lastSkipTop = skipTop }
+        let changed = skipTop != lastSkipTop
+        lastSkipTop = skipTop
+        view.skipTopCorners = skipTop
+        if changed {
             animateSkipChange(hide: skipTop)
         } else {
-            lastSkipTop = skipTop
+            view.needsDisplay = true
+            view.display()
         }
-        view.skipTopCorners = skipTop
-        view.needsDisplay = true
-        view.display()
     }
 
     private func animateSkipChange(hide: Bool) {
