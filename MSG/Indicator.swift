@@ -272,11 +272,7 @@ final class Indicator {
                 case .pill:
                     startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
                 case .dots:
-                    if settings.animationStyle == .solid {
-                        startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
-                    } else {
-                        startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
-                    }
+                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
                 case .numbers, .boldNumber:
                     startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
                 }
