@@ -88,6 +88,12 @@ final class Indicator {
     // silently sync state without animating.
     private var userChangedSpace = false
 
+    // Cooldown after Mission Control exits. The synchronous Dock check
+    // clears instantly when Dock resigns focus, but fullscreen detection
+    // (polled every 0.3s) hasn't caught up yet. This cooldown bridges
+    // the gap. During the cooldown, no state mutations or animations.
+    private var mcExitCooldownEnd: TimeInterval = 0
+
     func start() {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(buttonClicked(_:))
@@ -133,6 +139,8 @@ final class Indicator {
 
         animFocusTimer?.invalidate(); animFocusTimer = nil
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
+
+        mcExitCooldownEnd = 0
     }
 
     @objc private func buttonClicked(_ sender: NSStatusBarButton) {
@@ -205,13 +213,33 @@ final class Indicator {
         // trigger animations safely. When unstable, we still render the
         // current frame but freeze all snapshot updates.
         //
-        // Three inputs, all must agree:
+        // Layers, all must agree:
         //   1. systemState.isStable       — Dock observers + quiesce window
         //   2. !systemState.isFullscreen  — menu bar / AX check
-        //   3. !isMissionControlNow       — synchronous Dock check (safety net)
+        //   3. !isMissionControlNow       — synchronous Dock check
+        //   4. mcExitCooldown             — 1s after Dock resigns focus
         let isMissionControlNow = NSWorkspace.shared.frontmostApplication?
             .bundleIdentifier == "com.apple.dock"
-        let stable = systemState.isStable && !systemState.isFullscreen && !isMissionControlNow
+
+        // Track the Dock-frontmost → not-frontmost transition ourselves
+        // so we don't depend on Dock observers for the cooldown.
+        if isMissionControlNow {
+            // Dock is frontmost right now — schedule a cooldown to start
+            // when it drops.
+            mcExitCooldownEnd = -1 // marker: "waiting for Dock to drop"
+        } else if mcExitCooldownEnd == -1 {
+            // Dock just dropped — start the 1s cooldown
+            mcExitCooldownEnd = ProcessInfo.processInfo.systemUptime + 1.0
+        } else if mcExitCooldownEnd > 0 {
+            // Cooldown running — check if expired
+            if ProcessInfo.processInfo.systemUptime >= mcExitCooldownEnd {
+                mcExitCooldownEnd = 0
+            }
+        }
+
+        let inCooldown = mcExitCooldownEnd > 0
+        let stable = systemState.isStable && !systemState.isFullscreen
+            && !isMissionControlNow && !inCooldown
 
         // Layout morph (display count change)
         let countChanged = fullPreviousDisplays.count != info.displays.count
