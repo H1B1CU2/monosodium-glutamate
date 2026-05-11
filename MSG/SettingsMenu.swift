@@ -241,12 +241,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(title)
 
         NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            title.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            slider.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
             slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20)
+            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
+            title.trailingAnchor.constraint(equalTo: slider.trailingAnchor)
         ])
         item.view = container
         menu.addItem(item)
