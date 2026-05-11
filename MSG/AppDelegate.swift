@@ -214,9 +214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             guard let self, self.settings.focusDetectionMode == .dynamic else { return }
             let uuid = self.screenUUID(at: NSEvent.mouseLocation)
-            if uuid != self.indicator.spaceWatcher.currentFocusedUUID {
-                self.indicator.setFocusedUUID(uuid)
-            }
+            guard let uuid, uuid != self.indicator.spaceWatcher.currentFocusedUUID else { return }
+            self.indicator.spaceWatcher.currentFocusedUUID = uuid
+            self.indicator.spaceWatcher.updateInfo()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
     }
