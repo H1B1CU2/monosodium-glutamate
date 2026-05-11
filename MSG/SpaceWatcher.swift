@@ -67,6 +67,10 @@ final class SpaceWatcher {
     /// after the system settles. Screen parameter changes skip the debounce.
     private let debounceInterval: TimeInterval = 0.25
 
+    /// Toggle to dump raw CGS data to stdout for debugging MC transitions.
+    var diagnosticsEnabled = false
+    private var lastDiagTime: TimeInterval = 0
+
     func start() {
         updateInfo()
         spaceObs = NSWorkspace.shared.notificationCenter.addObserver(
@@ -88,6 +92,11 @@ final class SpaceWatcher {
     deinit { stop() }
 
     private func scheduleDebouncedUpdate() {
+        if diagnosticsEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            let since = lastDiagTime > 0 ? String(format: "%.3f", now - lastDiagTime) : "—"
+            print("[SW] 🔔 notification fired  (+\(since)s since last read)")
+        }
         debounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.debounceWork = nil
@@ -98,16 +107,31 @@ final class SpaceWatcher {
     }
 
     func updateInfo(forceNotify: Bool = false) {
+        if diagnosticsEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            let since = lastDiagTime > 0 ? String(format: "%.3f", now - lastDiagTime) : "—"
+            lastDiagTime = now
+            print("[SW] updateInfo() called  (+\(since)s since last read)  force=\(forceNotify)  debounced=\(debounceWork != nil)")
+        }
+
         let newInfo = Self.readSpaceInfo(
             prioritizeMain: prioritizeMain,
             customOrder: customOrder,
             focusDetection: focusDetection,
             focusedUUID: currentFocusedUUID,
-            previous: currentInfo
+            previous: currentInfo,
+            diagnostics: diagnosticsEnabled
         )
         guard newInfo != currentInfo else {
+            if diagnosticsEnabled { print("[SW] no change, skipping onChange") }
             if forceNotify { DispatchQueue.main.async { self.onChange?() } }
             return
+        }
+        if diagnosticsEnabled {
+            print("[SW] CHANGED — firing onChange")
+            print("[SW]   old: \(currentInfo)")
+            print("[SW]   new: \(newInfo)")
+            print("")
         }
         currentInfo = newInfo
         DispatchQueue.main.async { self.onChange?() }
@@ -120,7 +144,8 @@ final class SpaceWatcher {
         customOrder: [Int] = [],
         focusDetection: Bool = true,
         focusedUUID: String? = nil,
-        previous: SpaceInfo? = nil
+        previous: SpaceInfo? = nil,
+        diagnostics: Bool = false
     ) -> SpaceInfo {
         let cid = CGSMainConnectionID()
         let activeID = CGSGetActiveSpace(cid)
@@ -128,6 +153,34 @@ final class SpaceWatcher {
 
         guard let raw = CGSCopyManagedDisplaySpaces(cid),
               let displayDicts = raw as? [[String: Any]] else { return fallback }
+
+        if diagnostics {
+            let mc = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.dock"
+            let fs = !NSMenu.menuBarVisible()
+            print("[SW] ── CGS Read ───────────────────────")
+            print("[SW]   CGSGetActiveSpace = \(activeID)")
+            print("[SW]   Dock frontmost = \(mc)   menuBarHidden = \(fs)")
+            print("[SW]   display count = \(displayDicts.count)")
+            print("[SW]   --------------------------------")
+            for (di, dict) in displayDicts.enumerated() {
+                let ident = dict["Display Identifier"] as? String ?? "?"
+                let spaces = dict["Spaces"] as? [[String: Any]] ?? []
+                let cs = dict["Current Space"] as? [String: Any]
+                let csManaged = cs?["ManagedSpaceID"] as? Int
+                let csID64 = cs?["id64"] as? Int
+
+                var spaceList: [String] = []
+                for s in spaces {
+                    let msid = s["ManagedSpaceID"] as? Int ?? -1
+                    let i64 = s["id64"] as? Int ?? -1
+                    let isFS = s["TileLayoutManager"] is [String: Any]
+                    spaceList.append("msid=\(msid) i64=\(i64)\(isFS ? " FS" : "")")
+                }
+                print("[SW]   Display[\(di)] \(ident)")
+                print("[SW]     CurrentSpace: ManagedSpaceID=\(csManaged ?? -1)  id64=\(csID64 ?? -1)")
+                print("[SW]     Spaces: \(spaceList.joined(separator: " | "))")
+            }
+        }
 
         // Map UUIDs → previous current-space. Used as a fallback when CGS
         // hasn't settled and "Current Space" is missing or stale (common
@@ -244,7 +297,25 @@ final class SpaceWatcher {
         }
         let mainIdx = temps.firstIndex(where: { $0.isMain }) ?? 0
 
-        return displays.isEmpty ? fallback :
+        let result = displays.isEmpty ? fallback :
             SpaceInfo(displays: displays, activeDisplayIndex: activeIdx, mainDisplayIndex: mainIdx)
+
+        if diagnostics {
+            print("[SW]   ── Computed ──")
+            for (i, d) in displays.enumerated() {
+                let tag = i == activeIdx ? "★" : " "
+                print("[SW]   \(tag) display[\(i)]: current=\(d.current) total=\(d.total) uuid=\(d.uuid.prefix(8))...")
+            }
+            if let prev = previous {
+                let prevSpaces = prev.displays.map { $0.current }
+                let curSpaces = result.displays.map { $0.current }
+                let prevActive = prev.activeDisplayIndex
+                let curActive = result.activeDisplayIndex
+                print("[SW]   diffs: spaces \(prevSpaces)→\(curSpaces)  activeIdx \(prevActive)→\(curActive)")
+            }
+            print("[SW] ── End ──\n")
+        }
+
+        return result
     }
 }

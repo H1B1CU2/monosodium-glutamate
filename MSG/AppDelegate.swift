@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestAccessibilityIfNeeded()
 
         indicator = Indicator(settings: settings)
+        indicator.spaceWatcher.diagnosticsEnabled = true
         indicator.start()
 
         settingsMenu = SettingsMenu(settings: settings)
