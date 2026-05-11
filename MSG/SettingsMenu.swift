@@ -133,7 +133,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             extName = "External Monitors"
         }
 
-        addHeaderItem(extName, to: menu)
+        addHeaderItem(extName, to: menu, indent: true)
         externalHeaderItem = menu.items.last
 
         addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
@@ -379,10 +379,22 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc func topToggle(_ sender: NSButton)     { settings.topCornersEnabled = (sender.state == .on) }
-    @objc func bottomToggle(_ sender: NSButton)  { settings.bottomCornersEnabled = (sender.state == .on) }
-    @objc func extTopToggle(_ sender: NSButton)  { settings.extTopCornersEnabled = (sender.state == .on) }
-    @objc func extBottomToggle(_ sender: NSButton) { settings.extBottomCornersEnabled = (sender.state == .on) }
+    @objc func topToggle(_ sender: NSButton)     {
+        settings.topCornersEnabled = (sender.state == .on)
+        updateSliderVisibility(animated: true)
+    }
+    @objc func bottomToggle(_ sender: NSButton)  {
+        settings.bottomCornersEnabled = (sender.state == .on)
+        updateSliderVisibility(animated: true)
+    }
+    @objc func extTopToggle(_ sender: NSButton)  {
+        settings.extTopCornersEnabled = (sender.state == .on)
+        updateExtSliderVisibility(animated: true)
+    }
+    @objc func extBottomToggle(_ sender: NSButton) {
+        settings.extBottomCornersEnabled = (sender.state == .on)
+        updateExtSliderVisibility(animated: true)
+    }
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
