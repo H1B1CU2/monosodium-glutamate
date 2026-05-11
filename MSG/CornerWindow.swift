@@ -37,7 +37,7 @@ final class CornerWindow: NSWindow {
         ignoresMouseEvents = true
         // Above everything including Mission Control overlays
         level              = NSWindow.Level(Int(CGWindowLevelForKey(.maximumWindow)) + 100)
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
         contentView = view
     }
