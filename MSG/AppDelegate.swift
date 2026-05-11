@@ -220,3 +220,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AXIsProcessTrustedWithOptions(opts)
     }
 }
+            
+

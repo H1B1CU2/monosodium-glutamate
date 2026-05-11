@@ -191,7 +191,14 @@ final class Indicator {
         // The single gate: stable means we can mutate snapshot state and
         // trigger animations safely. When unstable, we still render the
         // current frame but freeze all snapshot updates.
-        let stable = systemState.isStable && !systemState.isFullscreen
+        //
+        // Three inputs, all must agree:
+        //   1. systemState.isStable       — Dock observers + quiesce window
+        //   2. !systemState.isFullscreen  — menu bar / AX check
+        //   3. !isMissionControlNow       — synchronous Dock check (safety net)
+        let isMissionControlNow = NSWorkspace.shared.frontmostApplication?
+            .bundleIdentifier == "com.apple.dock"
+        let stable = systemState.isStable && !systemState.isFullscreen && !isMissionControlNow
 
         // Layout morph (display count change)
         let countChanged = fullPreviousDisplays.count != info.displays.count
