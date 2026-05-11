@@ -98,10 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screens = settings.externalMonitorCorners ? NSScreen.screens : [NSScreen.main ?? NSScreen.screens[0]]
         for screen in screens {
             let win = CornerWindow(screen: screen, settings: settings)
-            win.contentView?.alphaValue = 0
             win.orderFront(nil)
             cornerWindows.append(win)
-            win.animateAlpha(to: 1)
+            win.animateIn()
         }
     }
 

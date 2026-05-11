@@ -55,23 +55,28 @@ final class CornerWindow: NSWindow {
         view.displayIfNeeded()
     }
 
-    /// Fade the corner content in/out using the content view's alpha.
-    func animateAlpha(to target: CGFloat, duration: TimeInterval = 0.35) {
+    /// Animate corners growing from screen edge inward (radius 0→target)
+    /// with simultaneous fade.
+    func animateIn() {
         guard let cv = contentView else { return }
         fadeTimer?.invalidate()
-        let startAlpha = cv.alphaValue
-        let delta = target - startAlpha
-        if delta == 0 { return }
+        cv.alphaValue = 0
+        view.animProgress = 0
+        let duration: TimeInterval = 0.4
         let start = ProcessInfo.processInfo.systemUptime
         fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
             guard let self, let cv = self.contentView else { t.invalidate(); return }
-            let elapsed = ProcessInfo.processInfo.systemUptime - start
-            let raw = min(1.0, elapsed / duration)
+            let raw = min(1.0, (ProcessInfo.processInfo.systemUptime - start) / duration)
             let curve = 1.0 - pow(1.0 - raw, 3)
-            cv.alphaValue = startAlpha + delta * CGFloat(curve)
+            cv.alphaValue = curve
+            self.view.animProgress = CGFloat(curve)
+            self.view.needsDisplay = true
+            self.view.displayIfNeeded()
             if raw >= 1.0 {
                 t.invalidate()
                 self.fadeTimer = nil
+                self.view.animProgress = 1.0
+                self.view.needsDisplay = true
             }
         }
         if let t = fadeTimer { RunLoop.current.add(t, forMode: .common) }
@@ -84,6 +89,7 @@ final class CornerView: NSView {
 
     var targetScreen: NSScreen
     var skipTopCorners = false
+    var animProgress: CGFloat = 1.0  // 0→1 during grow-in animation
     private let settings: Settings
 
     init(screen: NSScreen, settings: Settings) {
@@ -100,7 +106,8 @@ final class CornerView: NSView {
         let screen = targetScreen
         let isBuiltin = screen.isBuiltin
 
-        let r = isBuiltin ? settings.cornerRadius : settings.extCornerRadius
+        let targetR = isBuiltin ? settings.cornerRadius : settings.extCornerRadius
+        let r = targetR * animProgress
         let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
