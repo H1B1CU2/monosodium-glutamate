@@ -105,14 +105,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var mcLastSeen: TimeInterval = 0
+
+    /// MC detection with hysteresis: once detected, stays true for 0.5s after
+    /// the last positive sighting. This prevents flickering when Dock windows
+    /// briefly change layers during MC transitions.
     private func isMissionControlActive() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - mcLastSeen < 0.5 { return true }
         guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
         for w in list {
             guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
             let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            if layer > 0 && layer < 1000 { return true }
+            if layer > 0 && layer < 1000 {
+                mcLastSeen = now
+                return true
+            }
         }
         return false
     }
