@@ -37,7 +37,7 @@ final class CornerWindow: NSWindow {
         ignoresMouseEvents = true
         // kCGAssistiveTechHighWindowLevel sits above everything short of the cursor
         level              = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
         contentView = view
     }
