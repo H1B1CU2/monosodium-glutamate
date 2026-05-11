@@ -43,6 +43,7 @@ final class CornerWindow: NSWindow {
     }
 
     private var fadeTimer: Timer?
+    private var lastSkipTop: Bool?
 
     func updateFrame() {
         setFrame(targetScreen.frame, display: true)
@@ -51,36 +52,47 @@ final class CornerWindow: NSWindow {
     }
 
     func redraw(skipTop: Bool = false) {
+        if skipTop != lastSkipTop {
+            lastSkipTop = skipTop
+            animateSkipChange(hide: skipTop)
+        }
         view.skipTopCorners = skipTop
         view.needsDisplay = true
         view.display()
     }
 
-    /// Animate corners growing from screen edge inward (radius 0→target)
-    /// with simultaneous fade.
-    func animateIn() {
-        guard let cv = contentView else { return }
+    private func animateSkipChange(hide: Bool) {
+        guard contentView != nil else { return }
         fadeTimer?.invalidate()
-        cv.alphaValue = 0
-        view.animProgress = 0
-        let duration: TimeInterval = 0.4
+        let startProgress = view.animProgress
+        let targetProgress: CGFloat = hide ? 0 : 1
+        let duration: TimeInterval = 0.25
         let start = ProcessInfo.processInfo.systemUptime
         fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
             guard let self, let cv = self.contentView else { t.invalidate(); return }
             let raw = min(1.0, (ProcessInfo.processInfo.systemUptime - start) / duration)
             let curve = 1.0 - pow(1.0 - raw, 3)
-            cv.alphaValue = curve
-            self.view.animProgress = CGFloat(curve)
+            let p = startProgress + (targetProgress - startProgress) * CGFloat(curve)
+            cv.alphaValue = p
+            self.view.animProgress = p
             self.view.needsDisplay = true
-            self.view.displayIfNeeded()
+            self.view.display()
             if raw >= 1.0 {
                 t.invalidate()
                 self.fadeTimer = nil
-                self.view.animProgress = 1.0
+                self.view.animProgress = targetProgress
                 self.view.needsDisplay = true
             }
         }
         if let t = fadeTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
+    /// One-shot grow-in from zero on first appearance.
+    func animateIn() {
+        fadeTimer?.invalidate()
+        view.animProgress = 0
+        contentView?.alphaValue = 0
+        animateSkipChange(hide: false)
     }
 }
 

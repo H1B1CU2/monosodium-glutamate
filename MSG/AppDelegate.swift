@@ -125,8 +125,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var mcRedrawTimer: Timer?
 
-    private var wasInMC = false
-
     private func startMCRedrawPoll() {
         guard mcRedrawTimer == nil else { return }
         mcRedrawTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -149,13 +147,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func redrawCornerWindows() {
         let inMC = isMissionControlActive()
-        // Rebuild windows when entering/exiting MC — the fullscreen-to-MC
-        // transition can invalidate our windows and only a fresh creation
-        // reliably restores them.
-        if inMC != wasInMC {
-            wasInMC = inMC
-            rebuildCornerWindows()
-        }
         if inMC { startMCRedrawPoll() }
         for win in cornerWindows {
             win.updateFrame()
