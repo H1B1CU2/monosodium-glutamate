@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var arrangementPollSource: DispatchSourceTimer?
     private var previousScreenFrames: [CGRect] = []
 
+    private var pollTimer: Timer?
+
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -189,7 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyFocusDetectionMode() {
         if let m = clickMonitorGlobal { NSEvent.removeMonitor(m); clickMonitorGlobal = nil }
         if let m = clickMonitorLocal  { NSEvent.removeMonitor(m); clickMonitorLocal = nil }
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(pollWindowState), object: nil)
+        pollTimer?.invalidate(); pollTimer = nil
+        focusPollTimer?.invalidate(); focusPollTimer = nil
+        stopFocusPolling()
 
         switch settings.focusDetectionMode {
         case .off:
@@ -203,20 +207,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return e
             }
         case .dynamic:
-            pollWindowState()
+            startFocusPolling()
         }
     }
 
-    @objc private func pollWindowState() {
-        guard settings.focusDetectionMode == .dynamic else { return }
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(pollWindowState), object: nil)
-        perform(#selector(pollWindowState), with: nil, afterDelay: 0.3)
+    private var dynamicMouseMonitor: Any?
+    private var lastDynamicUpdate: TimeInterval = 0
 
-        let uuid = screenUUID(at: NSEvent.mouseLocation)
-        if let uuid, uuid != indicator.spaceWatcher.currentFocusedUUID {
-            indicator.spaceWatcher.currentFocusedUUID = uuid
-            indicator.spaceWatcher.updateInfo()
+    private func startFocusPolling() {
+        dynamicMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            guard let self, self.settings.focusDetectionMode == .dynamic else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastDynamicUpdate > 0.1 else { return }
+            self.lastDynamicUpdate = now
+            let uuid = self.screenUUID(at: NSEvent.mouseLocation)
+            guard let uuid, uuid != self.indicator.spaceWatcher.currentFocusedUUID else { return }
+            self.indicator.spaceWatcher.currentFocusedUUID = uuid
+            self.indicator.spaceWatcher.updateInfo()
         }
+    }
+
+    private func stopFocusPolling() {
+        if let m = dynamicMouseMonitor { NSEvent.removeMonitor(m); dynamicMouseMonitor = nil }
     }
 
     private func handleFocusClick(_ event: NSEvent) {
