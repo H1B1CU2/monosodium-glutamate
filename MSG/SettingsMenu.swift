@@ -15,6 +15,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var extSliderItem: NSMenuItem?
     private var extTopToggleItem: NSMenuItem?
     private var extBottomToggleItem: NSMenuItem?
+    private var extMirrorFadeItems: [NSMenuItem] = []
 
     init(settings: Settings) {
         self.settings = settings
@@ -32,6 +33,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         externalSectionItems.removeAll(); externalHeaderItem = nil; externalSepItem = nil
+        extMirrorFadeItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
         menu.autoenablesItems = false
@@ -123,23 +125,28 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll()
         externalHeaderItem = nil
 
-        addHeaderItem("External Monitors", to: menu)
+        let extName: String
+        if let builtIn = NSScreen.screens.first,
+           let ext = NSScreen.screens.first(where: { $0 != builtIn }) {
+            extName = "\(ext.localizedName) (\(displayPosition(for: ext, relativeTo: builtIn)))"
+        } else {
+            extName = "External Monitors"
+        }
+
+        addHeaderItem(extName, to: menu)
         externalHeaderItem = menu.items.last
 
         addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
 
         let extTopPosMenu = createPositionMenu(isExternal: true)
         addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu)
+        extMirrorFadeItems.append(menu.items.last!)
 
         addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)))
+        extMirrorFadeItems.append(menu.items.last!)
 
         addSliderItem(value: settings.extCornerRadius, isExternal: true)
-
-        if let builtIn = NSScreen.screens.first {
-            for (idx, screen) in NSScreen.screens.enumerated() where idx > 0 {
-                addDisplayPositionItem(screen: screen, index: idx, relativeTo: builtIn)
-            }
-        }
+        extMirrorFadeItems.append(menu.items.last!)
 
         externalSepItem = NSMenuItem.separator()
         menu.addItem(externalSepItem!)
@@ -298,14 +305,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return "\(v) & \(h)"
     }
 
-    private func addDisplayPositionItem(screen: NSScreen, index: Int, relativeTo builtIn: NSScreen) {
-        let name = screen.localizedName
-        let pos = displayPosition(for: screen, relativeTo: builtIn)
-        let item = NSMenuItem(title: "  \(name): \(pos)", action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        menu.addItem(item)
-    }
-
     // MARK: - Visibility helpers
 
     private func updateSliderVisibility(animated: Bool = true) {
@@ -384,7 +383,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func bottomToggle(_ sender: NSButton)  { settings.bottomCornersEnabled = (sender.state == .on) }
     @objc func extTopToggle(_ sender: NSButton)  { settings.extTopCornersEnabled = (sender.state == .on) }
     @objc func extBottomToggle(_ sender: NSButton) { settings.extBottomCornersEnabled = (sender.state == .on) }
-    @objc func mirrorToggle(_ sender: NSButton)  { settings.mirrorMainDisplay = (sender.state == .on) }
+    @objc func mirrorToggle(_ sender: NSButton)  {
+        settings.mirrorMainDisplay = (sender.state == .on)
+        let mirroring = sender.state == .on
+        for item in extMirrorFadeItems {
+            animateItemVisibility(item, visible: !mirroring, animated: true)
+        }
+    }
     @objc func posEdge()                         { settings.topCornersUnderMenuBar = false }
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
