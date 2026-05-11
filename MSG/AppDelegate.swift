@@ -191,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyFocusDetectionMode() {
         if let m = clickMonitorGlobal { NSEvent.removeMonitor(m); clickMonitorGlobal = nil }
         if let m = clickMonitorLocal  { NSEvent.removeMonitor(m); clickMonitorLocal = nil }
+        pollTimer?.invalidate(); pollTimer = nil
         focusPollTimer?.invalidate(); focusPollTimer = nil
 
         switch settings.focusDetectionMode {
