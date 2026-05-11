@@ -60,12 +60,18 @@ final class SpaceWatcher {
 
     private var spaceObs: NSObjectProtocol?
     private var screenObs: NSObjectProtocol?
+    private var debounceWork: DispatchWorkItem?
+
+    /// CGS can return transient values during and shortly after Mission Control.
+    /// Debouncing coalesces rapid-fire change notifications into a single read
+    /// after the system settles. Screen parameter changes skip the debounce.
+    private let debounceInterval: TimeInterval = 0.25
 
     func start() {
         updateInfo()
         spaceObs = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.updateInfo() }
+        ) { [weak self] _ in self?.scheduleDebouncedUpdate() }
 
         screenObs = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -76,9 +82,20 @@ final class SpaceWatcher {
         if let o = spaceObs  { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         if let o = screenObs { NotificationCenter.default.removeObserver(o) }
         spaceObs = nil; screenObs = nil
+        debounceWork?.cancel(); debounceWork = nil
     }
 
     deinit { stop() }
+
+    private func scheduleDebouncedUpdate() {
+        debounceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.debounceWork = nil
+            self?.updateInfo()
+        }
+        debounceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: work)
+    }
 
     func updateInfo(forceNotify: Bool = false) {
         let newInfo = Self.readSpaceInfo(
@@ -144,26 +161,40 @@ final class SpaceWatcher {
         var temps: [Temp] = []
         for dict in displayDicts {
             guard let spaces = dict["Spaces"] as? [[String: Any]] else { continue }
-            var ids: [Int] = []
+
+            // Use ManagedSpaceID like Spaceman — more stable than id64/id
+            // during Mission Control transitions.
+            var managedIDs: [Int] = []
             for s in spaces {
-                if let v = s["id64"] as? Int { ids.append(v) }
-                else if let v = s["id"] as? Int { ids.append(v) }
+                if let v = s["ManagedSpaceID"] as? Int { managedIDs.append(v) }
             }
-            guard !ids.isEmpty else { continue }
+            guard !managedIDs.isEmpty else { continue }
 
             let ident = dict["Display Identifier"] as? String ?? ""
 
-            // Try to resolve current space from CGS; fall back to previous value
-            // for this display if CGS data is incomplete.
+            // Resolve current space via ManagedSpaceID from the Current Space dict.
+            // This matches Spaceman's approach and avoids CGSGetActiveSpace
+            // which can be transient during MC.
             var cur: Int
             if let cs = dict["Current Space"] as? [String: Any],
-               let csid = cs["id64"] as? Int ?? cs["id"] as? Int,
-               let idx = ids.firstIndex(of: csid) {
+               let csid = cs["ManagedSpaceID"] as? Int,
+               let idx = managedIDs.firstIndex(of: csid) {
                 cur = idx + 1
-            } else if let prev = prevByUUID[ident], prev >= 1 && prev <= ids.count {
+            } else if let prev = prevByUUID[ident], prev >= 1 && prev <= managedIDs.count {
                 cur = prev
             } else {
                 cur = 1
+            }
+
+            // Determine if this display contains the globally active space.
+            // Use Current Space → ManagedSpaceID match against global active,
+            // or fall back to CGSGetActiveSpace only when needed.
+            let containsActive: Bool
+            if let cs = dict["Current Space"] as? [String: Any],
+               let csid = cs["ManagedSpaceID"] as? Int {
+                containsActive = csid == activeID || managedIDs.contains(activeID)
+            } else {
+                containsActive = managedIDs.contains(activeID)
             }
 
             let isMainIdent = ident == "Main" || (primaryUUID != nil && ident == primaryUUID)
@@ -171,9 +202,9 @@ final class SpaceWatcher {
             let isMain = isMainIdent || x == 0
 
             temps.append(Temp(
-                info: .init(current: cur, total: ids.count, uuid: ident),
+                info: .init(current: cur, total: managedIDs.count, uuid: ident),
                 isMain: isMain, xOrigin: x,
-                containsActive: ids.contains(activeID),
+                containsActive: containsActive,
                 identifier: ident
             ))
         }
