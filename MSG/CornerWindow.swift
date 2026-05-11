@@ -47,8 +47,12 @@ final class CornerWindow: NSWindow {
         view.needsDisplay = true
     }
 
-    func redraw() {
+    func redraw(skipTop: Bool = false) {
+        view.skipTopCorners = skipTop
         view.needsDisplay = true
+        // Force synchronous display so the change is visible immediately
+        // during MC transitions where normal display updates may be deferred.
+        view.displayIfNeeded()
     }
 }
 
@@ -57,6 +61,7 @@ final class CornerWindow: NSWindow {
 final class CornerView: NSView {
 
     var targetScreen: NSScreen
+    var skipTopCorners = false
     private let settings: Settings
 
     init(screen: NSScreen, settings: Settings) {
@@ -81,7 +86,7 @@ final class CornerView: NSView {
         NSColor.black.setFill()
 
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
-        let skipTop = underBar && !NSMenu.menuBarVisible()
+        let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
 
         if topEnabled && !skipTop {
             drawCorner(at: NSPoint(x: 0,     y: H - topY), radius: r, kind: .topLeft)
