@@ -99,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for screen in screens {
             let win = CornerWindow(screen: screen, settings: settings)
             win.orderFront(nil)
+            win.fadeIn()
             cornerWindows.append(win)
         }
     }

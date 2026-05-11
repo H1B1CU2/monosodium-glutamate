@@ -41,6 +41,8 @@ final class CornerWindow: NSWindow {
         contentView = view
     }
 
+    private var didFadeIn = false
+
     func updateFrame() {
         setFrame(targetScreen.frame, display: true)
         view.targetScreen = targetScreen
@@ -50,9 +52,18 @@ final class CornerWindow: NSWindow {
     func redraw(skipTop: Bool = false) {
         view.skipTopCorners = skipTop
         view.needsDisplay = true
-        // Force synchronous display so the change is visible immediately
-        // during MC transitions where normal display updates may be deferred.
         view.displayIfNeeded()
+    }
+
+    /// Fade the window in on first appearance.
+    func fadeIn() {
+        guard !didFadeIn else { return }
+        didFadeIn = true
+        alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            animator().alphaValue = 1
+        }
     }
 }
 
