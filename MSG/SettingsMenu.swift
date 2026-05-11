@@ -235,25 +235,16 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         slider.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(slider)
 
-        let label = NSTextField(labelWithString: "\(Int(value)) px")
-        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .right
-        label.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(label)
-
-        let title = NSTextField(labelWithString: "Corner Radius")
-        title.font = .menuFont(ofSize: 0)
+        let title = NSTextField(labelWithAttributedString: sliderLabelText(value: Int(value)))
         title.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(title)
 
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            label.centerYAnchor.constraint(equalTo: title.centerYAnchor),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            title.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             slider.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
-            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20)
         ])
         item.view = container
@@ -382,10 +373,24 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         settings.extCornerRadius = CGFloat(sender.doubleValue)
         updateSliderLabels(in: sender.superview, value: sender.doubleValue)
     }
+    private func sliderLabelText(value: Int) -> NSAttributedString {
+        let full = NSMutableAttributedString(string: "Corner Radius: ", attributes: [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: NSColor.labelColor
+        ])
+        full.append(NSAttributedString(string: "\(value) px", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]))
+        return full
+    }
+
     private func updateSliderLabels(in container: NSView?, value: Double) {
         guard let c = container else { return }
         for v in c.subviews {
-            if let l = v as? NSTextField, l.alignment == .right { l.stringValue = "\(Int(value)) px" }
+            if let l = v as? NSTextField, l.attributedStringValue.string.hasPrefix("Corner Radius") {
+                l.attributedStringValue = sliderLabelText(value: Int(value))
+            }
         }
     }
 
