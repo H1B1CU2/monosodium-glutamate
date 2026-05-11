@@ -130,33 +130,41 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll()
         externalHeaderItem = nil
 
-        addHeaderItem("External Monitors", to: menu)
-        externalHeaderItem = menu.items.last
-
         let builtIn = NSScreen.screens.first
         let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
 
         if !externals.isEmpty {
+            addHeaderItem("External Monitors", to: menu)
+            externalHeaderItem = menu.items.last
+
+            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+
+            addSpaceItem()
+
             for ext in externals {
+                guard let uuid = screenUUID(ext) else { continue }
                 let name = ext.localizedName
                 let pos = builtIn.map { displayPosition(for: ext, relativeTo: $0) } ?? ""
                 addHeaderItem("\(name) (\(pos))", to: menu, indent: true)
                 externalSectionItems.append(menu.items.last!)
+
+                let extTopPosMenu = createExtPositionMenu(uuid: uuid)
+                addToggleItem("Top Corners", state: settings.extTopCornersEnabled(for: uuid),
+                              action: #selector(extTopToggleUUID(_:)), submenu: extTopPosMenu, isExtTop: true, uuid: uuid)
+                extMirrorFadeItems.append(menu.items.last!)
+                externalSectionItems.append(menu.items.last!)
+
+                addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled(for: uuid),
+                              action: #selector(extBottomToggleUUID(_:)), isExtBottom: true, uuid: uuid)
+                extMirrorFadeItems.append(menu.items.last!)
+                externalSectionItems.append(menu.items.last!)
+
+                addExtSliderItem(value: settings.extCornerRadius(for: uuid), uuid: uuid)
+                extMirrorFadeItems.append(menu.items.last!)
+                externalSectionItems.append(menu.items.last!)
+
+                addSpaceItem()
             }
-
-            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
-
-            let extTopPosMenu = createPositionMenu(isExternal: true)
-            addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu, isExtTop: true)
-            extMirrorFadeItems.append(menu.items.last!)
-
-            addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)), isExtBottom: true)
-            extMirrorFadeItems.append(menu.items.last!)
-
-            addSliderItem(value: settings.extCornerRadius, isExternal: true)
-            extMirrorFadeItems.append(menu.items.last!)
-
-            addSpaceItem()
         }
 
         externalSepItem = NSMenuItem.separator()
@@ -270,10 +278,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return sub
     }
 
-    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, isExtTop: Bool = false, isExtBottom: Bool = false) {
+    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, isExtTop: Bool = false, isExtBottom: Bool = false, uuid: String? = nil) {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         container.wantsLayer = true
+        if let uuid { container.identifier = NSUserInterfaceItemIdentifier(uuid) }
         let button = NSButton(checkboxWithTitle: title, target: self, action: action)
         button.state = state ? .on : .off
         button.font = .menuFont(ofSize: 0)
@@ -304,6 +313,82 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         if id.contains("MacStudio")   { return "Mac Studio" }
         if id.contains("MacPro")      { return "Mac Pro" }
         return "Built-in Display"
+    }
+
+    private func screenUUID(_ screen: NSScreen) -> String? {
+        guard let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+              let u = CGDisplayCreateUUIDFromDisplayID(dID),
+              let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
+        return s
+    }
+
+    private func addExtSliderItem(value: CGFloat, uuid: String) {
+        let item = NSMenuItem()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
+        container.wantsLayer = true
+        container.identifier = NSUserInterfaceItemIdentifier(uuid)
+        let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
+                              target: self, action: #selector(extRadiusChangedUUID(_:)))
+        slider.controlSize = .mini
+        slider.numberOfTickMarks = 15
+        slider.tickMarkPosition = .below
+        slider.allowsTickMarkValuesOnly = false
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(slider)
+
+        let title = NSTextField(labelWithAttributedString: sliderLabelText(value: Int(value)))
+        title.alignment = .right
+        title.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(title)
+
+        NSLayoutConstraint.activate([
+            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
+            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
+            title.trailingAnchor.constraint(equalTo: slider.trailingAnchor)
+        ])
+        item.view = container
+        item.representedObject = uuid
+        menu.addItem(item)
+    }
+
+    private func createExtPositionMenu(uuid: String) -> NSMenu {
+        let underBar = settings.extTopCornersUnderMenuBar(for: uuid)
+        let sub = NSMenu()
+        let atEdge = NSMenuItem(title: "At Screen Edge", action: #selector(extPosEdgeUUID(_:)), keyEquivalent: "")
+        atEdge.target = self; atEdge.representedObject = uuid; atEdge.state = underBar ? .off : .on
+        sub.addItem(atEdge)
+        let belowBar = NSMenuItem(title: "Below Menu Bar", action: #selector(extPosBelowUUID(_:)), keyEquivalent: "")
+        belowBar.target = self; belowBar.representedObject = uuid; belowBar.state = underBar ? .on : .off
+        sub.addItem(belowBar)
+        return sub
+    }
+
+    @objc private func extTopToggleUUID(_ sender: NSButton) {
+        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        settings.setExtTopCornersEnabled(sender.state == .on, for: uuid)
+        updateExtSliderVisibility(animated: true)
+    }
+    @objc private func extBottomToggleUUID(_ sender: NSButton) {
+        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        settings.setExtBottomCornersEnabled(sender.state == .on, for: uuid)
+        updateExtSliderVisibility(animated: true)
+    }
+    @objc private func extRadiusChangedUUID(_ sender: NSSlider) {
+        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        let val = Int(sender.doubleValue)
+        if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
+        settings.setExtCornerRadius(CGFloat(sender.doubleValue), for: uuid)
+        updateSliderLabels(in: sender.superview, value: sender.doubleValue)
+    }
+    @objc private func extPosEdgeUUID(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        settings.setExtTopCornersUnderMenuBar(false, for: uuid)
+    }
+    @objc private func extPosBelowUUID(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        settings.setExtTopCornersUnderMenuBar(true, for: uuid)
     }
 
     private func displayPosition(for screen: NSScreen, relativeTo builtIn: NSScreen) -> String {

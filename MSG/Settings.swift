@@ -83,11 +83,44 @@ final class Settings {
         didSet { save(); if mirrorMainDisplay { extTopCornersUnderMenuBar = topCornersUnderMenuBar }; onChange?(.corners) }
     }
 
-    // MARK: External corners
-    var extCornerRadius: CGFloat       { didSet { save(); onChange?(.corners) } }
-    var extTopCornersEnabled: Bool     { didSet { save(); onChange?(.corners) } }
-    var extBottomCornersEnabled: Bool  { didSet { save(); onChange?(.corners) } }
-    var extTopCornersUnderMenuBar: Bool { didSet { save(); onChange?(.corners) } }
+    // MARK: External corners (per-display via UUID)
+
+    private func extKey(_ base: String, uuid: String) -> String { "\(base)_\(uuid)" }
+
+    func extCornerRadius(for uuid: String) -> CGFloat {
+        CGFloat(UserDefaults.standard.float(forKey: extKey(Key.extCornerRadius, uuid: uuid)))
+    }
+    func setExtCornerRadius(_ v: CGFloat, for uuid: String) {
+        UserDefaults.standard.set(Float(v), forKey: extKey(Key.extCornerRadius, uuid: uuid))
+        onChange?(.corners)
+    }
+    func extTopCornersEnabled(for uuid: String) -> Bool {
+        UserDefaults.standard.object(forKey: extKey(Key.extTopCornersEnabled, uuid: uuid)) as? Bool ?? true
+    }
+    func setExtTopCornersEnabled(_ v: Bool, for uuid: String) {
+        UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersEnabled, uuid: uuid))
+        onChange?(.corners)
+    }
+    func extBottomCornersEnabled(for uuid: String) -> Bool {
+        UserDefaults.standard.object(forKey: extKey(Key.extBottomCornersEnabled, uuid: uuid)) as? Bool ?? true
+    }
+    func setExtBottomCornersEnabled(_ v: Bool, for uuid: String) {
+        UserDefaults.standard.set(v, forKey: extKey(Key.extBottomCornersEnabled, uuid: uuid))
+        onChange?(.corners)
+    }
+    func extTopCornersUnderMenuBar(for uuid: String) -> Bool {
+        UserDefaults.standard.bool(forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
+    }
+    func setExtTopCornersUnderMenuBar(_ v: Bool, for uuid: String) {
+        UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
+        onChange?(.corners)
+    }
+
+    // Stored fallbacks for code that doesn't use UUIDs
+    var extCornerRadius: CGFloat = 10       { didSet { save(); onChange?(.corners) } }
+    var extTopCornersEnabled: Bool = true   { didSet { save(); onChange?(.corners) } }
+    var extBottomCornersEnabled: Bool = true { didSet { save(); onChange?(.corners) } }
+    var extTopCornersUnderMenuBar: Bool = false { didSet { save(); onChange?(.corners) } }
 
     var mirrorMainDisplay: Bool {
         didSet {
