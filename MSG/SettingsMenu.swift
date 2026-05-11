@@ -512,8 +512,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
-        // Fade all external items EXCEPT the mirror toggle itself
-        for item in externalSectionItems where item != mirrorToggleItem {
+        // Fade all external sub-items EXCEPT the "External Monitors" header and mirror toggle
+        for item in externalSectionItems where item != mirrorToggleItem && item != externalHeaderItem {
             animateItemVisibility(item, visible: !mirroring, animated: true)
         }
         updateExtTogglesVisibility(animated: true)
