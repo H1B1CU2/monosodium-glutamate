@@ -119,6 +119,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addSliderItem(value: settings.cornerRadius, isExternal: false)
 
+        menu.addItem(.separator())
+
         // ── External Monitors ───────
         externalSectionItems.removeAll()
         externalHeaderItem = nil
