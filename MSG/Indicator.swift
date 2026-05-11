@@ -22,6 +22,7 @@ final class Indicator {
 
     var onStatusBarClicked: (() -> Void)?
     var onMCStateChanged: (() -> Void)?
+    var isMissionControlActive: Bool { systemState.isMissionControl }
 
     // MARK: Animation state
 

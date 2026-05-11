@@ -128,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func redrawCornerWindows() {
-        let inMC = isMissionControlActive()
+        let inMC = indicator.isMissionControlActive
         for win in cornerWindows {
             win.updateFrame()
             let isBuiltin = win.targetScreen.isBuiltin
