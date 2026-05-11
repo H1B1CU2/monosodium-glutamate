@@ -7,7 +7,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     // Track visibility state
     private var externalSectionItems: [NSMenuItem] = []
-    private var externalHeaderItem: NSMenuItem?
     private var externalSepItem: NSMenuItem?
     private var focusDetectionItem: NSMenuItem?
     private var displayOrderItem: NSMenuItem?
@@ -32,7 +31,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        externalSectionItems.removeAll(); externalHeaderItem = nil; externalSepItem = nil
+        externalSectionItems.removeAll(); externalSepItem = nil
         extMirrorFadeItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
@@ -128,15 +127,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         // ── External Monitors ───────
         externalSectionItems.removeAll()
-        externalHeaderItem = nil
 
         let builtIn = NSScreen.screens.first
         let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
 
         if !externals.isEmpty {
-            addHeaderItem("External Monitors", to: menu)
-            externalHeaderItem = menu.items.last
-
             for ext in externals {
                 guard let uuid = screenUUID(ext) else { continue }
                 let name = ext.localizedName
@@ -168,14 +163,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         externalSepItem = NSMenuItem.separator()
         menu.addItem(externalSepItem!)
-
-        if let headerIdx = menu.items.firstIndex(of: externalHeaderItem!) {
-            for i in (headerIdx + 1)..<menu.items.count {
-                externalSectionItems.append(menu.items[i])
-            }
-        }
-        externalSectionItems.insert(externalHeaderItem!, at: 0)
-        if let sep = externalSepItem { externalSectionItems.append(sep) }
+        externalSectionItems.append(externalSepItem!)
 
         updateExternalMonitorVisibility(animated: false)
 
@@ -511,7 +499,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
         // Fade all external sub-items EXCEPT the "External Monitors" header and mirror toggle
-        for item in externalSectionItems where item != mirrorToggleItem && item != externalHeaderItem {
+        for item in externalSectionItems where item != mirrorToggleItem {
             animateItemVisibility(item, visible: !mirroring, animated: true)
         }
         updateExtTogglesVisibility(animated: true)
