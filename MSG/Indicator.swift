@@ -12,88 +12,51 @@ struct GridDims {
 
 // MARK: - Indicator
 
-/// Owns the menu‑bar status item, runs the render loop, and coordinates
-/// animations. The key correctness invariant: snapshot state (previousSpaces,
-/// previousActiveDisplayIndex, fullPreviousDisplays) is only updated when
-/// SystemState.isStable. On stabilize, snapshot is atomically resynced to
-/// current observations without triggering animations.
+/// Spaceman-style indicator: read CGS → draw static icon → set on button.
+/// No diff-based animation, no previous-state tracking, no MC workarounds.
+/// Each refresh simply renders whatever SpaceWatcher reports right now.
 final class Indicator {
-
-    // MARK: Public
 
     let statusItem: NSStatusItem
     let spaceWatcher: SpaceWatcher
     private let settings: Settings
-    private let systemState: SystemState
     private let renderer: IndicatorRenderer
 
     var onStatusBarClicked: (() -> Void)?
 
-    // MARK: Animation state (read by renderer via input snapshot)
+    // Layout state (no animation, just current configuration)
+    var currentGridLayout: [GridRow] = []
+    private var lastSetLength: CGFloat = 0
 
+    // These exist only because IndicatorRenderer reads them. We keep them
+    // at their neutral/default values — no animation ever runs.
     var animSpacePillProgress: CGFloat = 1.0
     var animSpacePillDisplay: Int = -1
     var animSpacePillOldActive: Int = 0
     var animSpacePillNewActive: Int = 0
-    private var animSpacePillTimer: Timer?
-    private var animSpacePillCaptured: SpaceInfo?
-    private var animSpacePillCapturedGrid: [GridRow] = []
-    private var animSpacePillIsDots: Bool = false
-
     var animTextProgress: CGFloat = 1.0
     var animTextDisplay: Int = -1
     var animTextOldActive: Int = -1
     var animTextNewActive: Int = -1
-    private var animTextTimer: Timer?
-
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
     var animLayoutMorphNewW: CGFloat = 0
-    private var animLayoutTimer: Timer?
-
     var animRowMorphProgress: CGFloat = 1.0
     var animRowMorphFromStacked: Bool = false
     var animRowMorphFromCount: Int = 1
-    private var animRowMorphTimer: Timer?
-    private var animRowMorphPending: DispatchWorkItem?
-
     var animFocusProgress: CGFloat = 1.0
     var animFocusOldDisplay: Int = -1
     var animFocusNewDisplay: Int = -1
-    private var animFocusTimer: Timer?
-
-    // MARK: Snapshot state (only mutated when systemState.isStable)
-
-    private var previousSpaces: [Int] = []
-    private var previousActiveDisplayIndex: Int = -1
-    private var fullPreviousDisplays: [SpaceInfo.DisplayInfo] = []
     var previousLayoutDisplays: [SpaceInfo.DisplayInfo] = []
-    private var previousEffectiveRowCount: Int = 1
-    var currentGridLayout: [GridRow] = []
-    private var lastSetLength: CGFloat = 0
 
     // MARK: Init
 
-    init(settings: Settings, systemState: SystemState) {
+    init(settings: Settings) {
         self.settings = settings
-        self.systemState = systemState
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.spaceWatcher = SpaceWatcher()
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
     }
-
-    // True only in the refresh() immediately following a space-change
-    // notification from the system. Only this path triggers animations.
-    // All other refresh calls (screen changes, polling, stabilisation)
-    // silently sync state without animating.
-    private var userChangedSpace = false
-
-    // Cooldown after Mission Control exits. The synchronous Dock check
-    // clears instantly when Dock resigns focus, but fullscreen detection
-    // (polled every 0.3s) hasn't caught up yet. This cooldown bridges
-    // the gap. During the cooldown, no state mutations or animations.
-    private var mcExitCooldownEnd: TimeInterval = 0
-    private var mcCooldownTimer: Timer?
 
     func start() {
         statusItem.button?.target = self
@@ -103,68 +66,17 @@ final class Indicator {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
         spaceWatcher.prioritizeMain = settings.displayOrderMode == .prioritizeMain
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
-
-        // The onChange callback fires from both activeSpaceDidChangeNotification
-        // and didChangeScreenParametersNotification. In both cases we mark the
-        // next refresh as animation-eligible so space-change animations work.
-        spaceWatcher.onChange = { [weak self] in
-            self?.userChangedSpace = true
-            self?.refresh()
-        }
+        spaceWatcher.onChange = { [weak self] in self?.refresh() }
         spaceWatcher.start()
 
-        systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
-        systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
-
         refresh()
-    }
-
-    /// Kill every in-flight animation timer so transient reads don't feed into
-    /// render callbacks while the system is unstable.
-    private func killAllAnimations() {
-        animSpacePillTimer?.invalidate(); animSpacePillTimer = nil
-        animSpacePillProgress = 1.0; animSpacePillDisplay = -1
-        animSpacePillOldActive = 0; animSpacePillNewActive = 0
-        animSpacePillCaptured = nil
-
-        animTextTimer?.invalidate(); animTextTimer = nil
-        animTextProgress = 1.0; animTextDisplay = -1
-        animTextOldActive = -1; animTextNewActive = -1
-
-        animLayoutTimer?.invalidate(); animLayoutTimer = nil
-        animLayoutProgress = 1.0
-
-        animRowMorphTimer?.invalidate(); animRowMorphTimer = nil
-        animRowMorphPending?.cancel(); animRowMorphPending = nil
-        animRowMorphProgress = 1.0
-
-        animFocusTimer?.invalidate(); animFocusTimer = nil
-        animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
-
-        mcExitCooldownEnd = 0
-        mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
     }
 
     @objc private func buttonClicked(_ sender: NSStatusBarButton) {
         onStatusBarClicked?()
     }
 
-    // MARK: - Stability resync
-
-    /// Called when SystemState transitions back to stable. Atomically resync
-    /// snapshot state to current observations so the next refreshDisplay
-    /// doesn't see a fake diff (which would trigger a spurious animation).
-    private func resyncSnapshotAfterStabilize() {
-        let info = spaceWatcher.currentInfo
-        previousSpaces = info.displays.map { $0.current }
-        previousActiveDisplayIndex = info.activeDisplayIndex
-        fullPreviousDisplays = info.displays
-        previousLayoutDisplays = info.displays
-        previousEffectiveRowCount = effectiveRowCount(for: info.displays)
-        refresh()
-    }
-
-    // MARK: - Public hooks for AppDelegate
+    // MARK: - Public hooks
 
     func applySettings() {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
@@ -201,93 +113,22 @@ final class Indicator {
             && NSScreen.screens.count >= 3
     }
 
-    private func effectiveRowCount(for displays: [SpaceInfo.DisplayInfo]) -> Int {
-        return stackIndicators ? displays.count : 1
-    }
-
-    // MARK: - Refresh loop
+    // MARK: - Refresh
 
     func refresh() {
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
 
-        // The single gate: stable means we can mutate snapshot state and
-        // trigger animations safely. When unstable, we still render the
-        // current frame but freeze all snapshot updates.
-        //
-        // Layers, all must agree:
-        //   1. systemState.isStable       — Dock observers + quiesce window
-        //   2. !systemState.isFullscreen  — menu bar / AX check
-        //   3. !isMissionControlNow       — synchronous Dock check
-        //   4. mcExitCooldown             — 1s after Dock resigns focus
-        let isMissionControlNow = NSWorkspace.shared.frontmostApplication?
-            .bundleIdentifier == "com.apple.dock"
-
-        // Track the Dock-frontmost → not-frontmost transition ourselves
-        // so we don't depend on Dock observers for the cooldown.
-        if isMissionControlNow {
-            // Dock is frontmost right now — schedule a cooldown to start
-            // when it drops.
-            mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
-            mcExitCooldownEnd = -1 // marker: "waiting for Dock to drop"
-        } else if mcExitCooldownEnd == -1 {
-            // Dock just dropped — start the 1s cooldown
-            let duration: TimeInterval = 1.0
-            mcExitCooldownEnd = ProcessInfo.processInfo.systemUptime + duration
-            mcCooldownTimer?.invalidate()
-            mcCooldownTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
-                self?.mcExitCooldownEnd = 0
-                self?.mcCooldownTimer = nil
-                self?.refresh()
-            }
-        } else if mcExitCooldownEnd > 0 {
-            // Cooldown running — check if expired (belt-and-suspenders with timer)
-            if ProcessInfo.processInfo.systemUptime >= mcExitCooldownEnd {
-                mcExitCooldownEnd = 0
-                mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
-            }
-        }
-
-        let inCooldown = mcExitCooldownEnd > 0
-        let stable = systemState.isStable && !systemState.isFullscreen
-            && !isMissionControlNow && !inCooldown
-
-        // Layout morph (display count change)
-        let countChanged = fullPreviousDisplays.count != info.displays.count
-        let totalsChanged = fullPreviousDisplays.map { $0.total } != info.displays.map { $0.total }
-
-        if !fullPreviousDisplays.isEmpty && countChanged && stable {
-            startLayoutMorph(from: fullPreviousDisplays, to: info.displays)
-            fullPreviousDisplays = info.displays
-        } else if !fullPreviousDisplays.isEmpty && (totalsChanged || (countChanged && !stable)) {
-            // Silently update — no morph animation while unstable
-            if stable {
-                fullPreviousDisplays = info.displays
-                previousLayoutDisplays = info.displays
-            }
-        } else if fullPreviousDisplays.isEmpty {
-            fullPreviousDisplays = info.displays
+        // Keep previousLayoutDisplays in sync so renderer width calcs work
+        if previousLayoutDisplays.isEmpty || previousLayoutDisplays.count != info.displays.count {
             previousLayoutDisplays = info.displays
-            animLayoutMorphOldW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
-            animLayoutMorphNewW = animLayoutMorphOldW
-            if !shouldUseGridLayout { previousEffectiveRowCount = effectiveRowCount(for: info.displays) }
         }
 
         // Grid layout
-        if shouldUseGridLayout && animLayoutProgress >= 1.0 {
+        if shouldUseGridLayout {
             currentGridLayout = computeGridLayout(for: info.displays)
-        } else if !shouldUseGridLayout {
+        } else {
             currentGridLayout = []
-        }
-
-        // Row morph (inline ↔ stacked)
-        if stable && !shouldUseGridLayout && (settings.displayStyle == .pill || settings.displayStyle == .dots)
-            && animLayoutProgress >= 1.0 {
-            let cur = effectiveRowCount(for: info.displays)
-            if animRowMorphProgress >= 1.0 && cur != previousEffectiveRowCount {
-                startRowMorph(fromCount: previousEffectiveRowCount, fromStacked: previousEffectiveRowCount > 1)
-                previousEffectiveRowCount = cur
-            }
         }
 
         // Clear old button state when switching style families
@@ -301,100 +142,28 @@ final class Indicator {
             button.image = nil
         }
 
-        // Width management
+        // Width
         applyStatusItemLength(info: info)
 
-        // Style-specific rendering + animation triggers.
-        //
-        // Animation only fires when userChangedSpace is true (set by
-        // activeSpaceDidChangeNotification). Every other refresh path
-        // (screen changes, MC exit, polling, stabilisation) silently
-        // syncs the snapshot without animation. This is the key fix for
-        // the MC exit bug — transient CGS reads during MC never trigger
-        // animations because they don't carry the userChangedSpace flag.
-        let allowSpaceAnim = stable && userChangedSpace
-        let allowFocusAnim = stable   // focus changes from clicks too
-
+        // Draw
         switch settings.displayStyle {
         case .pill:
-            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
-            if allowFocusAnim { tryStartFocusChange(info: info) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.image = renderer.makePillFrame(
-                indicator: self, info: info, isDots: false
-            )
-
+            button.image = renderer.makePillFrame(indicator: self, info: info, isDots: false)
         case .numbers:
-            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
-
         case .boldNumber:
-            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
-
         case .dots:
-            if allowSpaceAnim { tryStartSpaceChange(info: info, isDots: true) }
-            if allowFocusAnim { tryStartFocusChange(info: info) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.image = renderer.makePillFrame(
-                indicator: self, info: info, isDots: true
-            )
-        }
-
-        // Consume the flag — it was set for this specific refresh.
-        userChangedSpace = false
-    }
-
-    // MARK: - Animation triggers
-
-    private func tryStartSpaceChange(info: SpaceInfo, isDots: Bool) {
-        guard previousSpaces.count == info.displays.count else { return }
-        for i in 0..<info.displays.count {
-            let prev = previousSpaces[i]
-            let cur = info.displays[i].current
-            if prev != cur && prev >= 1 && prev <= info.displays[i].total {
-                // commit snapshot before starting animation (so a re-entry
-                // through onChange doesn't retrigger)
-                previousSpaces = info.displays.map { $0.current }
-                switch settings.displayStyle {
-                case .pill:
-                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
-                case .dots:
-                    if settings.animationStyle == .solid {
-                        startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
-                    } else {
-                        startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
-                    }
-                case .numbers, .boldNumber:
-                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
-                }
-                return
-            }
+            button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
         }
     }
 
-    private func tryStartFocusChange(info: SpaceInfo) {
-        guard animFocusProgress >= 1.0,
-              previousActiveDisplayIndex >= 0,
-              info.activeDisplayIndex != previousActiveDisplayIndex else { return }
-        startFocusAnimation(from: previousActiveDisplayIndex, to: info.activeDisplayIndex)
-    }
-
-    // MARK: - Width management
+    // MARK: - Width
 
     private func applyStatusItemLength(info: SpaceInfo) {
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
-        var naturalW: CGFloat
-        if animLayoutProgress < 1.0 {
-            let t = Easing.outQuart(animLayoutProgress)
-            naturalW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * t
-        } else if shouldUseGridLayout {
+        let naturalW: CGFloat
+        if shouldUseGridLayout {
             let dims = gridDimensions(for: currentGridLayout, isDots: settings.displayStyle == .dots)
             naturalW = renderer.gnomePillFixedWidth(
                 for: info.displays,
@@ -407,164 +176,17 @@ final class Indicator {
             naturalW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
         }
 
-        let finalLen = isImageStyle ? max(24, naturalW) : naturalW
-
         if isImageStyle {
             let pad: CGFloat = 4
-            let lenToSet = finalLen + pad * 2
+            let lenToSet = max(24, naturalW) + pad * 2
             if abs(lenToSet - lastSetLength) > 0.1 {
                 lastSetLength = lenToSet
                 DispatchQueue.main.async { [weak self] in self?.statusItem.length = lenToSet }
             }
-        } else {
-            if animLayoutProgress < 1.0 {
-                if abs(finalLen - lastSetLength) > 0.5 {
-                    lastSetLength = finalLen
-                    DispatchQueue.main.async { [weak self] in self?.statusItem.length = finalLen }
-                }
-            } else if lastSetLength != -1 {
-                lastSetLength = -1
-                DispatchQueue.main.async { [weak self] in self?.statusItem.length = NSStatusItem.variableLength }
-            }
+        } else if lastSetLength != -1 {
+            lastSetLength = -1
+            DispatchQueue.main.async { [weak self] in self?.statusItem.length = NSStatusItem.variableLength }
         }
-    }
-
-    // MARK: - Animations
-
-    private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int, isDots: Bool) {
-        guard settings.animationStyle != .none else { refresh(); return }
-        animSpacePillTimer?.invalidate()
-        animSpacePillProgress = 0
-        animSpacePillDisplay = displayIndex
-        animSpacePillOldActive = oldSpace
-        animSpacePillNewActive = newSpace
-        animSpacePillCaptured = info
-        animSpacePillCapturedGrid = currentGridLayout
-        animSpacePillIsDots = isDots
-
-        let style = settings.animationStyle
-        let distance = abs(newSpace - oldSpace)
-        let duration: TimeInterval = style == .solid ? 0.18 : (style == .jelly ? (0.6 + Double(distance) * 0.2) : 0.5)
-        let interval: TimeInterval = 1.0 / 60.0
-        let useSpring = style == .jelly
-
-        animSpacePillTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.animSpacePillProgress += CGFloat(interval / duration)
-            if self.animSpacePillProgress >= 1.0 {
-                t.invalidate()
-                self.animSpacePillTimer = nil
-                self.animSpacePillDisplay = -1
-                self.refresh()
-                return
-            }
-            let p: CGFloat = useSpring ? Easing.spring(self.animSpacePillProgress) : Easing.outQuart(self.animSpacePillProgress)
-            // Direct render to button image during the slide
-            if let captured = self.animSpacePillCaptured {
-                self.statusItem.button?.image = self.renderer.makePillFrame(
-                    indicator: self,
-                    info: captured,
-                    isDots: isDots,
-                    animatingDisplay: displayIndex,
-                    spacePillOldActive: oldSpace,
-                    spacePillNewActive: newSpace,
-                    spacePillProgress: p,
-                    overrideGridRows: self.animSpacePillCapturedGrid
-                )
-            }
-        }
-    }
-
-    private func startTextAnimation(displayIndex: Int, oldActive: Int, newActive: Int) {
-        animTextTimer?.invalidate()
-        guard settings.animationStyle != .none else {
-            animTextOldActive = -1; animTextNewActive = -1; animTextProgress = 1.0; animTextDisplay = -1
-            refresh(); return
-        }
-        animTextDisplay = displayIndex
-        animTextOldActive = oldActive
-        animTextNewActive = newActive
-        animTextProgress = 0
-        let distance = abs(newActive - oldActive)
-        let base: TimeInterval = settings.animationStyle == .solid
-            ? (settings.displayStyle == .dots ? 0.075 : 0.18)
-            : (settings.displayStyle == .dots ? 0.4 : 0.16)
-        let duration: TimeInterval = (settings.displayStyle == .dots && settings.animationStyle == .solid)
-            ? (0.075 + Double(distance) * 0.025)
-            : (base + Double(distance) * base)
-        animTextTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.animTextProgress += CGFloat(0.016 / duration)
-            if self.animTextProgress >= 1.0 {
-                self.animTextProgress = 1.0; t.invalidate()
-                self.animTextOldActive = -1; self.animTextNewActive = -1; self.animTextDisplay = -1
-            }
-            self.refresh()
-        }
-    }
-
-    private func startLayoutMorph(from old: [SpaceInfo.DisplayInfo], to new: [SpaceInfo.DisplayInfo]) {
-        animLayoutTimer?.invalidate()
-        if animLayoutProgress < 1.0 {
-            animLayoutMorphOldW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
-        } else {
-            animLayoutMorphOldW = renderer.targetWidth(for: old, style: settings.displayStyle, stackIndicators: stackIndicators)
-        }
-        animLayoutMorphNewW = renderer.targetWidth(for: new, style: settings.displayStyle, stackIndicators: stackIndicators)
-        previousLayoutDisplays = old
-        animLayoutProgress = 0
-
-        let duration: TimeInterval = 0.4
-        let interval: TimeInterval = 1.0 / 60.0
-        animLayoutTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.animLayoutProgress += CGFloat(interval / duration)
-            if self.animLayoutProgress >= 1.0 {
-                self.animLayoutProgress = 1.0
-                t.invalidate(); self.animLayoutTimer = nil
-            }
-            self.refresh()
-        }
-    }
-
-    private func startRowMorph(fromCount: Int, fromStacked: Bool) {
-        let capturedFromCount = fromCount
-        let capturedFromStacked = fromStacked
-        animRowMorphPending?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.animRowMorphTimer?.invalidate()
-            self.animRowMorphFromCount = capturedFromCount
-            self.animRowMorphFromStacked = capturedFromStacked
-            self.animRowMorphProgress = 0.0
-            self.animRowMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-                guard let self else { return }
-                self.animRowMorphProgress += 0.05
-                if self.animRowMorphProgress >= 1.0 { self.animRowMorphProgress = 1.0; t.invalidate() }
-                self.refresh()
-                self.statusItem.button?.display()
-            }
-            if let t = self.animRowMorphTimer { RunLoop.current.add(t, forMode: .common) }
-        }
-        animRowMorphPending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
-    }
-
-    private func startFocusAnimation(from: Int, to: Int) {
-        animFocusTimer?.invalidate()
-        animFocusOldDisplay = from
-        animFocusNewDisplay = to
-        animFocusProgress = 0.0
-        animFocusTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-            guard let self else { return }
-            self.animFocusProgress += 0.06
-            if self.animFocusProgress >= 1.0 {
-                self.animFocusProgress = 1.0; t.invalidate()
-                self.animFocusOldDisplay = -1; self.animFocusNewDisplay = -1
-            }
-            self.refresh()
-        }
-        if let t = animFocusTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     // MARK: - Grid Layout

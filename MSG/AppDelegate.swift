@@ -6,7 +6,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Subsystems
 
     private let settings = Settings.shared
-    private let systemState = SystemState()
     private var indicator: Indicator!
     private var settingsMenu: SettingsMenu!
 
@@ -29,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         requestAccessibilityIfNeeded()
 
-        indicator = Indicator(settings: settings, systemState: systemState)
+        indicator = Indicator(settings: settings)
         indicator.start()
 
         settingsMenu = SettingsMenu(settings: settings)
@@ -49,14 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.onStatusBarClicked = { [weak self] in
             self?.showSettingsMenu()
         }
-
-        systemState.onChange = { [weak self] in
-            self?.indicator.refresh()
-        }
-        systemState.didStabilize = { [weak self] in
-            self?.indicator.applySettings()
-        }
-        systemState.start()
 
         rebuildCornerWindows()
 
