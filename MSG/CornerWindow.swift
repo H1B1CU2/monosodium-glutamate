@@ -43,7 +43,7 @@ final class CornerWindow: NSWindow {
     }
 
     private var fadeTimer: Timer?
-    private var lastSkipTop: Bool?
+    private var lastMenuBarHidden: Bool?
 
     func updateFrame() {
         setFrame(targetScreen.frame, display: true)
@@ -52,10 +52,16 @@ final class CornerWindow: NSWindow {
     }
 
     func redraw(skipTop: Bool = false) {
-        lastSkipTop = skipTop
+        let menuHidden = !NSMenu.menuBarVisible()
+        let fsChanged = lastMenuBarHidden != nil && menuHidden != lastMenuBarHidden
+        lastMenuBarHidden = menuHidden
         view.skipTopCorners = skipTop
         view.needsDisplay = true
         view.display()
+        // Animate only when entering/leaving fullscreen (menu bar visibility changes)
+        if fsChanged {
+            animateSkipChange(hide: menuHidden)
+        }
     }
 
     private func animateSkipChange(hide: Bool) {
