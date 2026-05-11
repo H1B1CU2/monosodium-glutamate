@@ -93,6 +93,7 @@ final class Indicator {
     // (polled every 0.3s) hasn't caught up yet. This cooldown bridges
     // the gap. During the cooldown, no state mutations or animations.
     private var mcExitCooldownEnd: TimeInterval = 0
+    private var mcCooldownTimer: Timer?
 
     func start() {
         statusItem.button?.target = self
@@ -141,6 +142,7 @@ final class Indicator {
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
 
         mcExitCooldownEnd = 0
+        mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
     }
 
     @objc private func buttonClicked(_ sender: NSStatusBarButton) {
@@ -226,14 +228,23 @@ final class Indicator {
         if isMissionControlNow {
             // Dock is frontmost right now — schedule a cooldown to start
             // when it drops.
+            mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
             mcExitCooldownEnd = -1 // marker: "waiting for Dock to drop"
         } else if mcExitCooldownEnd == -1 {
             // Dock just dropped — start the 1s cooldown
-            mcExitCooldownEnd = ProcessInfo.processInfo.systemUptime + 1.0
+            let duration: TimeInterval = 1.0
+            mcExitCooldownEnd = ProcessInfo.processInfo.systemUptime + duration
+            mcCooldownTimer?.invalidate()
+            mcCooldownTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+                self?.mcExitCooldownEnd = 0
+                self?.mcCooldownTimer = nil
+                self?.refresh()
+            }
         } else if mcExitCooldownEnd > 0 {
-            // Cooldown running — check if expired
+            // Cooldown running — check if expired (belt-and-suspenders with timer)
             if ProcessInfo.processInfo.systemUptime >= mcExitCooldownEnd {
                 mcExitCooldownEnd = 0
+                mcCooldownTimer?.invalidate(); mcCooldownTimer = nil
             }
         }
 
