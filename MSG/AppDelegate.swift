@@ -113,14 +113,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func redrawCornerWindows() {
-        if settings.hideInMissionControl && isMissionControlActive() {
-            for win in cornerWindows { win.orderOut(nil) }
-        } else {
-            for win in cornerWindows {
-                win.updateFrame()
-                if !win.isVisible { win.orderFront(nil) }
-                win.redraw()
-            }
+        let inMC = isMissionControlActive()
+        for win in cornerWindows {
+            win.updateFrame()
+            let isBuiltin = win.targetScreen.isBuiltin
+            let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
+            // During MC the menu bar is visible. If top corners sit below the
+            // menu bar they briefly overlap — hide only those, keep the rest.
+            let hideTopInMC = inMC && underBar
+            win.redraw(skipTop: hideTopInMC)
+            if !win.isVisible { win.orderFront(nil) }
         }
     }
 

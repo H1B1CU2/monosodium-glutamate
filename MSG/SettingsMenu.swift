@@ -163,12 +163,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         updateExternalMonitorVisibility(animated: false)
 
-        menu.addItem(.separator())
-
-        addToggleItem("Hide Corners in Mission Control",
-                      state: settings.hideInMissionControl,
-                      action: #selector(hideMCToggle(_:)))
-
         // ── Quit ────────────────────
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
@@ -409,6 +403,5 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
     @objc func extMonitorToggle(_ sender: NSButton) { settings.externalMonitorCorners = (sender.state == .on) }
-    @objc func hideMCToggle(_ sender: NSButton)  { settings.hideInMissionControl = (sender.state == .on) }
-    @objc func quitApp()                         { NSApplication.shared.terminate(nil) }
+    @objc func quitApp() { NSApplication.shared.terminate(nil) }
 }
