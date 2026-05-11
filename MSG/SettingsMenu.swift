@@ -355,12 +355,21 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc private func extTopToggleUUID(_ sender: NSButton) {
         guard let uuid = sender.superview?.identifier?.rawValue else { return }
         settings.setExtTopCornersEnabled(sender.state == .on, for: uuid)
-        updateExtSliderVisibility(animated: true)
+        updateExtSliderForUUID(uuid)
     }
     @objc private func extBottomToggleUUID(_ sender: NSButton) {
         guard let uuid = sender.superview?.identifier?.rawValue else { return }
         settings.setExtBottomCornersEnabled(sender.state == .on, for: uuid)
-        updateExtSliderVisibility(animated: true)
+        updateExtSliderForUUID(uuid)
+    }
+
+    private func updateExtSliderForUUID(_ uuid: String) {
+        let visible = settings.extTopCornersEnabled(for: uuid) || settings.extBottomCornersEnabled(for: uuid)
+        for item in externalSectionItems {
+            guard item.view?.identifier?.rawValue == uuid else { continue }
+            animateItemVisibility(item, visible: visible, animated: true)
+            break
+        }
     }
     @objc private func extRadiusChangedUUID(_ sender: NSSlider) {
         guard let uuid = sender.superview?.identifier?.rawValue else { return }
