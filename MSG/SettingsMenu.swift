@@ -419,6 +419,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         settings.mirrorMainDisplay = (sender.state == .on)
         updateExtTogglesVisibility(animated: true)
         updateExtSliderVisibility(animated: true)
+        // Force menu rebuild so corner selection state reflects mirror immediately
+        menu.update()
     }
     @objc func posEdge()                         { settings.topCornersUnderMenuBar = false }
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
