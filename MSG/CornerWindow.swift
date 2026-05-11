@@ -91,7 +91,11 @@ final class CornerWindow: NSWindow {
     }
 
     /// One-shot grow-in from zero on first appearance.
+    /// Only animates when menu bar is hidden (fullscreen) — instant on desktop.
     func animateIn() {
+        let menuHidden = !NSMenu.menuBarVisible()
+        if !menuHidden { view.animProgress = 1.0; return }
+        lastMenuBarHidden = menuHidden
         fadeTimer?.invalidate()
         view.animProgress = 0
         contentView?.alphaValue = 0
