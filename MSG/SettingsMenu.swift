@@ -130,30 +130,34 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll()
         externalHeaderItem = nil
 
-        let extName: String
-        if let builtIn = NSScreen.screens.first,
-           let ext = NSScreen.screens.first(where: { $0 != builtIn }) {
-            extName = "\(ext.localizedName) (\(displayPosition(for: ext, relativeTo: builtIn)))"
-        } else {
-            extName = "External Monitors"
-        }
-
-        addHeaderItem(extName, to: menu, indent: true)
+        addHeaderItem("External Monitors", to: menu)
         externalHeaderItem = menu.items.last
 
-        addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+        let builtIn = NSScreen.screens.first
+        let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
 
-        let extTopPosMenu = createPositionMenu(isExternal: true)
-        addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu)
-        extMirrorFadeItems.append(menu.items.last!)
+        if !externals.isEmpty {
+            for ext in externals {
+                let name = ext.localizedName
+                let pos = builtIn.map { displayPosition(for: ext, relativeTo: $0) } ?? ""
+                addHeaderItem("\(name) (\(pos))", to: menu, indent: true)
+                externalSectionItems.append(menu.items.last!)
+            }
 
-        addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)))
-        extMirrorFadeItems.append(menu.items.last!)
+            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
 
-        addSliderItem(value: settings.extCornerRadius, isExternal: true)
-        extMirrorFadeItems.append(menu.items.last!)
+            let extTopPosMenu = createPositionMenu(isExternal: true)
+            addToggleItem("Top Corners", state: settings.extTopCornersEnabled, action: #selector(extTopToggle(_:)), submenu: extTopPosMenu)
+            extMirrorFadeItems.append(menu.items.last!)
 
-        addSpaceItem()
+            addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled, action: #selector(extBottomToggle(_:)))
+            extMirrorFadeItems.append(menu.items.last!)
+
+            addSliderItem(value: settings.extCornerRadius, isExternal: true)
+            extMirrorFadeItems.append(menu.items.last!)
+
+            addSpaceItem()
+        }
 
         externalSepItem = NSMenuItem.separator()
         menu.addItem(externalSepItem!)
