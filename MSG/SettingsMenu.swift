@@ -12,8 +12,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var displayOrderItem: NSMenuItem?
     private var sliderItem: NSMenuItem?
     private var extSliderItem: NSMenuItem?
-    private var extTopToggleItem: NSMenuItem?
-    private var extBottomToggleItem: NSMenuItem?
     private var extMirrorFadeItems: [NSMenuItem] = []
 
     init(settings: Settings) {
@@ -33,6 +31,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         externalSectionItems.removeAll(); externalSepItem = nil
         extMirrorFadeItems.removeAll()
+        extToggleItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
         menu.autoenablesItems = false
@@ -141,12 +140,14 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
                 let extTopPosMenu = createExtPositionMenu(uuid: uuid)
                 addToggleItem("Top Corners", state: settings.extTopCornersEnabled(for: uuid),
-                              action: #selector(extTopToggleUUID(_:)), submenu: extTopPosMenu, isExtTop: true, uuid: uuid)
+                              action: #selector(extTopToggleUUID(_:)), submenu: extTopPosMenu, uuid: uuid)
+                extToggleItems.append(menu.items.last!)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
 
                 addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled(for: uuid),
-                              action: #selector(extBottomToggleUUID(_:)), isExtBottom: true, uuid: uuid)
+                              action: #selector(extBottomToggleUUID(_:)), uuid: uuid)
+                extToggleItems.append(menu.items.last!)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
 
@@ -270,7 +271,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return sub
     }
 
-    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, isExtTop: Bool = false, isExtBottom: Bool = false, uuid: String? = nil) {
+    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, uuid: String? = nil) {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         container.wantsLayer = true
@@ -288,8 +289,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         item.view = container
         item.submenu = submenu
         menu.addItem(item)
-        if isExtTop { extTopToggleItem = item }
-        if isExtBottom { extBottomToggleItem = item }
     }
 
     private func modelName() -> String {
@@ -413,10 +412,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             && (settings.extTopCornersEnabled || settings.extBottomCornersEnabled)
         animateItemVisibility(extSliderItem, visible: visible, animated: animated)
     }
+    private var extToggleItems: [NSMenuItem] = []
+
     private func updateExtTogglesVisibility(animated: Bool = true) {
         let visible = NSScreen.screens.count > 1 && !settings.mirrorMainDisplay
-        animateItemVisibility(extTopToggleItem, visible: visible, animated: animated)
-        animateItemVisibility(extBottomToggleItem, visible: visible, animated: animated)
+        for item in extToggleItems {
+            animateItemVisibility(item, visible: visible, animated: animated)
+        }
     }
 
     private func animateItemVisibility(_ item: NSMenuItem?, visible: Bool, animated: Bool = false) {
