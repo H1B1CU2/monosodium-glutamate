@@ -138,6 +138,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             externalHeaderItem = menu.items.last
 
             addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+            mirrorToggleItem = menu.items.last
 
             addSpaceItem()
 
@@ -506,12 +507,17 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         settings.extBottomCornersEnabled = (sender.state == .on)
         updateExtSliderVisibility(animated: true)
     }
+    private var mirrorToggleItem: NSMenuItem?
+
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
+        let mirroring = sender.state == .on
+        // Fade all external items EXCEPT the mirror toggle itself
+        for item in externalSectionItems where item != mirrorToggleItem {
+            animateItemVisibility(item, visible: !mirroring, animated: true)
+        }
         updateExtTogglesVisibility(animated: true)
         updateExtSliderVisibility(animated: true)
-        // Force menu rebuild so corner selection state reflects mirror immediately
-        menu.update()
     }
     @objc func posEdge()                         { settings.topCornersUnderMenuBar = false }
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
