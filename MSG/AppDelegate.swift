@@ -117,8 +117,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    private var mcRedrawTimer: Timer?
+
+    private func startMCRedrawPoll() {
+        guard mcRedrawTimer == nil else { return }
+        mcRedrawTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let inMC = self.isMissionControlActive()
+            for win in self.cornerWindows {
+                win.updateFrame()
+                let isBuiltin = win.targetScreen.isBuiltin
+                let underBar = isBuiltin ? self.settings.topCornersUnderMenuBar : self.settings.extTopCornersUnderMenuBar
+                win.redraw(skipTop: inMC && underBar)
+                if !win.isVisible { win.orderFront(nil) }
+            }
+            if !inMC {
+                self.mcRedrawTimer?.invalidate()
+                self.mcRedrawTimer = nil
+            }
+        }
+        if let t = mcRedrawTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
     private func redrawCornerWindows() {
         let inMC = isMissionControlActive()
+        if inMC { startMCRedrawPoll() }
         for win in cornerWindows {
             win.updateFrame()
             let isBuiltin = win.targetScreen.isBuiltin
