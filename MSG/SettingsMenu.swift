@@ -376,7 +376,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private func sliderLabelText(value: Int) -> NSAttributedString {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let color = NSColor.secondaryLabelColor
-        let full = NSMutableAttributedString(string: "Corner Radius: ", attributes: [
+        let full = NSMutableAttributedString(string: "Radius: ", attributes: [
             .font: font, .foregroundColor: color
         ])
         full.append(NSAttributedString(string: "\(value) px", attributes: [
@@ -388,7 +388,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private func updateSliderLabels(in container: NSView?, value: Double) {
         guard let c = container else { return }
         for v in c.subviews {
-            if let l = v as? NSTextField, l.attributedStringValue.string.hasPrefix("Corner Radius") {
+            if let l = v as? NSTextField, l.attributedStringValue.string.hasPrefix("Radius") {
                 l.attributedStringValue = sliderLabelText(value: Int(value))
             }
         }
