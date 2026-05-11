@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.onStatusBarClicked = { [weak self] in
             self?.showSettingsMenu()
         }
+        indicator.onMCStateChanged = { [weak self] in
+            self?.redrawCornerWindows()
+        }
 
         rebuildCornerWindows()
 
