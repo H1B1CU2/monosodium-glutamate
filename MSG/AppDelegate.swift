@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.redrawCornerWindows()
             case .indicator:
                 self.indicator.applySettings()
+                self.applyFocusDetectionMode()
             case .structural:
                 self.rebuildCornerWindows()
             }
