@@ -110,6 +110,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addHeaderItem("Cornermization", to: menu)
 
         let model = modelName()
+        addSpaceItem()
         addHeaderItem(model, to: menu, indent: true)
 
         let topPosMenu = createPositionMenu(isExternal: false)
