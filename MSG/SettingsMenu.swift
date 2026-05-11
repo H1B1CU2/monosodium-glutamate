@@ -317,11 +317,12 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         animateItemVisibility(sliderItem, visible: visible, animated: animated)
     }
     private func updateExtSliderVisibility(animated: Bool = true) {
-        let visible = !settings.mirrorMainDisplay && (settings.extTopCornersEnabled || settings.extBottomCornersEnabled)
+        let visible = NSScreen.screens.count > 1 && !settings.mirrorMainDisplay
+            && (settings.extTopCornersEnabled || settings.extBottomCornersEnabled)
         animateItemVisibility(extSliderItem, visible: visible, animated: animated)
     }
     private func updateExtTogglesVisibility(animated: Bool = true) {
-        let visible = !settings.mirrorMainDisplay
+        let visible = NSScreen.screens.count > 1 && !settings.mirrorMainDisplay
         animateItemVisibility(extTopToggleItem, visible: visible, animated: animated)
         animateItemVisibility(extBottomToggleItem, visible: visible, animated: animated)
     }
