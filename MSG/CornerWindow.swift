@@ -48,7 +48,6 @@ final class CornerWindow: NSWindow {
     }
 
     func redraw() {
-        view.skipTopCorners = false
         view.needsDisplay = true
     }
 }
@@ -58,7 +57,6 @@ final class CornerWindow: NSWindow {
 final class CornerView: NSView {
 
     var targetScreen: NSScreen
-    var skipTopCorners = false
     private let settings: Settings
 
     init(screen: NSScreen, settings: Settings) {
@@ -83,8 +81,7 @@ final class CornerView: NSView {
         NSColor.black.setFill()
 
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
-        // Skip top-below-bar corners during fullscreen or MC (menu bar visible in both cases)
-        let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
+        let skipTop = underBar && !NSMenu.menuBarVisible()
 
         if topEnabled && !skipTop {
             drawCorner(at: NSPoint(x: 0,     y: H - topY), radius: r, kind: .topLeft)
