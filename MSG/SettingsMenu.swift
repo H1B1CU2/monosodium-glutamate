@@ -137,11 +137,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             addHeaderItem("External Monitors", to: menu)
             externalHeaderItem = menu.items.last
 
-            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
-            mirrorToggleItem = menu.items.last
-
-            addSpaceItem()
-
             for ext in externals {
                 guard let uuid = screenUUID(ext) else { continue }
                 let name = ext.localizedName
@@ -166,6 +161,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
                 addSpaceItem()
             }
+
+            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+            mirrorToggleItem = menu.items.last
         }
 
         externalSepItem = NSMenuItem.separator()
