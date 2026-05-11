@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.onStatusBarClicked = { [weak self] in
             self?.showSettingsMenu()
         }
+        indicator.onMCStateChanged = { [weak self] in
+            self?.redrawCornerWindows()
+        }
 
         rebuildCornerWindows()
 
@@ -102,10 +105,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func isMissionControlActive() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        for w in list {
+            guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            if layer > 0 && layer < 1000 { return true }
+        }
+        return false
+    }
+
     private func redrawCornerWindows() {
+        let inMC = isMissionControlActive()
         for win in cornerWindows {
             win.updateFrame()
-            win.redraw()
+            let isBuiltin = win.targetScreen.isBuiltin
+            let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
+            win.redraw(skipTop: inMC && underBar)
             if !win.isVisible { win.orderFront(nil) }
         }
     }

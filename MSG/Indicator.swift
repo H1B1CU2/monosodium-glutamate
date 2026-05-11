@@ -21,6 +21,7 @@ final class Indicator {
     private let renderer: IndicatorRenderer
 
     var onStatusBarClicked: (() -> Void)?
+    var onMCStateChanged: (() -> Void)?
 
     // MARK: Animation state
 
@@ -92,6 +93,7 @@ final class Indicator {
 
         systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
         systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
+        systemState.onChange = { [weak self] in self?.onMCStateChanged?() }
         systemState.start()
 
         refresh()

@@ -35,8 +35,9 @@ final class CornerWindow: NSWindow {
         isOpaque           = false
         hasShadow          = false
         ignoresMouseEvents = true
-        level              = .init(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        // Above everything including Mission Control overlays
+        level              = NSWindow.Level(Int(CGWindowLevelForKey(.maximumWindow)) + 100)
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
         contentView = view
     }
@@ -49,9 +50,10 @@ final class CornerWindow: NSWindow {
         view.needsDisplay = true
     }
 
-    func redraw() {
+    func redraw(skipTop: Bool = false) {
+        view.skipTopCorners = skipTop
         view.needsDisplay = true
-        view.displayIfNeeded()
+        view.display()
     }
 
     /// Animate corners growing from screen edge inward (radius 0→target)
@@ -87,6 +89,7 @@ final class CornerWindow: NSWindow {
 final class CornerView: NSView {
 
     var targetScreen: NSScreen
+    var skipTopCorners = false
     var animProgress: CGFloat = 1.0  // 0→1 during grow-in animation
     private let settings: Settings
 
@@ -113,7 +116,7 @@ final class CornerView: NSView {
         NSColor.black.setFill()
 
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
-        let skipTop = underBar && !NSMenu.menuBarVisible()
+        let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
 
         if topEnabled && !skipTop {
             drawCorner(at: NSPoint(x: 0,     y: H - topY), radius: r, kind: .topLeft)
