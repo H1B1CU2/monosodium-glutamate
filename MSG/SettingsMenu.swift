@@ -236,15 +236,16 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(slider)
 
         let title = NSTextField(labelWithAttributedString: sliderLabelText(value: Int(value)))
+        title.alignment = .right
         title.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(title)
 
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             title.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             slider.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
-            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20)
         ])
         item.view = container
