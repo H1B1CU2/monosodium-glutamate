@@ -55,17 +55,18 @@ final class CornerWindow: NSWindow {
         view.displayIfNeeded()
     }
 
-    /// Fade the window in over `duration` seconds. Use negative to fade out.
+    /// Fade the corner content in/out using the content view's alpha,
+    /// which is reliably animatable unlike NSWindow.alphaValue on borderless windows.
     func animateAlpha(to target: CGFloat, duration: TimeInterval = 0.3) {
         fadeTimer?.invalidate()
-        let startAlpha = alphaValue
+        let startAlpha = view.alphaValue
         let delta = target - startAlpha
         let start = ProcessInfo.processInfo.systemUptime
         fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let elapsed = ProcessInfo.processInfo.systemUptime - start
             let progress = min(1.0, elapsed / duration)
-            self.alphaValue = startAlpha + delta * CGFloat(progress)
+            self.view.alphaValue = startAlpha + delta * CGFloat(progress)
             if progress >= 1.0 {
                 t.invalidate()
                 self.fadeTimer = nil
