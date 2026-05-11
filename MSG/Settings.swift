@@ -30,7 +30,7 @@ enum DisplayOrderMode: String, CaseIterable {
 enum FocusDetectionMode: String, CaseIterable {
     case off     = "Off"
     case click   = "Click Detection"
-    case dynamic = "Dynamic Detection"
+    case dynamic = "Pointer Position Detection"
 }
 
 // MARK: - Settings
