@@ -153,8 +153,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
                 addExtSliderItem(value: settings.extCornerRadius(for: uuid), uuid: uuid)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
-
-                addSpaceItem()
             }
 
             addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
