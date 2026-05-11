@@ -34,6 +34,21 @@ struct SpaceInfo: Equatable {
     }
 }
 
+// Write diagnostics to a file so we don't depend on stdout buffering.
+private let diagPath = "/tmp/msg_diagnostics.log"
+private func diag(_ msg: String) {
+    let line = msg + "\n"
+    if let data = line.data(using: .utf8) {
+        if let fh = FileHandle(forWritingAtPath: diagPath) {
+            fh.seekToEndOfFile()
+            fh.write(data)
+            fh.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: diagPath, contents: data)
+        }
+    }
+}
+
 // MARK: - SpaceWatcher
 
 final class SpaceWatcher {
@@ -44,6 +59,14 @@ final class SpaceWatcher {
     )
 
     var onChange: (() -> Void)?
+
+    // Stabilisation: when a display's current value changes, we hold the old
+    // value for `stabiliseInterval` seconds. Only if the new value persists
+    // for the full interval do we accept it. This filters the CGS oscillation
+    // seen during MC exit (see diagnostics log).
+    private let stabiliseInterval: TimeInterval = 0.5
+    private var stabiliseWork: DispatchWorkItem?
+    private var stabilisePending: SpaceInfo?
 
     var prioritizeMain: Bool = true {
         didSet { if oldValue != prioritizeMain { updateInfo() } }
@@ -95,7 +118,7 @@ final class SpaceWatcher {
         if diagnosticsEnabled {
             let now = ProcessInfo.processInfo.systemUptime
             let since = lastDiagTime > 0 ? String(format: "%.3f", now - lastDiagTime) : "—"
-            print("[SW] 🔔 notification fired  (+\(since)s since last read)")
+            diag("[SW] 🔔 notification fired  (+\(since)s since last read)")
         }
         debounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -111,7 +134,7 @@ final class SpaceWatcher {
             let now = ProcessInfo.processInfo.systemUptime
             let since = lastDiagTime > 0 ? String(format: "%.3f", now - lastDiagTime) : "—"
             lastDiagTime = now
-            print("[SW] updateInfo() called  (+\(since)s since last read)  force=\(forceNotify)  debounced=\(debounceWork != nil)")
+            diag("[SW] updateInfo() called  (+\(since)s since last read)  force=\(forceNotify)  debounced=\(debounceWork != nil)")
         }
 
         let newInfo = Self.readSpaceInfo(
@@ -122,19 +145,105 @@ final class SpaceWatcher {
             previous: currentInfo,
             diagnostics: diagnosticsEnabled
         )
-        guard newInfo != currentInfo else {
-            if diagnosticsEnabled { print("[SW] no change, skipping onChange") }
-            if forceNotify { DispatchQueue.main.async { self.onChange?() } }
+
+        // Screen parameter changes or force-notify: accept immediately
+        if forceNotify {
+            if newInfo != currentInfo {
+                if diagnosticsEnabled {
+                    diag("[SW] force/notify — accepting immediately")
+                    diag("[SW]   old: \(currentInfo)")
+                    diag("[SW]   new: \(newInfo)")
+                    print("")
+                }
+                currentInfo = newInfo
+                DispatchQueue.main.async { self.onChange?() }
+            }
             return
         }
-        if diagnosticsEnabled {
-            print("[SW] CHANGED — firing onChange")
-            print("[SW]   old: \(currentInfo)")
-            print("[SW]   new: \(newInfo)")
-            print("")
+
+        guard newInfo != currentInfo else {
+            if diagnosticsEnabled { diag("[SW] no change") }
+            return
         }
-        currentInfo = newInfo
-        DispatchQueue.main.async { self.onChange?() }
+
+        // A change was detected. Start/restart the stabilisation timer.
+        // During the stabilisation window we keep the OLD value visible.
+        // Only when the new value has been stable for stabiliseInterval
+        // do we commit it.
+        stabilisePending = newInfo
+        stabiliseWork?.cancel()
+
+        if diagnosticsEnabled {
+            let oldCur = currentInfo.displays.map { $0.current }
+            let newCur = newInfo.displays.map { $0.current }
+            diag("[SW] pending stabilisation: \(oldCur)→\(newCur)")
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let pending = self.stabilisePending else { return }
+            self.stabiliseWork = nil
+            self.stabilisePending = nil
+
+            // Read CGS one more time to confirm the change is real
+            let confirm = Self.readSpaceInfo(
+                prioritizeMain: self.prioritizeMain,
+                customOrder: self.customOrder,
+                focusDetection: self.focusDetection,
+                focusedUUID: self.currentFocusedUUID,
+                previous: self.currentInfo,
+                diagnostics: self.diagnosticsEnabled
+            )
+
+            let pendingCur = pending.displays.map { $0.current }
+            let confirmCur = confirm.displays.map { $0.current }
+
+            if pendingCur == confirmCur && pendingCur != self.currentInfo.displays.map({ $0.current }) {
+                // The new values persisted — this is a real change.
+                if self.diagnosticsEnabled {
+                    diag("[SW] stabilised — accepting \(pendingCur)")
+                    print("")
+                }
+                self.currentInfo = confirm
+                DispatchQueue.main.async { self.onChange?() }
+            } else if pendingCur != confirmCur {
+                // Values changed again during the window — restart stabilisation
+                if self.diagnosticsEnabled {
+                    diag("[SW] oscillation detected: \(pendingCur)→\(confirmCur) — restarting")
+                }
+                self.stabilisePending = confirm
+                let rework = DispatchWorkItem { [weak self] in
+                    guard let self, let p = self.stabilisePending else { return }
+                    self.stabiliseWork = nil
+                    self.stabilisePending = nil
+                    let final = Self.readSpaceInfo(
+                        prioritizeMain: self.prioritizeMain,
+                        customOrder: self.customOrder,
+                        focusDetection: self.focusDetection,
+                        focusedUUID: self.currentFocusedUUID,
+                        previous: self.currentInfo,
+                        diagnostics: self.diagnosticsEnabled
+                    )
+                    if final.displays.map({ $0.current }) == p.displays.map({ $0.current }),
+                       final != self.currentInfo {
+                        if self.diagnosticsEnabled {
+                            diag("[SW] stabilised on retry — accepting")
+                            print("")
+                        }
+                        self.currentInfo = final
+                        DispatchQueue.main.async { self.onChange?() }
+                    } else if self.diagnosticsEnabled {
+                        diag("[SW] giving up — still oscillating, keeping current")
+                        print("")
+                    }
+                }
+                self.stabiliseWork = rework
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.stabiliseInterval, execute: rework)
+            } else {
+                if self.diagnosticsEnabled { diag("[SW] no real change after stabilise") }
+            }
+        }
+        stabiliseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + stabiliseInterval, execute: work)
     }
 
     // MARK: - CGS read
@@ -157,11 +266,11 @@ final class SpaceWatcher {
         if diagnostics {
             let mc = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.dock"
             let fs = !NSMenu.menuBarVisible()
-            print("[SW] ── CGS Read ───────────────────────")
-            print("[SW]   CGSGetActiveSpace = \(activeID)")
-            print("[SW]   Dock frontmost = \(mc)   menuBarHidden = \(fs)")
-            print("[SW]   display count = \(displayDicts.count)")
-            print("[SW]   --------------------------------")
+            diag("[SW] ── CGS Read ───────────────────────")
+            diag("[SW]   CGSGetActiveSpace = \(activeID)")
+            diag("[SW]   Dock frontmost = \(mc)   menuBarHidden = \(fs)")
+            diag("[SW]   display count = \(displayDicts.count)")
+            diag("[SW]   --------------------------------")
             for (di, dict) in displayDicts.enumerated() {
                 let ident = dict["Display Identifier"] as? String ?? "?"
                 let spaces = dict["Spaces"] as? [[String: Any]] ?? []
@@ -176,9 +285,9 @@ final class SpaceWatcher {
                     let isFS = s["TileLayoutManager"] is [String: Any]
                     spaceList.append("msid=\(msid) i64=\(i64)\(isFS ? " FS" : "")")
                 }
-                print("[SW]   Display[\(di)] \(ident)")
-                print("[SW]     CurrentSpace: ManagedSpaceID=\(csManaged ?? -1)  id64=\(csID64 ?? -1)")
-                print("[SW]     Spaces: \(spaceList.joined(separator: " | "))")
+                diag("[SW]   Display[\(di)] \(ident)")
+                diag("[SW]     CurrentSpace: ManagedSpaceID=\(csManaged ?? -1)  id64=\(csID64 ?? -1)")
+                diag("[SW]     Spaces: \(spaceList.joined(separator: " | "))")
             }
         }
 
@@ -301,19 +410,19 @@ final class SpaceWatcher {
             SpaceInfo(displays: displays, activeDisplayIndex: activeIdx, mainDisplayIndex: mainIdx)
 
         if diagnostics {
-            print("[SW]   ── Computed ──")
+            diag("[SW]   ── Computed ──")
             for (i, d) in displays.enumerated() {
                 let tag = i == activeIdx ? "★" : " "
-                print("[SW]   \(tag) display[\(i)]: current=\(d.current) total=\(d.total) uuid=\(d.uuid.prefix(8))...")
+                diag("[SW]   \(tag) display[\(i)]: current=\(d.current) total=\(d.total) uuid=\(d.uuid.prefix(8))...")
             }
             if let prev = previous {
                 let prevSpaces = prev.displays.map { $0.current }
                 let curSpaces = result.displays.map { $0.current }
                 let prevActive = prev.activeDisplayIndex
                 let curActive = result.activeDisplayIndex
-                print("[SW]   diffs: spaces \(prevSpaces)→\(curSpaces)  activeIdx \(prevActive)→\(curActive)")
+                diag("[SW]   diffs: spaces \(prevSpaces)→\(curSpaces)  activeIdx \(prevActive)→\(curActive)")
             }
-            print("[SW] ── End ──\n")
+            diag("[SW] ── End ──\n")
         }
 
         return result

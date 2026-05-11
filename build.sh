@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────
-#  build.sh — compile MSG into a .app bundle
-#  Usage:  ./build.sh
-#  Output: ./build/MSG.app
-# ─────────────────────────────────────────────────────────────────
 set -e
 
 APP_NAME="MSG"
-BUILD_DIR="./build"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/MSG"
+BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -21,15 +18,15 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 echo "▸ Compiling Swift sources..."
 swiftc \
-    main.swift \
-    Settings.swift \
-    SystemState.swift \
-    SpaceWatcher.swift \
-    Indicator.swift \
-    IndicatorRenderer.swift \
-    CornerWindow.swift \
-    AppDelegate.swift \
-    SettingsMenu.swift \
+    "$SRC_DIR/main.swift" \
+    "$SRC_DIR/Settings.swift" \
+    "$SRC_DIR/SystemState.swift" \
+    "$SRC_DIR/SpaceWatcher.swift" \
+    "$SRC_DIR/Indicator.swift" \
+    "$SRC_DIR/IndicatorRenderer.swift" \
+    "$SRC_DIR/CornerWindow.swift" \
+    "$SRC_DIR/AppDelegate.swift" \
+    "$SRC_DIR/SettingsMenu.swift" \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos12.0 \
@@ -37,10 +34,8 @@ swiftc \
     -O
 
 echo "▸ Copying Info.plist..."
-cp Info.plist "$CONTENTS/Info.plist"
+cp "$SRC_DIR/Info.plist" "$CONTENTS/Info.plist"
 
-echo ""
 echo "✅  Built: $APP_BUNDLE"
-echo ""
 echo "To run:  open $APP_BUNDLE"
 echo "Or:      $MACOS/$APP_NAME"
