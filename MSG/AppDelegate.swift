@@ -126,10 +126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let inMC = self.isMissionControlActive()
             for win in self.cornerWindows {
                 win.updateFrame()
+                if !win.isVisible { win.orderFront(nil) }
                 let isBuiltin = win.targetScreen.isBuiltin
                 let underBar = isBuiltin ? self.settings.topCornersUnderMenuBar : self.settings.extTopCornersUnderMenuBar
                 win.redraw(skipTop: inMC && underBar)
-                if !win.isVisible { win.orderFront(nil) }
             }
             if !inMC {
                 self.mcRedrawTimer?.invalidate()
@@ -144,10 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if inMC { startMCRedrawPoll() }
         for win in cornerWindows {
             win.updateFrame()
+            if !win.isVisible { win.orderFront(nil) }
             let isBuiltin = win.targetScreen.isBuiltin
             let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
             win.redraw(skipTop: inMC && underBar)
-            if !win.isVisible { win.orderFront(nil) }
         }
     }
 
