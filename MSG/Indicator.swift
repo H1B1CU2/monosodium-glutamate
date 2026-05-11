@@ -94,8 +94,32 @@ final class Indicator {
         spaceWatcher.start()
 
         systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
+        systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
 
         refresh()
+    }
+
+    /// Kill every in-flight animation timer so transient reads don't feed into
+    /// render callbacks while the system is unstable.
+    private func killAllAnimations() {
+        animSpacePillTimer?.invalidate(); animSpacePillTimer = nil
+        animSpacePillProgress = 1.0; animSpacePillDisplay = -1
+        animSpacePillOldActive = 0; animSpacePillNewActive = 0
+        animSpacePillCaptured = nil
+
+        animTextTimer?.invalidate(); animTextTimer = nil
+        animTextProgress = 1.0; animTextDisplay = -1
+        animTextOldActive = -1; animTextNewActive = -1
+
+        animLayoutTimer?.invalidate(); animLayoutTimer = nil
+        animLayoutProgress = 1.0
+
+        animRowMorphTimer?.invalidate(); animRowMorphTimer = nil
+        animRowMorphPending?.cancel(); animRowMorphPending = nil
+        animRowMorphProgress = 1.0
+
+        animFocusTimer?.invalidate(); animFocusTimer = nil
+        animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
     }
 
     @objc private func buttonClicked(_ sender: NSStatusBarButton) {

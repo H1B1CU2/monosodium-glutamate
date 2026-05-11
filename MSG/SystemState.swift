@@ -28,6 +28,10 @@ final class SystemState {
     /// Cached Mission Control flag.
     private(set) var isMissionControl: Bool = false
 
+    /// Fired when entering unstable state (MC open or fullscreen detected).
+    /// Consumers should kill any in-flight animations immediately.
+    var didEnterUnstable: (() -> Void)?
+
     /// Fired on any stability/fullscreen change. Consumers re-render.
     var onChange: (() -> Void)?
 
@@ -44,7 +48,8 @@ final class SystemState {
     private var quiesceWorkItem: DispatchWorkItem?
 
     /// Time after MC exits that we still consider unstable. Lets CGS settle.
-    private let quiesceWindowSec: TimeInterval = 0.45
+    /// Fullscreen transitions cause longer CGS turbulence, hence the generous window.
+    private let quiesceWindowSec: TimeInterval = 1.0
 
     func start() {
         let nc = NSWorkspace.shared.notificationCenter
@@ -91,7 +96,10 @@ final class SystemState {
         let wasStable = isStable
         isMissionControl = true
         isStable = false
-        if wasStable { onChange?() }
+        if wasStable {
+            didEnterUnstable?()
+            onChange?()
+        }
     }
 
     private func scheduleStabilize() {
@@ -117,7 +125,20 @@ final class SystemState {
     private func refreshDerivedState() {
         let fs = Self.detectFullscreen()
         if fs != isFullscreen {
+            let wasStable = isStable
             isFullscreen = fs
+            // Entering fullscreen → extend the unstable window. CGS is turbulent
+            // during fullscreen transitions just like MC transitions.
+            if fs {
+                quiesceWorkItem?.cancel(); quiesceWorkItem = nil
+                isStable = false
+                if wasStable {
+                    didEnterUnstable?()
+                }
+            } else if !isMissionControl {
+                // Fullscreen just ended — schedule stabilization
+                scheduleStabilize()
+            }
             onChange?()
         }
     }
