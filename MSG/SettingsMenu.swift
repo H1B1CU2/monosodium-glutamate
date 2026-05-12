@@ -1,5 +1,4 @@
 import AppKit
-import IOKit
 
 final class SettingsMenu: NSObject, NSMenuDelegate {
 
@@ -171,6 +170,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         updateExternalMonitorVisibility(animated: false)
         updateAllVisibilities(animated: false)
 
+        addSpaceItem()
         // ── Quit ────────────────────
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
@@ -300,23 +300,27 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(item)
     }
 
-    private func modelName() -> String {
-        let port: mach_port_t
-        if #available(macOS 12.0, *) {
-            port = kIOMainPortDefault
-        } else {
-            port = kIOMasterPortDefault
-        }
-        let service = IOServiceGetMatchingService(port, IOServiceMatching("IOPlatformExpertDevice"))
-        defer { IOObjectRelease(service) }
-        if service != 0,
-           let data = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Data {
-            let name = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .controlCharacters)
-                .trimmingCharacters(in: .whitespaces) ?? ""
-            if !name.isEmpty { return name }
-        }
+    private static let cachedModelName: String = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        process.arguments = ["SPHardwareDataType"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if let output = String(data: data, encoding: .utf8),
+               let line = output.components(separatedBy: "\n").first(where: { $0.contains("Model Name") }),
+               let name = line.split(separator: ":").last {
+                return name.trimmingCharacters(in: .whitespaces)
+            }
+        } catch {}
         return "Mac"
+    }()
+
+    private func modelName() -> String {
+        Self.cachedModelName
     }
 
     private func screenUUID(_ screen: NSScreen) -> String? {
