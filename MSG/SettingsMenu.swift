@@ -112,8 +112,17 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addHeaderItem("Cornermization", to: menu)
 
         let model = modelName()
+        let builtIn = NSScreen.screens.first
+        let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
+
         addSpaceItem()
-        addHeaderItem(model, to: menu, indent: true)
+        addHeaderItem("\(model) Display", to: menu, indent: true)
+
+        // Mirror toggle at top of built-in, only when external connected
+        if !externals.isEmpty {
+            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+            mirrorToggleItem = menu.items.last
+        }
 
         let topPosMenu = createPositionMenu(isExternal: false)
         addToggleItem("Top Corners", state: settings.topCornersEnabled, action: #selector(topToggle(_:)), submenu: topPosMenu)
@@ -126,9 +135,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         // ── External Monitors ───────
         externalSectionItems.removeAll()
-
-        let builtIn = NSScreen.screens.first
-        let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
 
         if !externals.isEmpty {
             for ext in externals {
@@ -155,9 +161,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
             }
-
-            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
-            mirrorToggleItem = menu.items.last
         }
 
         externalSepItem = NSMenuItem.separator()
