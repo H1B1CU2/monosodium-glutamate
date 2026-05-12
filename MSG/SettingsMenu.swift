@@ -170,7 +170,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         updateExternalMonitorVisibility(animated: false)
         updateAllVisibilities(animated: false)
 
-        addSpaceItem()
         // ── Quit ────────────────────
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
@@ -212,7 +211,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     private func addSpaceItem() {
         let item = NSMenuItem()
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 8))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 12))
         item.view = v
         menu.addItem(item)
     }
