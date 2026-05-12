@@ -169,6 +169,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.append(externalSepItem!)
 
         updateExternalMonitorVisibility(animated: false)
+        updateAllVisibilities(animated: false)
 
         // ── Quit ────────────────────
         menu.addItem(.separator())
@@ -309,18 +310,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let service = IOServiceGetMatchingService(port, IOServiceMatching("IOPlatformExpertDevice"))
         defer { IOObjectRelease(service) }
         if service != 0,
-           let name = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
-            if let paren = name.firstIndex(of: "(") {
-                return String(name[..<paren]).trimmingCharacters(in: .whitespaces)
-            }
-            return name
+           let data = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Data {
+            let name = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .controlCharacters)
+                .trimmingCharacters(in: .whitespaces) ?? ""
+            if !name.isEmpty { return name }
         }
-        // Fallback
-        var size = 0
-        sysctlbyname("hw.model", nil, &size, nil, 0)
-        var model = [CChar](repeating: 0, count: size)
-        sysctlbyname("hw.model", &model, &size, nil, 0)
-        return String(cString: model)
+        return "Mac"
     }
 
     private func screenUUID(_ screen: NSScreen) -> String? {
