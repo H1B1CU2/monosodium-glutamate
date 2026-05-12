@@ -1,4 +1,5 @@
 import AppKit
+import IOKit
 
 final class SettingsMenu: NSObject, NSMenuDelegate {
 
@@ -300,13 +301,16 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         var model = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &model, &size, nil, 0)
         let id = String(cString: model)
-        if id.contains("MacBookAir")  { return "MacBook Air" }
-        if id.contains("MacBookPro")  { return "MacBook Pro" }
-        if id.contains("Macmini")     { return "Mac mini" }
-        if id.contains("iMac")        { return "iMac" }
-        if id.contains("MacStudio")   { return "Mac Studio" }
-        if id.contains("MacPro")      { return "Mac Pro" }
-        return "Built-in Display"
+        // Fetch the marketing name via IOKit
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        if service != 0 {
+            defer { IOObjectRelease(service) }
+            if let productName = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
+                return productName
+            }
+        }
+        // Fallback to hw.model identifier
+        return id
     }
 
     private func screenUUID(_ screen: NSScreen) -> String? {
