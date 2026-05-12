@@ -296,10 +296,19 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     private func modelName() -> String {
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        let port: mach_port_t
+        if #available(macOS 12.0, *) {
+            port = kIOMainPortDefault
+        } else {
+            port = kIOMasterPortDefault
+        }
+        let service = IOServiceGetMatchingService(port, IOServiceMatching("IOPlatformExpertDevice"))
         defer { IOObjectRelease(service) }
         if service != 0,
            let name = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
+            if let paren = name.firstIndex(of: "(") {
+                return String(name[..<paren]).trimmingCharacters(in: .whitespaces)
+            }
             return name
         }
         // Fallback
