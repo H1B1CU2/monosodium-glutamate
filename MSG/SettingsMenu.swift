@@ -1,4 +1,5 @@
 import AppKit
+import IOKit
 
 final class SettingsMenu: NSObject, NSMenuDelegate {
 
@@ -120,7 +121,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         // Mirror toggle at top of built-in, only when external connected
         if !externals.isEmpty {
-            addToggleItem("Mirror \(model) settings", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+            addToggleItem("Use the same setting for external display", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
             mirrorToggleItem = menu.items.last
         }
 
@@ -295,19 +296,18 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     private func modelName() -> String {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        defer { IOObjectRelease(service) }
+        if service != 0,
+           let name = IORegistryEntryCreateCFProperty(service, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String {
+            return name
+        }
+        // Fallback
         var size = 0
         sysctlbyname("hw.model", nil, &size, nil, 0)
         var model = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &model, &size, nil, 0)
-        let id = String(cString: model)
-        if id.contains("MacBookAir")  { return "MacBook Air" }
-        if id.contains("MacBookPro")  { return "MacBook Pro" }
-        if id.contains("MacBook")     { return "MacBook" }
-        if id.contains("Macmini")     { return "Mac mini" }
-        if id.contains("iMac")        { return "iMac" }
-        if id.contains("MacStudio")   { return "Mac Studio" }
-        if id.contains("MacPro")      { return "Mac Pro" }
-        return id
+        return String(cString: model)
     }
 
     private func screenUUID(_ screen: NSScreen) -> String? {

@@ -31,6 +31,7 @@ swiftc \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos12.0 \
     -framework AppKit \
+    -framework IOKit \
     -O
 
 echo "▸ Copying Info.plist..."
