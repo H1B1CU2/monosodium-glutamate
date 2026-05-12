@@ -275,7 +275,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         container.wantsLayer = true
-        if let uuid { container.identifier = NSUserInterfaceItemIdentifier(uuid) }
+        if let uuid { container.identifier = NSUserInterfaceItemIdentifier("toggle_\(uuid)") }
         let button = NSButton(checkboxWithTitle: title, target: self, action: action)
         button.state = state ? .on : .off
         button.font = .menuFont(ofSize: 0)
@@ -317,7 +317,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
         container.wantsLayer = true
-        container.identifier = NSUserInterfaceItemIdentifier(uuid)
+        container.identifier = NSUserInterfaceItemIdentifier("slider_\(uuid)")
         let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
                               target: self, action: #selector(extRadiusChangedUUID(_:)))
         slider.controlSize = .mini
@@ -357,12 +357,16 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func extTopToggleUUID(_ sender: NSButton) {
-        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        guard let raw = sender.superview?.identifier?.rawValue,
+              raw.hasPrefix("toggle_") else { return }
+        let uuid = String(raw.dropFirst(7))
         settings.setExtTopCornersEnabled(sender.state == .on, for: uuid)
         updateExtSliderForUUID(uuid)
     }
     @objc private func extBottomToggleUUID(_ sender: NSButton) {
-        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        guard let raw = sender.superview?.identifier?.rawValue,
+              raw.hasPrefix("toggle_") else { return }
+        let uuid = String(raw.dropFirst(7))
         settings.setExtBottomCornersEnabled(sender.state == .on, for: uuid)
         updateExtSliderForUUID(uuid)
     }
@@ -370,7 +374,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private func updateExtSliderForUUID(_ uuid: String) {
         let visible = settings.extTopCornersEnabled(for: uuid) || settings.extBottomCornersEnabled(for: uuid)
         for item in externalSectionItems {
-            guard item.view?.identifier?.rawValue == uuid else { continue }
+            guard item.view?.identifier?.rawValue == "slider_\(uuid)" else { continue }
             animateItemVisibility(item, visible: visible, animated: true)
             break
         }
