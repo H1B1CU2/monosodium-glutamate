@@ -13,6 +13,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var sliderItem: NSMenuItem?
     private var extSliderItem: NSMenuItem?
     private var extMirrorFadeItems: [NSMenuItem] = []
+    private var extSliderSpacerItems: [String: NSMenuItem] = [:]
+    private var extHeaderItems: [NSMenuItem] = []
 
     init(settings: Settings) {
         self.settings = settings
@@ -32,6 +34,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll(); externalSepItem = nil
         extMirrorFadeItems.removeAll()
         extToggleItems.removeAll()
+        extSliderSpacerItems.removeAll()
+        extHeaderItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
         menu.autoenablesItems = false
@@ -104,6 +108,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(orderItem)
         displayOrderItem = orderItem
 
+        addToggleItem("  Music Display",
+                      state: settings.musicDisplayEnabled,
+                      action: #selector(musicDisplayToggle(_:)))
+
         addSpaceItem()
 
         menu.addItem(.separator())
@@ -120,7 +128,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         // Mirror toggle at top of built-in, only when external connected
         if !externals.isEmpty {
-            addToggleItem("Use the same setting for external display", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
+            addToggleItem("Apply to all display", state: settings.mirrorMainDisplay, action: #selector(mirrorToggle(_:)))
             mirrorToggleItem = menu.items.last
         }
 
@@ -137,29 +145,33 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll()
 
         if !externals.isEmpty {
+            let mirroring = settings.mirrorMainDisplay
             for ext in externals {
                 guard let uuid = screenUUID(ext) else { continue }
                 let name = ext.localizedName
                 let pos = builtIn.map { displayPosition(for: ext, relativeTo: $0) } ?? ""
                 addHeaderItem("\(name) (\(pos))", to: menu, indent: true)
-                externalSectionItems.append(menu.items.last!)
+                extHeaderItems.append(menu.items.last!)
 
                 let extTopPosMenu = createExtPositionMenu(uuid: uuid)
                 addToggleItem("Top Corners", state: settings.extTopCornersEnabled(for: uuid),
-                              action: #selector(extTopToggleUUID(_:)), submenu: extTopPosMenu, uuid: uuid)
+                              action: #selector(extTopToggleUUID(_:)), submenu: extTopPosMenu, uuid: uuid, initiallyHidden: mirroring)
                 extToggleItems.append(menu.items.last!)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
 
                 addToggleItem("Bottom Corners", state: settings.extBottomCornersEnabled(for: uuid),
-                              action: #selector(extBottomToggleUUID(_:)), uuid: uuid)
+                              action: #selector(extBottomToggleUUID(_:)), uuid: uuid, initiallyHidden: mirroring)
                 extToggleItems.append(menu.items.last!)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
 
-                addExtSliderItem(value: settings.extCornerRadius(for: uuid), uuid: uuid)
+                addExtSliderItem(value: settings.extCornerRadius(for: uuid), uuid: uuid, initiallyHidden: mirroring)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
+
+                let spacerItem = addExtSliderSpacerItem(uuid: uuid)
+                extSliderSpacerItems[uuid] = spacerItem
             }
         }
 
@@ -199,19 +211,24 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     }
 
     func updateExternalMonitorVisibility(animated: Bool = true) {
-        let visible = NSScreen.screens.count > 1
+        let hasExternals = NSScreen.screens.count > 1
+        let mirroring = settings.mirrorMainDisplay
         for item in externalSectionItems {
-            animateItemVisibility(item, visible: visible, animated: animated)
+            let hiddenByMirror = mirroring && extMirrorFadeItems.contains(where: { $0 === item })
+            animateItemVisibility(item, visible: hasExternals && !hiddenByMirror, animated: animated)
         }
-        focusDetectionItem?.isHidden = !visible
-        displayOrderItem?.isHidden = !visible
+        for item in extHeaderItems {
+            animateItemVisibility(item, visible: hasExternals, animated: animated)
+        }
+        focusDetectionItem?.isHidden = !hasExternals
+        displayOrderItem?.isHidden = !hasExternals
     }
 
     // MARK: - Helpers
 
     private func addSpaceItem() {
         let item = NSMenuItem()
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 12))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 8))
         item.view = v
         menu.addItem(item)
     }
@@ -237,11 +254,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     private func addSliderItem(value: CGFloat, isExternal: Bool) {
         let item = NSMenuItem()
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 44))
         container.wantsLayer = true
         // Start hidden — visibility refreshes at end of menu build
         if !isExternal && !settings.topCornersEnabled && !settings.bottomCornersEnabled {
-            container.alphaValue = 0; item.isHidden = true
+            container.isHidden = true; container.alphaValue = 0; item.isHidden = true
         }
         let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
                               target: self, action: isExternal ? #selector(extRadiusChanged(_:)) : #selector(radiusChanged(_:)))
@@ -258,7 +275,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(title)
 
         NSLayoutConstraint.activate([
-            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
+            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
             slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
@@ -279,11 +296,12 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return sub
     }
 
-    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, uuid: String? = nil) {
+    private func addToggleItem(_ title: String, state: Bool, action: Selector, submenu: NSMenu? = nil, uuid: String? = nil, initiallyHidden: Bool = false) {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         container.wantsLayer = true
         if let uuid { container.identifier = NSUserInterfaceItemIdentifier("toggle_\(uuid)") }
+        if initiallyHidden { container.isHidden = true; container.alphaValue = 0; item.isHidden = true }
         let button = NSButton(checkboxWithTitle: title, target: self, action: action)
         button.state = state ? .on : .off
         button.font = .menuFont(ofSize: 0)
@@ -329,15 +347,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return s
     }
 
-    private func addExtSliderItem(value: CGFloat, uuid: String) {
+    private func addExtSliderItem(value: CGFloat, uuid: String, initiallyHidden: Bool = false) {
         let item = NSMenuItem()
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 44))
         container.wantsLayer = true
         container.identifier = NSUserInterfaceItemIdentifier("slider_\(uuid)")
-        // Start hidden if no corners selected — visibility refreshes at end
-        if !settings.extTopCornersEnabled(for: uuid) && !settings.extBottomCornersEnabled(for: uuid) {
-            container.alphaValue = 0; item.isHidden = true
-        }
+        let noCorners = !settings.extTopCornersEnabled(for: uuid) && !settings.extBottomCornersEnabled(for: uuid)
+        if initiallyHidden || noCorners { container.isHidden = true; container.alphaValue = 0; item.isHidden = true }
         let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
                               target: self, action: #selector(extRadiusChangedUUID(_:)))
         slider.controlSize = .mini
@@ -353,7 +369,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         container.addSubview(title)
 
         NSLayoutConstraint.activate([
-            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
+            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
             slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
             slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
@@ -391,16 +407,31 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         updateExtSliderForUUID(uuid)
     }
 
+    private func addExtSliderSpacerItem(uuid: String) -> NSMenuItem {
+        let item = NSMenuItem()
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 14))
+        v.identifier = NSUserInterfaceItemIdentifier("spacer_\(uuid)")
+        v.isHidden = true; v.alphaValue = 0
+        item.view = v
+        item.isHidden = true
+        menu.addItem(item)
+        return item
+    }
+
     private func updateExtSliderForUUID(_ uuid: String) {
-        let visible = settings.extTopCornersEnabled(for: uuid) || settings.extBottomCornersEnabled(for: uuid)
+        let visible = !settings.mirrorMainDisplay && (settings.extTopCornersEnabled(for: uuid) || settings.extBottomCornersEnabled(for: uuid))
         for item in externalSectionItems {
             guard item.view?.identifier?.rawValue == "slider_\(uuid)" else { continue }
             animateItemVisibility(item, visible: visible, animated: true)
             break
         }
+        if let spacer = extSliderSpacerItems[uuid] {
+            animateItemVisibility(spacer, visible: !visible, animated: true)
+        }
     }
     @objc private func extRadiusChangedUUID(_ sender: NSSlider) {
-        guard let uuid = sender.superview?.identifier?.rawValue else { return }
+        guard let raw = sender.superview?.identifier?.rawValue, raw.hasPrefix("slider_") else { return }
+        let uuid = String(raw.dropFirst(7))
         let val = Int(sender.doubleValue)
         if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
         settings.setExtCornerRadius(CGFloat(sender.doubleValue), for: uuid)
@@ -449,7 +480,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         guard let item = item, let view = item.view else { return }
         view.wantsLayer = true
         if visible {
-            if item.isHidden { view.alphaValue = 0; item.isHidden = false
+            if item.isHidden { view.isHidden = false; view.alphaValue = 0; item.isHidden = false
                 if animated {
                     DispatchQueue.main.async { NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; view.animator().alphaValue = 1 } }
                 } else { view.alphaValue = 1 }
@@ -457,8 +488,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         } else {
             if !item.isHidden {
                 if animated {
-                    NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.2; view.animator().alphaValue = 0 }, completionHandler: { item.isHidden = true })
-                } else { view.alphaValue = 0; item.isHidden = true }
+                    NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.2; view.animator().alphaValue = 0 }, completionHandler: { item.isHidden = true; view.isHidden = true })
+                } else { view.alphaValue = 0; item.isHidden = true; view.isHidden = true }
             }
         }
     }
@@ -538,16 +569,36 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
-        // Fade all external sub-items EXCEPT the "External Monitors" header and mirror toggle
-        for item in externalSectionItems where item != mirrorToggleItem {
-            animateItemVisibility(item, visible: !mirroring, animated: true)
-        }
         updateExtTogglesVisibility(animated: true)
         updateExtSliderVisibility(animated: true)
+        let builtIn = NSScreen.screens.first
+        for ext in NSScreen.screens where ext != builtIn {
+            if let uuid = screenUUID(ext) {
+                updateExtSliderForUUID(uuid)
+            }
+        }
+        // Separator and other non-toggle/non-slider items
+        for item in externalSectionItems where item != mirrorToggleItem && !extHeaderItems.contains(item) {
+            let isToggle = extToggleItems.contains(item)
+            let isSlider = item.view?.identifier?.rawValue.hasPrefix("slider_") ?? false
+            if !isToggle && !isSlider {
+                animateItemVisibility(item, visible: !mirroring, animated: true)
+            }
+        }
+        for item in extMirrorFadeItems where item != mirrorToggleItem {
+            let isToggle = extToggleItems.contains(item)
+            let isSlider = item.view?.identifier?.rawValue.hasPrefix("slider_") ?? false
+            if !isToggle && !isSlider {
+                animateItemVisibility(item, visible: !mirroring, animated: true)
+            }
+        }
     }
     @objc func posEdge()                         { settings.topCornersUnderMenuBar = false }
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
+    @objc func musicDisplayToggle(_ sender: NSButton) {
+        settings.musicDisplayEnabled = (sender.state == .on)
+    }
     @objc func quitApp() { NSApplication.shared.terminate(nil) }
 }

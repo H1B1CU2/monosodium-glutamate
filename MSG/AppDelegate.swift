@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clickMonitorLocal: Any?
     private var arrangementPollSource: DispatchSourceTimer?
     private var previousScreenFrames: [CGRect] = []
+    private var previousVisibleFrames: [CGRect] = []
 
     private var pollTimer: Timer?
 
@@ -78,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }, ctx)
 
         previousScreenFrames = NSScreen.screens.map { $0.frame }
+        previousVisibleFrames = NSScreen.screens.map { $0.visibleFrame }
         startArrangementPolling()
         applyFocusDetectionMode()
     }
@@ -106,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var wasFullscreen = false
+    private var wasInMC = false
 
     private func isMissionControlActive() -> Bool {
         // Primary: Dock windows at positive layers
@@ -140,6 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !inMC {
                 self.mcRedrawTimer?.invalidate()
                 self.mcRedrawTimer = nil
+                self.wasInMC = false
+                for win in self.cornerWindows { win.animateIn() }
             }
         }
         if let t = mcRedrawTimer { RunLoop.current.add(t, forMode: .common) }
@@ -147,6 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func redrawCornerWindows() {
         let inMC = isMissionControlActive()
+        let justExitedMC = wasInMC && !inMC
+        wasInMC = inMC
         if inMC { startMCRedrawPoll() }
         for win in cornerWindows {
             win.updateFrame()
@@ -154,6 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let isBuiltin = win.targetScreen.isBuiltin
             let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar
             win.redraw(skipTop: inMC && underBar)
+        }
+        if justExitedMC {
+            for win in cornerWindows { win.animateIn() }
         }
     }
 
@@ -170,22 +180,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkScreenArrangement() {
         let currentFrames = NSScreen.screens.map { $0.frame }
-        if currentFrames.count > 1 {
-            if arrangementPollSource == nil { startArrangementPolling() }
-        } else {
-            arrangementPollSource?.cancel(); arrangementPollSource = nil
-            if currentFrames != previousScreenFrames {
-                previousScreenFrames = currentFrames
-                indicator.refresh()
-                indicator.statusItem.button?.display()
-            }
-            return
+        let currentVisible = NSScreen.screens.map { $0.visibleFrame }
+        let frameChanged = currentFrames != previousScreenFrames
+        let visibleChanged = currentVisible != previousVisibleFrames
+
+        if frameChanged || visibleChanged {
+            previousScreenFrames = currentFrames
+            previousVisibleFrames = currentVisible
+            if frameChanged && settings.displayOrderMode == .physicalDetection { applyAutoOrder() }
+            indicator.refresh()
+            indicator.statusItem.button?.display()
         }
-        guard currentFrames != previousScreenFrames else { return }
-        previousScreenFrames = currentFrames
-        if settings.displayOrderMode == .physicalDetection { applyAutoOrder() }
-        indicator.refresh()
-        indicator.statusItem.button?.display()
     }
 
     private func applyAutoOrder() {

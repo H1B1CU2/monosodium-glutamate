@@ -66,7 +66,7 @@ final class CornerWindow: NSWindow {
         fadeTimer?.invalidate()
         let startProgress = view.animProgress
         let targetProgress: CGFloat = hide ? 0 : 1
-        let duration: TimeInterval = 0.25
+        let duration: TimeInterval = 0.5
         let start = ProcessInfo.processInfo.systemUptime
         fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
             guard let self, let cv = self.contentView else { t.invalidate(); return }

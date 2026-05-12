@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="MSG"
-BUILD_DIR="$(dirname "$0")/build"
-SRC_DIR="$(dirname "$0")/MSG"
+BUILD_DIR="$SCRIPT_DIR/build"
+SRC_DIR="$SCRIPT_DIR/MSG"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -27,6 +28,8 @@ swiftc \
     CornerWindow.swift \
     AppDelegate.swift \
     SettingsMenu.swift \
+    MusicMonitor.swift \
+    MusicPopover.swift \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos12.0 \

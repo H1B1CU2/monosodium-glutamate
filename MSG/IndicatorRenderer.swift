@@ -534,6 +534,96 @@ final class IndicatorRenderer {
         }
     }
 
+    // MARK: - Music display
+
+    func makeMusicAttributedString(title: String?, artist: String?) -> NSAttributedString {
+        let t = title ?? "—"
+        let a = artist ?? "—"
+        let textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        let dimColor = NSColor.secondaryLabelColor
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: textColor]))
+        result.append(NSAttributedString(string: " — ", attributes: [.font: dimFont, .foregroundColor: dimColor]))
+        result.append(NSAttributedString(string: a, attributes: [.font: dimFont, .foregroundColor: dimColor]))
+        return result
+    }
+
+    func makeMusicFrame(title: String?, artist: String?, barHeights: [CGFloat], marqueeOffset: CGFloat = 0) -> NSImage {
+        let t = title ?? "—"
+        let a = artist ?? "—"
+        let imgH: CGFloat = 22
+
+        let textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        let dimColor = NSColor.secondaryLabelColor
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+
+        let attr = NSMutableAttributedString()
+        attr.append(NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: textColor]))
+        attr.append(NSAttributedString(string: " — ", attributes: [.font: dimFont, .foregroundColor: dimColor]))
+        attr.append(NSAttributedString(string: a, attributes: [.font: dimFont, .foregroundColor: dimColor]))
+
+        let fullTextW = attr.size().width
+        let maxTextW: CGFloat = 200
+        let needsMarquee = fullTextW > maxTextW
+        let textW = needsMarquee ? maxTextW : fullTextW
+
+        // If marquee needed, scroll loops every fullTextW + 20px gap
+        let overflow = fullTextW + 20
+        let scrollOffset: CGFloat = needsMarquee ? marqueeOffset.truncatingRemainder(dividingBy: overflow) : 0
+
+        // Visualizer bars
+        let barCount = 4
+        let barW: CGFloat = 2.5
+        let barGap: CGFloat = 3
+        let barAreaW = CGFloat(barCount) * barW + CGFloat(barCount - 1) * barGap
+        let barMaxH: CGFloat = 12
+        let barMinH: CGFloat = 3
+        let barGapToText: CGFloat = 8
+
+        let totalW = textW + barGapToText + barAreaW + 4
+        let pad: CGFloat = 4
+        let finalW = totalW + pad * 2
+
+        return NSImage(size: NSSize(width: finalW, height: imgH), flipped: false) { _ in
+            // Clip text region
+            let textRect = NSRect(x: pad, y: 0, width: textW, height: imgH)
+            if let ctx = NSGraphicsContext.current {
+                ctx.saveGraphicsState()
+                textRect.clip()
+
+                // Draw text with scroll offset
+                let textY = (imgH - attr.size().height) / 2
+                let drawX = pad - scrollOffset
+                attr.draw(in: NSRect(x: drawX, y: textY, width: fullTextW, height: attr.size().height))
+
+                // If marquee, draw second copy at the end for seamless loop
+                if needsMarquee {
+                    attr.draw(in: NSRect(x: drawX + overflow, y: textY, width: fullTextW, height: attr.size().height))
+                }
+
+                ctx.restoreGraphicsState()
+            }
+
+            // Draw bars
+            let barBaseY: CGFloat = (imgH - barMaxH) / 2
+            let barOriginX = pad + textW + barGapToText
+            for i in 0..<min(barCount, barHeights.count) {
+                let h = barMinH + (barMaxH - barMinH) * barHeights[i]
+                let x = barOriginX + CGFloat(i) * (barW + barGap)
+                let y = barBaseY + (barMaxH - h) / 2
+                let rect = NSRect(x: x, y: y, width: barW, height: h)
+                let path = NSBezierPath(roundedRect: rect, xRadius: barW / 2, yRadius: barW / 2)
+                textColor.withAlphaComponent(0.6 + barHeights[i] * 0.4).setFill()
+                path.fill()
+            }
+            return true
+        }
+    }
+
     // MARK: - Numbers / Bold
 
     func makeNumbersAttributedString(indicator: Indicator, info: SpaceInfo, bold: Bool) -> NSAttributedString {

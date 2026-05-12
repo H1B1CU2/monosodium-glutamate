@@ -16,12 +16,29 @@ final class Indicator {
 
     let statusItem: NSStatusItem
     let spaceWatcher: SpaceWatcher
+    let musicMonitor: MusicMonitor
     private let settings: Settings
     private let systemState: SystemState
     private let renderer: IndicatorRenderer
 
     var onStatusBarClicked: (() -> Void)?
     var onMCStateChanged: (() -> Void)?
+
+    /// When > now, music display suppressed (space change cooldown)
+    private var musicSuppressUntil: TimeInterval = 0
+    /// Whether music info was shown in last refresh (for morph detection)
+    private var musicDisplayShown = false
+
+    // Audio visualizer
+    var visualizerHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
+    private var visualizerTargets: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
+    private var visualizerTimer: Timer?
+    private var marqueeOffset: CGFloat = 0
+    private var musicFrameWidth: CGFloat = 0
+
+    // Music popover
+    private var musicPopover: MusicPopover?
+    private var previousDisplaysForSuppression: [SpaceInfo.DisplayInfo]?
 
     // MARK: Animation state
 
@@ -56,6 +73,17 @@ final class Indicator {
     var animFocusNewDisplay: Int = -1
     private var animFocusTimer: Timer?
 
+    // Morph animation (unified crossfade + width transition)
+    private var morphLink: CVDisplayLink?
+    private var morphStartTime: TimeInterval = 0
+    private var morphToMusic: Bool = false
+    private var morphFromW: CGFloat = 0
+    private var morphToW: CGFloat = 0
+    private var morphAnimWidth: Bool = false
+    private var morphSwapped: Bool = false
+    private var morphLastPx: CGFloat = 0
+    private var morphActive: Bool = false
+
     // MARK: Snapshot state (only mutated when systemState.isStable)
 
     private var previousSpaces: [Int] = []
@@ -73,12 +101,15 @@ final class Indicator {
         self.systemState = SystemState()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.spaceWatcher = SpaceWatcher()
+        self.musicMonitor = MusicMonitor()
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
+        self.musicPopover = MusicPopover(monitor: musicMonitor)
     }
 
     func start() {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(buttonClicked(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem.button?.imagePosition = .imageOnly
 
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
@@ -86,10 +117,30 @@ final class Indicator {
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
         spaceWatcher.onChange = { [weak self] in
             guard let self else { return }
+            // Only suppress music display when spaces actually changed, not on focus-only shifts
+            let newDisplays = self.spaceWatcher.currentInfo.displays
+            let spacesChanged: Bool
+            if let prev = self.previousDisplaysForSuppression {
+                spacesChanged = prev.map(\.current) != newDisplays.map(\.current)
+                    || prev.map(\.total) != newDisplays.map(\.total)
+                    || prev.map(\.uuid) != newDisplays.map(\.uuid)
+            } else {
+                spacesChanged = false
+            }
+            self.previousDisplaysForSuppression = newDisplays
+            if spacesChanged && self.settings.musicDisplayEnabled && self.musicMonitor.isPlaying {
+                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + 3.0
+            }
             guard self.systemState.isStable else { return }
             self.refresh()
         }
         spaceWatcher.start()
+
+        musicMonitor.onChange = { [weak self] in
+            guard let self else { return }
+            self.refresh()
+        }
+        musicMonitor.start()
 
         systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
         systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
@@ -99,7 +150,166 @@ final class Indicator {
         refresh()
     }
 
-    @objc private func buttonClicked(_ sender: NSStatusBarButton) { onStatusBarClicked?() }
+    @objc private func buttonClicked(_ sender: NSStatusBarButton) {
+        let isRightClick = NSApp.currentEvent?.buttonNumber == 1
+            || NSApp.currentEvent?.modifierFlags.contains(.control) == true
+
+        if isRightClick {
+            musicPopover?.close()
+            onStatusBarClicked?()
+            return
+        }
+
+        // Left click: if music showing, toggle popover; otherwise show menu
+        if musicDisplayShown {
+            if let popover = musicPopover, popover.isShown {
+                popover.close()
+            } else if let button = statusItem.button {
+                musicPopover?.show(relativeTo: button)
+            }
+        } else {
+            musicPopover?.close()
+            onStatusBarClicked?()
+        }
+    }
+
+    // MARK: - Display morph
+
+    private func crossfade(toMusic: Bool) {
+        guard statusItem.button != nil, !morphActive else { return }
+        stopMorph()
+
+        morphToMusic = toMusic
+        morphSwapped = false
+        morphActive = true
+        morphStartTime = CACurrentMediaTime()
+
+        let info = spaceWatcher.currentInfo
+        let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
+        if isImageStyle {
+            let w = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
+            let spaceW = max(24, w) + 8
+            let musicW = musicFrameWidth > 0 ? musicFrameWidth : renderer.makeMusicFrame(
+                title: musicMonitor.currentTitle, artist: musicMonitor.currentArtist,
+                barHeights: visualizerHeights, marqueeOffset: marqueeOffset
+            ).size.width
+            morphFromW = toMusic ? spaceW : musicW
+            morphToW = toMusic ? musicW : spaceW
+            morphAnimWidth = abs(morphFromW - morphToW) > 1
+            morphLastPx = round(morphFromW)
+            if morphAnimWidth { statusItem.length = morphFromW }
+        } else {
+            morphAnimWidth = false
+        }
+
+        var link: CVDisplayLink?
+        CVDisplayLinkCreateWithActiveCGDisplays(&link)
+        guard let link else { morphActive = false; return }
+        morphLink = link
+
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        CVDisplayLinkSetOutputCallback(link, { (_, _, _, _, _, userInfo) -> CVReturn in
+            guard let userInfo else { return kCVReturnSuccess }
+            let ind = Unmanaged<Indicator>.fromOpaque(userInfo).takeUnretainedValue()
+            DispatchQueue.main.async { ind.tickMorph() }
+            return kCVReturnSuccess
+        }, ctx)
+        CVDisplayLinkStart(link)
+    }
+
+    private func tickMorph() {
+        guard morphActive, let button = statusItem.button else { return }
+
+        let totalDuration: TimeInterval = 0.38
+        let swapAt: CGFloat = 0.25
+        let elapsed = CACurrentMediaTime() - morphStartTime
+        let t = min(1.0, CGFloat(elapsed / totalDuration))
+
+        let alpha: CGFloat
+        if t < swapAt {
+            let p = t / swapAt
+            alpha = 1.0 - p * p
+        } else {
+            let p = (t - swapAt) / (1.0 - swapAt)
+            alpha = p * (2.0 - p)
+        }
+        button.alphaValue = alpha
+
+        // Swap content once at the midpoint
+        if t >= swapAt && !morphSwapped {
+            morphSwapped = true
+            musicDisplayShown = morphToMusic
+            if !morphToMusic { stopVisualizer() }
+            refresh()
+        }
+
+        // Width
+        if morphAnimWidth {
+            let eased = Easing.inOutCubic(t)
+            let px = round(morphFromW + (morphToW - morphFromW) * eased)
+            if px != morphLastPx {
+                morphLastPx = px
+                statusItem.length = px
+            }
+        }
+
+        // Done
+        if t >= 1.0 {
+            button.alphaValue = 1.0
+            stopMorph()
+            morphActive = false
+            if morphAnimWidth {
+                if morphToMusic {
+                    statusItem.length = NSStatusItem.variableLength
+                } else {
+                    lastSetLength = morphToW
+                    statusItem.length = morphToW
+                }
+            }
+        }
+    }
+
+    private func stopMorph() {
+        if let link = morphLink {
+            CVDisplayLinkStop(link)
+            morphLink = nil
+        }
+    }
+
+    private func startVisualizer() {
+        guard visualizerTimer == nil else { return }
+        visualizerTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            // Pick new random targets
+            for i in 0..<4 {
+                if Float.random(in: 0...1) < 0.2 {
+                    self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
+                }
+            }
+            // Smooth toward targets
+            for i in 0..<4 {
+                self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
+            }
+            // Advance marquee
+            self.marqueeOffset += 0.4
+            // Redraw button
+            if let button = self.statusItem.button {
+                let frame = self.renderer.makeMusicFrame(
+                    title: self.musicMonitor.currentTitle,
+                    artist: self.musicMonitor.currentArtist,
+                    barHeights: self.visualizerHeights,
+                    marqueeOffset: self.marqueeOffset
+                )
+                button.image = frame
+                self.musicFrameWidth = frame.size.width
+            }
+        }
+        if let t = visualizerTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
+    private func stopVisualizer() {
+        visualizerTimer?.invalidate(); visualizerTimer = nil
+    }
 
     // MARK: - Stability
 
@@ -122,6 +332,10 @@ final class Indicator {
 
         animFocusTimer?.invalidate(); animFocusTimer = nil
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
+
+        stopMorph(); morphActive = false
+
+        stopVisualizer()
     }
 
     private func resyncSnapshotAfterStabilize() {
@@ -140,6 +354,10 @@ final class Indicator {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
         spaceWatcher.prioritizeMain = settings.displayOrderMode == .prioritizeMain
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
+        musicSuppressUntil = 0
+        musicDisplayShown = false
+        stopMorph(); morphActive = false
+        stopVisualizer()
         refresh()
     }
 
@@ -178,6 +396,38 @@ final class Indicator {
     func refresh() {
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
+
+        let showMusic = settings.musicDisplayEnabled && musicMonitor.isPlaying
+            && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
+
+        // Crossfade between music and space indicator
+        if showMusic && !musicDisplayShown && !morphActive {
+            crossfade(toMusic: true)
+            return
+        }
+        if !showMusic && musicDisplayShown && !morphActive {
+            crossfade(toMusic: false)
+            return
+        }
+        if morphActive && !morphSwapped { return }
+
+        // Music mode
+        if musicDisplayShown {
+            startVisualizer()
+            button.attributedTitle = NSAttributedString()
+            let frame = renderer.makeMusicFrame(
+                title: musicMonitor.currentTitle,
+                artist: musicMonitor.currentArtist,
+                barHeights: visualizerHeights,
+                marqueeOffset: marqueeOffset
+            )
+            button.image = frame
+            musicFrameWidth = frame.size.width
+            if !morphActive {
+                statusItem.length = NSStatusItem.variableLength
+            }
+            return
+        }
 
         let stable = systemState.isStable
 
@@ -259,6 +509,7 @@ final class Indicator {
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
         }
+
     }
 
     // MARK: - Animation triggers
@@ -293,6 +544,7 @@ final class Indicator {
     // MARK: - Width
 
     private func applyStatusItemLength(info: SpaceInfo) {
+        if morphActive { return }
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
         var naturalW: CGFloat
         if animLayoutProgress < 1.0 {
@@ -507,6 +759,7 @@ final class Indicator {
 enum Easing {
     static func outQuart(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 4) }
     static func inOutQuart(_ t: CGFloat) -> CGFloat { t < 0.5 ? 8 * t * t * t * t : 1 - pow(-2 * t + 2, 4) / 2 }
+    static func inOutCubic(_ t: CGFloat) -> CGFloat { t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2 }
     static func outExpo(_ t: CGFloat) -> CGFloat { t == 1 ? 1 : 1 - pow(2, -10 * t) }
     static func spring(_ t: CGFloat) -> CGFloat {
         if t == 0 { return 0 }; if t == 1 { return 1 }

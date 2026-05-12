@@ -63,6 +63,7 @@ final class Settings {
         static let displayOrderMode         = "displayOrderMode"
         static let focusDetectionMode       = "focusDetectionMode"
         static let displayOrder             = "displayOrder"
+        static let musicDisplayEnabled      = "musicDisplayEnabled"
     }
 
     static let shared = Settings()
@@ -152,6 +153,7 @@ final class Settings {
     var displayOrderMode: DisplayOrderMode { didSet { save(); onChange?(.indicator) } }
     var focusDetectionMode: FocusDetectionMode { didSet { save(); onChange?(.indicator) } }
     var displayOrder: [Int]             { didSet { save(); onChange?(.indicator) } }
+    var musicDisplayEnabled: Bool       { didSet { save(); onChange?(.indicator) } }
 
     // MARK: Init
 
@@ -174,6 +176,7 @@ final class Settings {
             Key.displayOrderMode:       DisplayOrderMode.prioritizeMain.rawValue,
             Key.focusDetectionMode:     FocusDetectionMode.click.rawValue,
             Key.displayOrder:           [Int](),
+            Key.musicDisplayEnabled:    false,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -193,6 +196,7 @@ final class Settings {
         displayOrderMode  = DisplayOrderMode(rawValue: d.string(forKey: Key.displayOrderMode) ?? "") ?? .prioritizeMain
         focusDetectionMode = FocusDetectionMode(rawValue: d.string(forKey: Key.focusDetectionMode) ?? "") ?? .click
         displayOrder      = (d.array(forKey: Key.displayOrder) as? [Int]) ?? []
+        musicDisplayEnabled = d.bool(forKey: Key.musicDisplayEnabled)
     }
 
     private func save() {
@@ -213,5 +217,6 @@ final class Settings {
         d.set(displayOrderMode.rawValue,    forKey: Key.displayOrderMode)
         d.set(focusDetectionMode.rawValue,  forKey: Key.focusDetectionMode)
         d.set(displayOrder,                 forKey: Key.displayOrder)
+        d.set(musicDisplayEnabled,          forKey: Key.musicDisplayEnabled)
     }
 }

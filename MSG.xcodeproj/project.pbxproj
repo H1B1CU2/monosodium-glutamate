@@ -16,6 +16,8 @@
 		BB000007 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000107 /* AppDelegate.swift */; };
 		BB000008 /* SettingsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000108 /* SettingsMenu.swift */; };
 		BB000009 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000109 /* main.swift */; };
+		BB00000A /* MusicMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010A /* MusicMonitor.swift */; };
+		BB00000C /* MusicPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010C /* MusicPopover.swift */; };
 		18B729E92FADF4A400CEDD2A /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18B729E82FADF4A400CEDD2A /* Media.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -29,6 +31,9 @@
 		BB000107 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BB000108 /* SettingsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMenu.swift; sourceTree = "<group>"; };
 		BB000109 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		BB00010A /* MusicMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicMonitor.swift; sourceTree = "<group>"; };
+		BB00010C /* MusicPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPopover.swift; sourceTree = "<group>"; };
+		BB00010B /* MSG.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MSG.entitlements; sourceTree = "<group>"; };
 		187F0E772FADD2900059B374 /* MSG.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MSG.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		189478512FADD198007A7799 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		18B729E82FADF4A400CEDD2A /* Media.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Media.xcassets; sourceTree = "<group>"; };
@@ -57,6 +62,9 @@
 				BB000107 /* AppDelegate.swift */,
 				BB000108 /* SettingsMenu.swift */,
 				BB000109 /* main.swift */,
+				BB00010A /* MusicMonitor.swift */,
+				BB00010C /* MusicPopover.swift */,
+				BB00010B /* MSG.entitlements */,
 				189478512FADD198007A7799 /* Info.plist */,
 				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
 			);
@@ -161,6 +169,8 @@
 				BB000007 /* AppDelegate.swift in Sources */,
 				BB000008 /* SettingsMenu.swift in Sources */,
 				BB000009 /* main.swift in Sources */,
+				BB00000A /* MusicMonitor.swift in Sources */,
+				BB00000C /* MusicPopover.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -292,6 +302,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MSG/MSG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -329,6 +340,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MSG/MSG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
