@@ -239,6 +239,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let item = NSMenuItem()
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
         container.wantsLayer = true
+        // Start hidden — visibility refreshes at end of menu build
+        if !isExternal && !settings.topCornersEnabled && !settings.bottomCornersEnabled {
+            container.alphaValue = 0; item.isHidden = true
+        }
         let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
                               target: self, action: isExternal ? #selector(extRadiusChanged(_:)) : #selector(radiusChanged(_:)))
         slider.controlSize = .mini
@@ -331,6 +335,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 58))
         container.wantsLayer = true
         container.identifier = NSUserInterfaceItemIdentifier("slider_\(uuid)")
+        // Start hidden if no corners selected — visibility refreshes at end
+        if !settings.extTopCornersEnabled(for: uuid) && !settings.extBottomCornersEnabled(for: uuid) {
+            container.alphaValue = 0; item.isHidden = true
+        }
         let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
                               target: self, action: #selector(extRadiusChangedUUID(_:)))
         slider.controlSize = .mini
