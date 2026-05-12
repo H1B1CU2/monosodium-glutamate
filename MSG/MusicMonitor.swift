@@ -2,13 +2,20 @@ import AppKit
 
 /// Monitors Music.app playback via AppleScript polling.
 /// Polls at 1s when Music is running, 3s when idle.
-final class MusicMonitor {
+final class MusicMonitor: NSObject {
     private(set) var isPlaying = false
     private(set) var currentTitle: String?
     private(set) var currentArtist: String?
     private(set) var volume: Int = 50
 
     var onChange: (() -> Void)?
+
+    @objc func openMusic() {
+        let script = "tell application \"Music\" to activate"
+        DispatchQueue.global(qos: .utility).async {
+            NSAppleScript(source: script)?.executeAndReturnError(nil)
+        }
+    }
 
     private var pollTimer: Timer?
     private var isQuerying = false

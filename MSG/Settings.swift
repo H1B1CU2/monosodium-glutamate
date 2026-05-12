@@ -33,6 +33,12 @@ enum FocusDetectionMode: String, CaseIterable {
     case dynamic = "Pointer Position Detection"
 }
 
+enum MusicDisplayMode: String, CaseIterable {
+    case dynamic = "Dynamic"
+    case `static` = "Static"
+    case off     = "Off"
+}
+
 // MARK: - Settings
 
 /// Centralized persistent settings. All values flush to UserDefaults on change.
@@ -63,7 +69,8 @@ final class Settings {
         static let displayOrderMode         = "displayOrderMode"
         static let focusDetectionMode       = "focusDetectionMode"
         static let displayOrder             = "displayOrder"
-        static let musicDisplayEnabled      = "musicDisplayEnabled"
+        static let musicDisplayMode          = "musicDisplayMode"
+        static let musicLingerDuration      = "musicLingerDuration"
     }
 
     static let shared = Settings()
@@ -89,28 +96,32 @@ final class Settings {
     private func extKey(_ base: String, uuid: String) -> String { "\(base)_\(uuid)" }
 
     func extCornerRadius(for uuid: String) -> CGFloat {
-        CGFloat(UserDefaults.standard.float(forKey: extKey(Key.extCornerRadius, uuid: uuid)))
+        if mirrorMainDisplay { return cornerRadius }
+        return CGFloat(UserDefaults.standard.float(forKey: extKey(Key.extCornerRadius, uuid: uuid)))
     }
     func setExtCornerRadius(_ v: CGFloat, for uuid: String) {
         UserDefaults.standard.set(Float(v), forKey: extKey(Key.extCornerRadius, uuid: uuid))
         onChange?(.corners)
     }
     func extTopCornersEnabled(for uuid: String) -> Bool {
-        UserDefaults.standard.object(forKey: extKey(Key.extTopCornersEnabled, uuid: uuid)) as? Bool ?? true
+        if mirrorMainDisplay { return topCornersEnabled }
+        return UserDefaults.standard.object(forKey: extKey(Key.extTopCornersEnabled, uuid: uuid)) as? Bool ?? true
     }
     func setExtTopCornersEnabled(_ v: Bool, for uuid: String) {
         UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersEnabled, uuid: uuid))
         onChange?(.corners)
     }
     func extBottomCornersEnabled(for uuid: String) -> Bool {
-        UserDefaults.standard.object(forKey: extKey(Key.extBottomCornersEnabled, uuid: uuid)) as? Bool ?? true
+        if mirrorMainDisplay { return bottomCornersEnabled }
+        return UserDefaults.standard.object(forKey: extKey(Key.extBottomCornersEnabled, uuid: uuid)) as? Bool ?? true
     }
     func setExtBottomCornersEnabled(_ v: Bool, for uuid: String) {
         UserDefaults.standard.set(v, forKey: extKey(Key.extBottomCornersEnabled, uuid: uuid))
         onChange?(.corners)
     }
     func extTopCornersUnderMenuBar(for uuid: String) -> Bool {
-        UserDefaults.standard.bool(forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
+        if mirrorMainDisplay { return topCornersUnderMenuBar }
+        return UserDefaults.standard.bool(forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
     }
     func setExtTopCornersUnderMenuBar(_ v: Bool, for uuid: String) {
         UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
@@ -153,7 +164,8 @@ final class Settings {
     var displayOrderMode: DisplayOrderMode { didSet { save(); onChange?(.indicator) } }
     var focusDetectionMode: FocusDetectionMode { didSet { save(); onChange?(.indicator) } }
     var displayOrder: [Int]             { didSet { save(); onChange?(.indicator) } }
-    var musicDisplayEnabled: Bool       { didSet { save(); onChange?(.indicator) } }
+    var musicDisplayMode: MusicDisplayMode { didSet { save(); onChange?(.indicator) } }
+    var musicLingerDuration: TimeInterval { didSet { save() } }
 
     // MARK: Init
 
@@ -176,7 +188,8 @@ final class Settings {
             Key.displayOrderMode:       DisplayOrderMode.prioritizeMain.rawValue,
             Key.focusDetectionMode:     FocusDetectionMode.click.rawValue,
             Key.displayOrder:           [Int](),
-            Key.musicDisplayEnabled:    false,
+            Key.musicDisplayMode:       MusicDisplayMode.dynamic.rawValue,
+            Key.musicLingerDuration:    TimeInterval(15),
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -196,7 +209,8 @@ final class Settings {
         displayOrderMode  = DisplayOrderMode(rawValue: d.string(forKey: Key.displayOrderMode) ?? "") ?? .prioritizeMain
         focusDetectionMode = FocusDetectionMode(rawValue: d.string(forKey: Key.focusDetectionMode) ?? "") ?? .click
         displayOrder      = (d.array(forKey: Key.displayOrder) as? [Int]) ?? []
-        musicDisplayEnabled = d.bool(forKey: Key.musicDisplayEnabled)
+        musicDisplayMode     = MusicDisplayMode(rawValue: d.string(forKey: Key.musicDisplayMode) ?? "") ?? .dynamic
+        musicLingerDuration  = d.double(forKey: Key.musicLingerDuration)
     }
 
     private func save() {
@@ -217,6 +231,7 @@ final class Settings {
         d.set(displayOrderMode.rawValue,    forKey: Key.displayOrderMode)
         d.set(focusDetectionMode.rawValue,  forKey: Key.focusDetectionMode)
         d.set(displayOrder,                 forKey: Key.displayOrder)
-        d.set(musicDisplayEnabled,          forKey: Key.musicDisplayEnabled)
+        d.set(musicDisplayMode.rawValue,    forKey: Key.musicDisplayMode)
+        d.set(musicLingerDuration,          forKey: Key.musicLingerDuration)
     }
 }

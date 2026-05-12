@@ -4,21 +4,24 @@ final class MusicPopover {
     private let monitor: MusicMonitor
     private let window: NSWindow
     private var closeMonitor: Any?
+    private var pollTimer: Timer?
     private weak var titleLabel: NSTextField?
     private weak var artistLabel: NSTextField?
     private weak var volumeBar: VolumeBar?
+    private weak var touchPad: TouchPad?
 
     var isShown: Bool { window.isVisible }
 
     init(monitor: MusicMonitor) {
         self.monitor = monitor
 
-        let w: CGFloat = 208, h: CGFloat = 240
-        let (root, title, artist, volBar) = makeRootView(w: w, h: h, monitor: monitor)
+        let w: CGFloat = 208, h: CGFloat = 220
+        let (root, title, artist, volBar, pad) = makeRootView(w: w, h: h, monitor: monitor)
 
         titleLabel = title
         artistLabel = artist
         volumeBar = volBar
+        touchPad = pad
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
                           styleMask: [.borderless, .nonactivatingPanel],
@@ -36,9 +39,23 @@ final class MusicPopover {
         artistLabel?.stringValue = monitor.currentArtist ?? ""
         volumeBar?.setLevel(CGFloat(monitor.volume) / 100.0)
 
+        // Calculate dynamic width from text
+        let padW = textBasedPadW()
+        let winW = padW + 48
+
+        // Resize
+        let root = window.contentView!
+        root.frame.size.width = winW
+        window.setContentSize(NSSize(width: winW, height: 220))
+        touchPad?.frame.size.width = padW
+        touchPad?.needsDisplay = true
+        volumeBar?.frame.origin.x = 12 + padW + 4
+
         guard let buttonWindow = button.window else { return }
         let buttonFrame = buttonWindow.convertToScreen(button.bounds)
-        let popX = buttonFrame.midX - window.frame.width / 2
+        let screen = buttonWindow.screen ?? NSScreen.screens[0]
+        let popX = min(max(buttonFrame.midX - winW / 2, screen.visibleFrame.minX),
+                       screen.visibleFrame.maxX - winW)
         let popY = buttonFrame.minY - 2
         window.setFrameTopLeftPoint(NSPoint(x: popX, y: popY))
         window.orderFront(nil)
@@ -47,17 +64,72 @@ final class MusicPopover {
             guard let self, self.window.isVisible else { return }
             DispatchQueue.main.async { self.close() }
         }
+
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            self?.pollTick()
+        }
+        if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     func close() {
+        pollTimer?.invalidate(); pollTimer = nil
         if let m = closeMonitor { NSEvent.removeMonitor(m); closeMonitor = nil }
         window.orderOut(nil)
+    }
+
+    private func textBasedPadW() -> CGFloat {
+        let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let artistFont = NSFont.systemFont(ofSize: 11)
+        let titleW = ceil((monitor.currentTitle ?? "Not Playing").size(withAttributes: [.font: titleFont]).width)
+        let artistW = ceil((monitor.currentArtist ?? "").size(withAttributes: [.font: artistFont]).width)
+        return max(160, max(titleW, artistW) + 40)
+    }
+
+    private func pollTick() {
+        let newTitle = monitor.currentTitle ?? "Not Playing"
+        let newArtist = monitor.currentArtist ?? ""
+        let newVolume = CGFloat(monitor.volume) / 100.0
+        volumeBar?.setLevel(newVolume)
+
+        let titleChanged = titleLabel?.stringValue != newTitle
+        let artistChanged = artistLabel?.stringValue != newArtist
+        guard titleChanged || artistChanged else { return }
+
+        let newPadW = textBasedPadW()
+        let needsResize = abs(newPadW - (touchPad?.frame.width ?? 160)) > 1
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            titleLabel?.animator().alphaValue = 0
+            artistLabel?.animator().alphaValue = 0
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.titleLabel?.stringValue = newTitle
+            self.artistLabel?.stringValue = newArtist
+
+            if needsResize {
+                let winW = newPadW + 48
+                let root = self.window.contentView!
+                root.frame.size.width = winW
+                self.window.setContentSize(NSSize(width: winW, height: 220))
+                self.touchPad?.frame.size.width = newPadW
+                self.touchPad?.needsDisplay = true
+                self.volumeBar?.frame.origin.x = 12 + newPadW + 4
+            }
+
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.25
+                self.titleLabel?.animator().alphaValue = 1
+                self.artistLabel?.animator().alphaValue = 1
+            }
+        }
     }
 }
 
 // MARK: - Root View Factory
 
-private func makeRootView(w: CGFloat, h: CGFloat, monitor: MusicMonitor) -> (NSView, NSTextField, NSTextField, VolumeBar) {
+private func makeRootView(w: CGFloat, h: CGFloat, monitor: MusicMonitor) -> (NSView, NSTextField, NSTextField, VolumeBar, TouchPad) {
     let root = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
 
     // Popover background
@@ -97,9 +169,9 @@ private func makeRootView(w: CGFloat, h: CGFloat, monitor: MusicMonitor) -> (NSV
 
     // Volume bar outside pad, to the right
     let barW: CGFloat = 20
-    let barH: CGFloat = padH
+    let barH: CGFloat = padH - 20
     let barX: CGFloat = padX + padW + 4
-    let barY: CGFloat = padY
+    let barY: CGFloat = padY + 10
     let volBar = VolumeBar(frame: NSRect(x: barX, y: barY, width: barW, height: barH))
     volBar.wantsLayer = true
     root.addSubview(volBar)
@@ -109,38 +181,40 @@ private func makeRootView(w: CGFloat, h: CGFloat, monitor: MusicMonitor) -> (NSV
     NSLayoutConstraint.activate([
         icon.centerXAnchor.constraint(equalTo: touchPad.centerXAnchor),
         icon.centerYAnchor.constraint(equalTo: touchPad.centerYAnchor),
-        icon.widthAnchor.constraint(equalToConstant: 48),
-        icon.heightAnchor.constraint(equalToConstant: 48),
+        icon.widthAnchor.constraint(equalToConstant: 36),
+        icon.heightAnchor.constraint(equalToConstant: 36),
     ])
 
     // Track title
     let title = NSTextField(labelWithString: "")
     title.font = .systemFont(ofSize: 12, weight: .semibold)
     title.textColor = .labelColor
-    title.alignment = .center
+    title.alignment = .left
     title.lineBreakMode = .byTruncatingTail
     title.translatesAutoresizingMaskIntoConstraints = false
+    title.addGestureRecognizer(NSClickGestureRecognizer(target: monitor, action: #selector(MusicMonitor.openMusic)))
     root.addSubview(title)
 
     // Artist
     let artist = NSTextField(labelWithString: "")
     artist.font = .systemFont(ofSize: 11)
     artist.textColor = .secondaryLabelColor
-    artist.alignment = .center
+    artist.alignment = .left
     artist.lineBreakMode = .byTruncatingTail
     artist.translatesAutoresizingMaskIntoConstraints = false
+    artist.addGestureRecognizer(NSClickGestureRecognizer(target: monitor, action: #selector(MusicMonitor.openMusic)))
     root.addSubview(artist)
 
     NSLayoutConstraint.activate([
-        title.topAnchor.constraint(equalTo: touchPad.bottomAnchor, constant: 10),
-        title.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+        title.topAnchor.constraint(equalTo: touchPad.bottomAnchor, constant: 6),
+        title.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
         title.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
         artist.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
-        artist.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+        artist.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
         artist.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
     ])
 
-    return (root, title, artist, volBar)
+    return (root, title, artist, volBar, touchPad)
 }
 
 // MARK: - VolumeBar
@@ -180,16 +254,15 @@ private final class VolumeBar: NSView {
             NSBezierPath(roundedRect: fillRect, xRadius: r, yRadius: r).fill()
         }
 
-        // Indicator dots — match touch pad grid spacing
+        // Indicator dots — aligned to touch pad grid
         let dotColor = NSColor.white.withAlphaComponent(0.25)
         dotColor.setFill()
         let dotR: CGFloat = 1.0
         let dotCenterX = trackX + trackWidth + 7
-        let padInset: CGFloat = 24
-        let rows = 8
-        let rowSpacing = (bounds.height - 2 * padInset) / CGFloat(rows - 1)
-        for row in 1..<(rows - 1) {
-            let dotY = padInset + CGFloat(row) * rowSpacing
+        let startY: CGFloat = 14
+        let dotSpacing: CGFloat = 16
+        for i in 0..<8 {
+            let dotY = startY + CGFloat(i) * dotSpacing
             let dotRect = NSRect(x: dotCenterX - dotR, y: dotY - dotR, width: dotR * 2, height: dotR * 2)
             NSBezierPath(ovalIn: dotRect).fill()
         }
@@ -227,18 +300,23 @@ private final class TouchPad: NSView {
         super.draw(dirtyRect)
 
         let dotR: CGFloat = 1.0
-        let cols = 7, rows = 8
         let padInset: CGFloat = 24
-        let colSpacing = (bounds.width - 2 * padInset) / CGFloat(cols - 1)
-        let rowSpacing = (bounds.height - 2 * padInset) / CGFloat(rows - 1)
+        let rows = 8
+        let vSpacing = (bounds.height - 2 * padInset) / CGFloat(rows - 1)
+        let cols = max(8, Int((bounds.width - 2 * padInset) / vSpacing + 0.5))
+        let spacing = min((bounds.width - 2 * padInset) / CGFloat(cols - 1), vSpacing)
+        let gridW = spacing * CGFloat(cols - 1)
+        let gridH = spacing * CGFloat(rows - 1)
+        let offsetX = (bounds.width - gridW) / 2
+        let offsetY = (bounds.height - gridH) / 2
 
         let dotColor = NSColor.white.withAlphaComponent(0.06)
         dotColor.setFill()
 
         for row in 0..<rows {
             for col in 0..<cols {
-                let x = padInset + CGFloat(col) * colSpacing
-                let y = padInset + CGFloat(row) * rowSpacing
+                let x = offsetX + CGFloat(col) * spacing
+                let y = offsetY + CGFloat(row) * spacing
                 let dotRect = NSRect(x: x - dotR, y: y - dotR, width: dotR * 2, height: dotR * 2)
                 NSBezierPath(ovalIn: dotRect).fill()
             }
@@ -248,8 +326,9 @@ private final class TouchPad: NSView {
     // MARK: Tap
 
     override func mouseUp(with event: NSEvent) {
+        let wasPlaying = monitor?.isPlaying ?? false
         monitor?.togglePlayPause()
-        flashIcon("playpause.fill")
+        flashIcon(wasPlaying ? "pause.fill" : "play.fill")
         haptic(.generic)
     }
 
@@ -290,15 +369,7 @@ private final class TouchPad: NSView {
             break
 
         case .horizontal:
-            if abs(accumX) < deadZone {
-                hideIcon()
-            } else {
-                let active = abs(accumX) - deadZone
-                let activeRange = skipThreshold - deadZone
-                let progress = min(1.0, active / activeRange)
-                let name = accumX > 0 ? "backward.fill" : "forward.fill"
-                showHint(name, progress: progress)
-            }
+            hideIcon()
 
             if !thresholdHapticFired {
                 let velocityFactor = min(2.0, max(0.5, peakVelocity / 15))
@@ -350,6 +421,17 @@ private final class TouchPad: NSView {
         }
     }
 
+    private func opticalX(for name: String) -> CGFloat {
+        switch name {
+        case "play.fill": return 2
+        case "pause.fill": return 0
+        case "forward.fill": return 1
+        case "backward.fill": return -1
+        case "speaker.fill": return 1
+        default: return 0
+        }
+    }
+
     private func showVolumeHint() {
         guard let icon = iconView else { return }
         feedbackTimer?.invalidate()
@@ -362,8 +444,8 @@ private final class TouchPad: NSView {
         default: name = "speaker.wave.2.fill"
         }
         icon.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-        icon.alphaValue = 0.15
-        icon.layer?.setAffineTransform(.identity)
+        icon.alphaValue = 0.35
+        icon.layer?.setAffineTransform(CGAffineTransform(translationX: opticalX(for: name), y: 0))
     }
 
     private func showHint(_ name: String, progress: CGFloat) {
@@ -374,8 +456,8 @@ private final class TouchPad: NSView {
         let direction = accumX > 0 ? CGFloat(1) : CGFloat(-1)
         lastHorizontalDirection = direction
 
-        let slideOffset: CGFloat = 50 * (1 - progress) * -direction
-        icon.alphaValue = 0.08 + progress * 0.25
+        let slideOffset: CGFloat = 120 * (1 - progress) * -direction + opticalX(for: name)
+        icon.alphaValue = progress * 0.40
         icon.layer?.setAffineTransform(CGAffineTransform(translationX: slideOffset, y: 0))
     }
 
@@ -385,15 +467,16 @@ private final class TouchPad: NSView {
         icon.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
 
         let direction = lastHorizontalDirection
-        let popOffset: CGFloat = 15 * -direction
-        icon.alphaValue = 0.6
-        icon.layer?.setAffineTransform(CGAffineTransform(translationX: popOffset, y: 0))
+        let popOffset: CGFloat = 30 * -direction
+        let ox = opticalX(for: name)
+        icon.alphaValue = 0.2
+        icon.layer?.setAffineTransform(CGAffineTransform(translationX: popOffset + ox, y: 0))
 
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            icon.animator().alphaValue = 1
-            icon.animator().layer?.setAffineTransform(.identity)
+            icon.animator().alphaValue = 0.5
+            icon.animator().layer?.setAffineTransform(CGAffineTransform(translationX: ox, y: 0))
         }
 
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
@@ -411,7 +494,7 @@ private final class TouchPad: NSView {
 
     private func dismissIcon() {
         let direction = lastHorizontalDirection
-        let exitOffset: CGFloat = 35 * -direction
+        let exitOffset: CGFloat = 80 * -direction
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)

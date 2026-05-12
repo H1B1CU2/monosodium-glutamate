@@ -12,6 +12,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var displayOrderItem: NSMenuItem?
     private var sliderItem: NSMenuItem?
     private var extSliderItem: NSMenuItem?
+    private var musicModePickerItem: NSMenuItem?
+    private var lingerSlider: NSSlider?
+    private var lingerLabel: NSTextField?
     private var extMirrorFadeItems: [NSMenuItem] = []
     private var extSliderSpacerItems: [String: NSMenuItem] = [:]
     private var extHeaderItems: [NSMenuItem] = []
@@ -108,9 +111,49 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(orderItem)
         displayOrderItem = orderItem
 
-        addToggleItem("  Music Display",
-                      state: settings.musicDisplayEnabled,
-                      action: #selector(musicDisplayToggle(_:)))
+        // ── Music Display ──────────
+        menu.addItem(.separator())
+        addSpaceItem()
+        addHeaderItem("Music Display", to: menu)
+
+        let musicPickerItem = NSMenuItem(title: "  Mode", action: nil, keyEquivalent: "")
+        let musicPickerMenu = NSMenu()
+        for mode in MusicDisplayMode.allCases {
+            let m = NSMenuItem(title: "  \(mode.rawValue)", action: #selector(musicModePicked(_:)), keyEquivalent: "")
+            m.target = self
+            m.state = settings.musicDisplayMode == mode ? .on : .off
+            m.tag = MusicDisplayMode.allCases.firstIndex(of: mode) ?? 0
+            musicPickerMenu.addItem(m)
+        }
+        musicPickerItem.submenu = musicPickerMenu
+        menu.addItem(musicPickerItem)
+        musicModePickerItem = musicPickerItem
+
+        // Linger duration slider
+        do {
+            let item = NSMenuItem()
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 36))
+            let title = NSTextField(labelWithAttributedString: lingerLabelText(Int(settings.musicLingerDuration)))
+            title.alignment = .right
+            title.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(title)
+            let slider = NSSlider(value: settings.musicLingerDuration, minValue: 0, maxValue: 60,
+                                  target: self, action: #selector(musicLingerChanged(_:)))
+            slider.controlSize = .mini
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(slider)
+            NSLayoutConstraint.activate([
+                slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+                slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+                slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+                title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
+                title.trailingAnchor.constraint(equalTo: slider.trailingAnchor),
+            ])
+            item.view = container
+            lingerSlider = slider
+            lingerLabel = title
+            menu.addItem(item)
+        }
 
         addSpaceItem()
 
@@ -597,8 +640,20 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
-    @objc func musicDisplayToggle(_ sender: NSButton) {
-        settings.musicDisplayEnabled = (sender.state == .on)
+    @objc func musicModePicked(_ sender: NSMenuItem) {
+        let modes = MusicDisplayMode.allCases
+        guard sender.tag >= 0, sender.tag < modes.count else { return }
+        settings.musicDisplayMode = modes[sender.tag]
+    }
+    @objc func musicLingerChanged(_ sender: NSSlider) {
+        let v = TimeInterval(sender.doubleValue)
+        settings.musicLingerDuration = v
+        lingerLabel?.attributedStringValue = lingerLabelText(Int(v))
+    }
+    private func lingerLabelText(_ v: Int) -> NSAttributedString {
+        .init(string: "Linger after pause \(v)s",
+              attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                           .foregroundColor: NSColor.secondaryLabelColor])
     }
     @objc func quitApp() { NSApplication.shared.terminate(nil) }
 }
