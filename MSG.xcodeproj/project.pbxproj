@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		18B729E92FADF4A400CEDD2A /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18B729E82FADF4A400CEDD2A /* Media.xcassets */; };
 		BB000001 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101 /* Settings.swift */; };
 		BB000002 /* SystemState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000102 /* SystemState.swift */; };
 		BB000003 /* SpaceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000103 /* SpaceWatcher.swift */; };
@@ -18,10 +19,13 @@
 		BB000009 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000109 /* main.swift */; };
 		BB00000A /* MusicMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010A /* MusicMonitor.swift */; };
 		BB00000C /* MusicPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010C /* MusicPopover.swift */; };
-		18B729E92FADF4A400CEDD2A /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18B729E82FADF4A400CEDD2A /* Media.xcassets */; };
+		BB00000D /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010D /* SettingsWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		187F0E772FADD2900059B374 /* MSG.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MSG.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		189478512FADD198007A7799 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		18B729E82FADF4A400CEDD2A /* Media.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Media.xcassets; sourceTree = "<group>"; };
 		BB000101 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
 		BB000102 /* SystemState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemState.swift; sourceTree = "<group>"; };
 		BB000103 /* SpaceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceWatcher.swift; sourceTree = "<group>"; };
@@ -32,11 +36,9 @@
 		BB000108 /* SettingsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMenu.swift; sourceTree = "<group>"; };
 		BB000109 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		BB00010A /* MusicMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicMonitor.swift; sourceTree = "<group>"; };
-		BB00010C /* MusicPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPopover.swift; sourceTree = "<group>"; };
 		BB00010B /* MSG.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MSG.entitlements; sourceTree = "<group>"; };
-		187F0E772FADD2900059B374 /* MSG.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MSG.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		189478512FADD198007A7799 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		18B729E82FADF4A400CEDD2A /* Media.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Media.xcassets; sourceTree = "<group>"; };
+		BB00010C /* MusicPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPopover.swift; sourceTree = "<group>"; };
+		BB00010D /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -64,6 +66,7 @@
 				BB000109 /* main.swift */,
 				BB00010A /* MusicMonitor.swift */,
 				BB00010C /* MusicPopover.swift */,
+				BB00010D /* SettingsWindow.swift */,
 				BB00010B /* MSG.entitlements */,
 				189478512FADD198007A7799 /* Info.plist */,
 				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
@@ -171,6 +174,7 @@
 				BB000009 /* main.swift in Sources */,
 				BB00000A /* MusicMonitor.swift in Sources */,
 				BB00000C /* MusicPopover.swift in Sources */,
+				BB00000D /* SettingsWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,7 +322,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 11.5;
+				MACOSX_DEPLOYMENT_TARGET = 12.4;
 				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -356,7 +360,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 11.5;
+				MACOSX_DEPLOYMENT_TARGET = 12.4;
 				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";

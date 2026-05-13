@@ -17,7 +17,7 @@ final class Indicator {
     let statusItem: NSStatusItem
     let spaceWatcher: SpaceWatcher
     let musicMonitor: MusicMonitor
-    private let settings: Settings
+    private let settings: AppSettings
     private let systemState: SystemState
     private let renderer: IndicatorRenderer
 
@@ -85,7 +85,7 @@ final class Indicator {
 
     // MARK: Init
 
-    init(settings: Settings) {
+    init(settings: AppSettings) {
         self.settings = settings
         self.systemState = SystemState()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -118,7 +118,7 @@ final class Indicator {
             }
             self.previousDisplaysForSuppression = newDisplays
             if spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
-                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + 2.0
+                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + 3.0
             }
             guard self.systemState.isStable else { return }
             self.refresh()
@@ -159,53 +159,6 @@ final class Indicator {
         } else {
             musicPopover?.close()
             onStatusBarClicked?()
-        }
-    }
-
-    // MARK: - Swap fade
-
-    private var swapFadeActive = false
-    private var lastMusicTitle: String?
-    private var lastMusicArtist: String?
-
-    private func swapWithFade(toMusic: Bool) {
-        guard let button = statusItem.button, !swapFadeActive else { return }
-        swapFadeActive = true
-
-        let targetMusic = toMusic
-        if !targetMusic { stopVisualizer() }
-
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            button.animator().alphaValue = 0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            self.musicDisplayShown = targetMusic
-            self.refresh()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
-                self.statusItem.button?.animator().alphaValue = 1
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                self.swapFadeActive = false
-            }
-        }
-    }
-
-    private func renderMusicFrame() {
-        guard let button = statusItem.button else { return }
-        startVisualizer()
-        button.attributedTitle = NSAttributedString()
-        let frame = renderer.makeMusicFrame(
-            title: musicMonitor.currentTitle,
-            artist: musicMonitor.currentArtist,
-            barHeights: visualizerHeights,
-            marqueeOffset: marqueeOffset
-        )
-        button.image = frame
-        musicFrameWidth = frame.size.width
-        if !swapFadeActive {
-            statusItem.length = NSStatusItem.variableLength
         }
     }
 
@@ -266,7 +219,6 @@ final class Indicator {
         animFocusTimer?.invalidate(); animFocusTimer = nil
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
 
-        swapFadeActive = false
         stopVisualizer()
     }
 
@@ -288,9 +240,6 @@ final class Indicator {
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
         musicSuppressUntil = 0
         musicDisplayShown = false
-        swapFadeActive = false
-        lastMusicTitle = nil
-        lastMusicArtist = nil
         stopVisualizer()
         refresh()
     }
@@ -331,55 +280,28 @@ final class Indicator {
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
 
-        let showMusic = settings.musicDisplayMode == .dynamic
-            && musicMonitor.isPlaying
+        let showMusic = settings.musicDisplayMode == .dynamic && musicMonitor.isPlaying
             && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
 
         // Swap between music and space indicator
         if showMusic != musicDisplayShown {
-            swapWithFade(toMusic: showMusic)
-            return
+            musicDisplayShown = showMusic
+            if !showMusic { stopVisualizer() }
         }
 
         // Music mode
         if musicDisplayShown {
-            let newTitle = musicMonitor.currentTitle
-            let titleChanged = newTitle != lastMusicTitle
-
-            if titleChanged && !swapFadeActive {
-                stopVisualizer()
-                let oldTitle = lastMusicTitle
-                let oldArtist = lastMusicArtist
-                lastMusicTitle = newTitle
-                lastMusicArtist = musicMonitor.currentArtist
-
-                // Freeze the old frame so the fade-out shows the previous track
-                let frozenFrame = renderer.makeMusicFrame(
-                    title: oldTitle ?? "",
-                    artist: oldArtist ?? "",
-                    barHeights: visualizerHeights,
-                    marqueeOffset: marqueeOffset
-                )
-                button.image = frozenFrame
-                button.attributedTitle = NSAttributedString()
-
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.25
-                    button.animator().alphaValue = 0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    self.renderMusicFrame()
-                    NSAnimationContext.runAnimationGroup { ctx in
-                        ctx.duration = 0.25
-                        self.statusItem.button?.animator().alphaValue = 1
-                    }
-                }
-            } else {
-                lastMusicTitle = newTitle
-                lastMusicArtist = musicMonitor.currentArtist
-                renderMusicFrame()
-                button.animator().alphaValue = 1
-            }
+            startVisualizer()
+            button.attributedTitle = NSAttributedString()
+            let frame = renderer.makeMusicFrame(
+                title: musicMonitor.currentTitle,
+                artist: musicMonitor.currentArtist,
+                barHeights: visualizerHeights,
+                marqueeOffset: marqueeOffset
+            )
+            button.image = frame
+            musicFrameWidth = frame.size.width
+            statusItem.length = NSStatusItem.variableLength
             return
         }
 
@@ -435,13 +357,6 @@ final class Indicator {
 
         applyStatusItemLength(info: info)
 
-        // In static composite mode, snapshot state before rendering to suppress space-change animations
-        let isStaticComposite = settings.musicDisplayMode == .static && musicMonitor.isPlaying
-        if isStaticComposite {
-            previousSpaces = info.displays.map { $0.current }
-            previousActiveDisplayIndex = info.activeDisplayIndex
-        }
-
         // Render + animation triggers
         switch settings.displayStyle {
         case .pill:
@@ -469,43 +384,6 @@ final class Indicator {
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
             button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
-        }
-
-        if isStaticComposite {
-            let musicFrame = renderer.makeMusicFrame(
-                title: musicMonitor.currentTitle,
-                artist: musicMonitor.currentArtist,
-                barHeights: visualizerHeights,
-                marqueeOffset: marqueeOffset
-            )
-            let spaceImg: NSImage
-            if let img = button.image {
-                spaceImg = img
-            } else {
-                let attr = button.attributedTitle
-                let size = attr.size()
-                spaceImg = NSImage(size: NSSize(width: ceil(size.width), height: button.bounds.height), flipped: false) { _ in
-                    attr.draw(at: NSPoint(x: 0, y: (button.bounds.height - size.height) / 2))
-                    return true
-                }
-            }
-            let gap: CGFloat = 6
-            let compW = musicFrame.size.width + gap + spaceImg.size.width
-            let compH = max(musicFrame.size.height, spaceImg.size.height)
-            let composite = NSImage(size: NSSize(width: compW, height: compH), flipped: false) { _ in
-                musicFrame.draw(in: NSRect(x: 0, y: (compH - musicFrame.size.height) / 2,
-                                            width: musicFrame.size.width, height: musicFrame.size.height),
-                               from: .zero, operation: .sourceOver, fraction: 1)
-                spaceImg.draw(in: NSRect(x: musicFrame.size.width + gap, y: (compH - spaceImg.size.height) / 2,
-                                          width: spaceImg.size.width, height: spaceImg.size.height),
-                             from: .zero, operation: .sourceOver, fraction: 1)
-                return true
-            }
-            button.image = composite
-            button.attributedTitle = NSAttributedString()
-            statusItem.length = compW
-        } else if settings.musicDisplayMode == .static {
-            statusItem.length = NSStatusItem.variableLength
         }
 
     }
@@ -542,7 +420,6 @@ final class Indicator {
     // MARK: - Width
 
     private func applyStatusItemLength(info: SpaceInfo) {
-        if settings.musicDisplayMode == .static && musicMonitor.isPlaying { return }
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
         var naturalW: CGFloat
         if animLayoutProgress < 1.0 {

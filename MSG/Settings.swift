@@ -44,7 +44,7 @@ enum MusicDisplayMode: String, CaseIterable {
 /// Centralized persistent settings. All values flush to UserDefaults on change.
 /// Subscribe to `onChange` to react. The `category` argument tells subscribers
 /// which subsystem(s) need to refresh.
-final class Settings {
+final class AppSettings {
 
     enum Category {
         case corners        // overlay redraw
@@ -71,11 +71,16 @@ final class Settings {
         static let displayOrder             = "displayOrder"
         static let musicDisplayMode          = "musicDisplayMode"
         static let musicLingerDuration      = "musicLingerDuration"
+        static let menuBarVisible           = "menuBarVisible"
+        static let dockIcon                 = "dockIcon"
+        static let autoUpdate               = "autoUpdate"
+        static let updateChannel            = "updateChannel"
     }
 
-    static let shared = Settings()
+    static let shared = AppSettings()
 
     var onChange: ((Category) -> Void)?
+    var onUIChange: (() -> Void)?
 
     // MARK: Corners
     var cornerRadius: CGFloat {
@@ -166,6 +171,10 @@ final class Settings {
     var displayOrder: [Int]             { didSet { save(); onChange?(.indicator) } }
     var musicDisplayMode: MusicDisplayMode { didSet { save(); onChange?(.indicator) } }
     var musicLingerDuration: TimeInterval { didSet { save() } }
+    var menuBarVisible: Bool { didSet { save(); onChange?(.structural) } }
+    var dockIcon: Bool       { didSet { save(); onChange?(.structural) } }
+    var autoUpdate: Bool     { didSet { save() } }
+    var updateChannel: String { didSet { save() } }
 
     // MARK: Init
 
@@ -190,6 +199,10 @@ final class Settings {
             Key.displayOrder:           [Int](),
             Key.musicDisplayMode:       MusicDisplayMode.dynamic.rawValue,
             Key.musicLingerDuration:    TimeInterval(15),
+            Key.menuBarVisible:         true,
+            Key.dockIcon:               false,
+            Key.autoUpdate:             true,
+            Key.updateChannel:          "stable",
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -211,9 +224,14 @@ final class Settings {
         displayOrder      = (d.array(forKey: Key.displayOrder) as? [Int]) ?? []
         musicDisplayMode     = MusicDisplayMode(rawValue: d.string(forKey: Key.musicDisplayMode) ?? "") ?? .dynamic
         musicLingerDuration  = d.double(forKey: Key.musicLingerDuration)
+        menuBarVisible       = d.object(forKey: Key.menuBarVisible) as? Bool ?? true
+        dockIcon             = d.bool(forKey: Key.dockIcon)
+        autoUpdate           = d.object(forKey: Key.autoUpdate) as? Bool ?? true
+        updateChannel        = d.string(forKey: Key.updateChannel) ?? "stable"
     }
 
     private func save() {
+        onUIChange?()
         let d = UserDefaults.standard
         d.set(Float(cornerRadius),          forKey: Key.cornerRadius)
         d.set(topCornersEnabled,            forKey: Key.topCornersEnabled)
@@ -233,5 +251,9 @@ final class Settings {
         d.set(displayOrder,                 forKey: Key.displayOrder)
         d.set(musicDisplayMode.rawValue,    forKey: Key.musicDisplayMode)
         d.set(musicLingerDuration,          forKey: Key.musicLingerDuration)
+        d.set(menuBarVisible,               forKey: Key.menuBarVisible)
+        d.set(dockIcon,                     forKey: Key.dockIcon)
+        d.set(autoUpdate,                   forKey: Key.autoUpdate)
+        d.set(updateChannel,                forKey: Key.updateChannel)
     }
 }

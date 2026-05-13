@@ -30,15 +30,19 @@ swiftc \
     SettingsMenu.swift \
     MusicMonitor.swift \
     MusicPopover.swift \
+    SettingsWindow.swift \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
-    -target arm64-apple-macos12.0 \
+    -target arm64-apple-macos13.0 \
     -framework AppKit \
+    -framework SwiftUI \
+    -framework ServiceManagement \
     -framework IOKit \
     -O
 
 echo "▸ Copying Info.plist..."
 cp Info.plist "$CONTENTS/Info.plist"
+cp AppIcon.png "$RESOURCES/AppIcon.png"
 
 echo ""
 echo "✅  Built: $APP_BUNDLE"

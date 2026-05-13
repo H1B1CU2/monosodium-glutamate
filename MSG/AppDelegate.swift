@@ -5,7 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Subsystems
 
-    private let settings = Settings.shared
+    private let settings = AppSettings.shared
     private var indicator: Indicator!
     private var settingsMenu: SettingsMenu!
 
@@ -32,7 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator = Indicator(settings: settings)
         indicator.start()
 
+        // Main menu with Cmd+, → Settings
+        let mainMenu = NSMenu()
+        let appMenu = NSMenuItem(title: "MSG", action: nil, keyEquivalent: "")
+        let appSub = NSMenu()
+        appSub.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettingsWindow), keyEquivalent: "s"))
+        appSub.addItem(.separator())
+        appSub.addItem(NSMenuItem(title: "Quit MSG", action: #selector(requestQuit), keyEquivalent: "q"))
+        appMenu.submenu = appSub
+        mainMenu.addItem(appMenu)
+        NSApp.mainMenu = mainMenu
+
         settingsMenu = SettingsMenu(settings: settings)
+        settingsMenu.onOpenSettings = { [weak self] in self?.showSettingsWindow() }
 
         settings.onChange = { [weak self] category in
             guard let self else { return }
@@ -44,6 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.applyFocusDetectionMode()
             case .structural:
                 self.rebuildCornerWindows()
+                self.applyMenuBarVisibility()
+                self.applyDockIcon()
             }
         }
 
@@ -84,7 +98,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyFocusDetectionMode()
     }
 
-    // MARK: - Settings menu
+    // MARK: - Termination
+
+    private var allowTermination = false
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard allowTermination else { return .terminateCancel }
+        return .terminateNow
+    }
+
+    @objc func requestQuit() {
+        allowTermination = true
+        NSApp.terminate(nil)
+    }
+
+    // MARK: - AppSettings window
+
+    @objc private func showSettingsWindow() {
+        if #available(macOS 14.0, *) {
+            SettingsWindowController.shared.show()
+        }
+    }
+
+    private func applyMenuBarVisibility() {
+        indicator.statusItem.isVisible = settings.menuBarVisible
+    }
+
+    private func applyDockIcon() {
+        NSApp.setActivationPolicy(settings.dockIcon ? .regular : .accessory)
+    }
+
+    // MARK: - AppSettings menu
 
     private func showSettingsMenu() {
         let menu = settingsMenu.menu
@@ -210,9 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else if f.maxX <= b.minX  { left.append((idx, f.minY)) }
             else                       { right.append((idx, f.minY)) }
         }
+        newOrder.append(0)
         newOrder.append(contentsOf: above.map { $0.0 })
         newOrder.append(contentsOf: left.map  { $0.0 })
-        newOrder.append(0)
         newOrder.append(contentsOf: right.map { $0.0 })
         newOrder.append(contentsOf: below.map { $0.0 })
         if newOrder != settings.displayOrder { settings.displayOrder = newOrder }

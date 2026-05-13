@@ -3,7 +3,7 @@ import AppKit
 final class SettingsMenu: NSObject, NSMenuDelegate {
 
     let menu = NSMenu()
-    private let settings: Settings
+    private let settings: AppSettings
 
     // Track visibility state
     private var externalSectionItems: [NSMenuItem] = []
@@ -19,7 +19,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var extSliderSpacerItems: [String: NSMenuItem] = [:]
     private var extHeaderItems: [NSMenuItem] = []
 
-    init(settings: Settings) {
+    var onOpenSettings: (() -> Void)?
+
+    init(settings: AppSettings) {
         self.settings = settings
         super.init()
         menu.delegate = self
@@ -129,32 +131,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(musicPickerItem)
         musicModePickerItem = musicPickerItem
 
-        // Linger duration slider
-        do {
-            let item = NSMenuItem()
-            let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 36))
-            let title = NSTextField(labelWithAttributedString: lingerLabelText(Int(settings.musicLingerDuration)))
-            title.alignment = .right
-            title.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(title)
-            let slider = NSSlider(value: settings.musicLingerDuration, minValue: 0, maxValue: 60,
-                                  target: self, action: #selector(musicLingerChanged(_:)))
-            slider.controlSize = .mini
-            slider.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(slider)
-            NSLayoutConstraint.activate([
-                slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-                slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-                slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-                title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
-                title.trailingAnchor.constraint(equalTo: slider.trailingAnchor),
-            ])
-            item.view = container
-            lingerSlider = slider
-            lingerLabel = title
-            menu.addItem(item)
-        }
-
         addSpaceItem()
 
         menu.addItem(.separator())
@@ -227,6 +203,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         // ── Quit ────────────────────
         menu.addItem(.separator())
+        let openItem = NSMenuItem(title: "Open Settings…", action: #selector(openSettingsAction), keyEquivalent: "s")
+        openItem.target = self
+        menu.addItem(openItem)
         let quit = NSMenuItem(title: "No added MSG", action: #selector(quitApp), keyEquivalent: "q")
         let attrTitle = NSMutableAttributedString(string: "No added MSG")
         attrTitle.addAttribute(.font, value: NSFont.menuFont(ofSize: 0), range: NSRange(location: 0, length: 9))
@@ -539,6 +518,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     // MARK: - Actions
 
+    @objc private func openSettingsAction() { onOpenSettings?() }
+
     @objc func selectStyle(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? DisplayStyle { settings.displayStyle = s }
     }
@@ -655,5 +636,5 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
               attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                            .foregroundColor: NSColor.secondaryLabelColor])
     }
-    @objc func quitApp() { NSApplication.shared.terminate(nil) }
+    @objc func quitApp() { (NSApp.delegate as? AppDelegate)?.requestQuit() }
 }

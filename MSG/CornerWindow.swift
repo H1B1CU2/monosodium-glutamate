@@ -20,7 +20,7 @@ final class CornerWindow: NSWindow {
     let targetScreen: NSScreen
     private let view: CornerView
 
-    init(screen: NSScreen, settings: Settings) {
+    init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
         self.view = CornerView(screen: screen, settings: settings)
 
@@ -37,7 +37,7 @@ final class CornerWindow: NSWindow {
         ignoresMouseEvents = true
         // kCGAssistiveTechHighWindowLevel sits above everything short of the cursor
         level              = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         contentView = view
     }
@@ -104,9 +104,9 @@ final class CornerView: NSView {
     var skipTopCorners = false
     var animProgress: CGFloat = 1.0
     var displayUUID: String?
-    private let settings: Settings
+    private let settings: AppSettings
 
-    init(screen: NSScreen, settings: Settings) {
+    init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
         self.settings = settings
         super.init(frame: .zero)

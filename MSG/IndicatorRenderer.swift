@@ -4,10 +4,10 @@ import AppKit
 /// state from the `Indicator` reference it's handed each call.
 final class IndicatorRenderer {
 
-    private let settings: Settings
+    private let settings: AppSettings
     private weak var statusItem: NSStatusItem?
 
-    init(settings: Settings, statusItem: NSStatusItem) {
+    init(settings: AppSettings, statusItem: NSStatusItem) {
         self.settings = settings
         self.statusItem = statusItem
     }
@@ -269,18 +269,13 @@ final class IndicatorRenderer {
 
                     if isFocusCrossfade {
                         let ft = Easing.outQuart(focusProgress)
-                        if dIdx == focusOld {
-                            bright = NSColor.labelColor.blended(withFraction: ft, of: NSColor.labelColor.withAlphaComponent(0.45)) ?? .labelColor
-                            dim = NSColor.secondaryLabelColor.blended(withFraction: ft, of: NSColor.secondaryLabelColor.withAlphaComponent(0.35)) ?? .secondaryLabelColor
-                        } else {
-                            bright = NSColor.labelColor.withAlphaComponent(0.45).blended(withFraction: ft, of: .labelColor) ?? .labelColor
-                            dim = NSColor.secondaryLabelColor.withAlphaComponent(0.35).blended(withFraction: ft, of: .secondaryLabelColor) ?? .secondaryLabelColor
-                        }
+                        bright = NSColor.secondaryLabelColor.blended(withFraction: ft, of: .labelColor) ?? .labelColor
+                        dim = NSColor.secondaryLabelColor
                         isActive = true
                     } else {
                         isActive = self.settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                        bright = isActive ? .labelColor : NSColor.labelColor.withAlphaComponent(0.45)
-                        dim = isActive ? .secondaryLabelColor : NSColor.secondaryLabelColor.withAlphaComponent(0.35)
+                        bright = isActive ? .labelColor : .secondaryLabelColor
+                        dim = .secondaryLabelColor
                     }
                     let isAnim = dIdx == _spacePillActive
 
@@ -364,7 +359,7 @@ final class IndicatorRenderer {
                         if dIdx > 0 {
                             let sepX = x - 10
                             let sepRect = NSRect(x: sepX, y: (imgH - 8) / 2, width: 1.5, height: 8)
-                            NSColor.secondaryLabelColor.withAlphaComponent(0.3 * rowAlpha).set()
+                            NSColor.secondaryLabelColor.withAlphaComponent(rowAlpha).set()
                             NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                         }
                     }
@@ -432,7 +427,7 @@ final class IndicatorRenderer {
                 if relIdx > 0 {
                     let sepRect = NSRect(x: x - 10, y: rowY + (gridRowH - 8) / 2, width: 1.5, height: 8)
                     let sp = NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75)
-                    NSColor.secondaryLabelColor.withAlphaComponent(0.35).setFill()
+                    NSColor.secondaryLabelColor.setFill()
                     sp.fill()
                 }
 
@@ -441,18 +436,13 @@ final class IndicatorRenderer {
                 let dim: NSColor
                 if focusProgress < 1.0 && (dIdx == focusOld || dIdx == focusNew) {
                     let ft = Easing.outQuart(focusProgress)
-                    if dIdx == focusOld {
-                        bright = NSColor.labelColor.blended(withFraction: ft, of: NSColor.labelColor.withAlphaComponent(0.45)) ?? .labelColor
-                        dim = NSColor.secondaryLabelColor.blended(withFraction: ft, of: NSColor.secondaryLabelColor.withAlphaComponent(0.35)) ?? .secondaryLabelColor
-                    } else {
-                        bright = NSColor.labelColor.withAlphaComponent(0.45).blended(withFraction: ft, of: .labelColor) ?? .labelColor
-                        dim = NSColor.secondaryLabelColor.withAlphaComponent(0.35).blended(withFraction: ft, of: .secondaryLabelColor) ?? .secondaryLabelColor
-                    }
+                    bright = NSColor.secondaryLabelColor.blended(withFraction: ft, of: .labelColor) ?? .labelColor
+                    dim = .secondaryLabelColor
                     isActiveDisplay = true
                 } else {
                     isActiveDisplay = settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                    bright = isActiveDisplay ? .labelColor : NSColor.labelColor.withAlphaComponent(0.45)
-                    dim = isActiveDisplay ? .secondaryLabelColor : NSColor.secondaryLabelColor.withAlphaComponent(0.35)
+                    bright = isActiveDisplay ? .labelColor : .secondaryLabelColor
+                    dim = .secondaryLabelColor
                 }
                 let isAnimDisplay = dIdx == spacePillActive
 
@@ -539,7 +529,7 @@ final class IndicatorRenderer {
     func makeMusicAttributedString(title: String?, artist: String?) -> NSAttributedString {
         let t = title ?? "—"
         let a = artist ?? "—"
-        let textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        let textColor = NSColor.labelColor
         let dimColor = NSColor.secondaryLabelColor
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
@@ -556,7 +546,7 @@ final class IndicatorRenderer {
         let a = artist ?? "—"
         let imgH: CGFloat = 22
 
-        let textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        let textColor = NSColor.labelColor
         let dimColor = NSColor.secondaryLabelColor
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
@@ -617,7 +607,7 @@ final class IndicatorRenderer {
                 let y = barBaseY + (barMaxH - h) / 2
                 let rect = NSRect(x: x, y: y, width: barW, height: h)
                 let path = NSBezierPath(roundedRect: rect, xRadius: barW / 2, yRadius: barW / 2)
-                textColor.withAlphaComponent(0.6 + barHeights[i] * 0.4).setFill()
+                textColor.setFill()
                 path.fill()
             }
             return true
@@ -629,7 +619,7 @@ final class IndicatorRenderer {
     func makeNumbersAttributedString(indicator: Indicator, info: SpaceInfo, bold: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let separator = NSAttributedString(string: " | ", attributes: [
-            .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.2),
+            .foregroundColor: NSColor.secondaryLabelColor,
             .font: NSFont.systemFont(ofSize: 13, weight: .light)
         ])
 
@@ -665,9 +655,8 @@ final class IndicatorRenderer {
         let currentPos: CGFloat = isAnimDisplay
             ? (CGFloat(textOld) + CGFloat(textNew - textOld) * Easing.outQuart(textProgress))
             : CGFloat(d.current)
-        let baseAlpha: CGFloat = isActive ? 1.0 : 0.4
-        let dim = NSColor.secondaryLabelColor.withAlphaComponent(baseAlpha * 0.5)
-        let bright = NSColor.labelColor.withAlphaComponent(baseAlpha)
+        let dim = NSColor.secondaryLabelColor
+        let bright = NSColor.labelColor
 
         for i in 1...max(1, d.total) {
             if i > 1 { result.append(NSAttributedString(string: " ", attributes: [.font: nf, .foregroundColor: dim])) }
@@ -685,16 +674,8 @@ final class IndicatorRenderer {
         _ d: SpaceInfo.DisplayInfo, displayIdx: Int, isActive: Bool,
         textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
     ) -> NSAttributedString {
-        let isAnimDisplay = textProgress < 1.0 && displayIdx == textDisplay
-        let currentVal: CGFloat = isAnimDisplay
-            ? (CGFloat(textOld) + CGFloat(textNew - textOld) * Easing.outQuart(textProgress))
-            : CGFloat(d.current)
-        let alpha: CGFloat = isActive ? 1.0 : 0.4
-        let animAlpha: CGFloat = isAnimDisplay
-            ? (0.4 + 0.6 * (1.0 - abs(CGFloat(textNew) - currentVal) / CGFloat(max(1, abs(textNew - textOld)))))
-            : alpha
         return NSAttributedString(string: "\(d.current)",
                                   attributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
-                                               .foregroundColor: NSColor.labelColor.withAlphaComponent(max(alpha, animAlpha))])
+                                               .foregroundColor: NSColor.labelColor])
     }
 }

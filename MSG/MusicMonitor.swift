@@ -2,7 +2,7 @@ import AppKit
 
 /// Monitors Music.app playback via AppleScript polling.
 /// Polls at 1s when Music is running, 3s when idle.
-final class MusicMonitor: NSObject {
+final class MusicMonitor {
     private(set) var isPlaying = false
     private(set) var currentTitle: String?
     private(set) var currentArtist: String?
