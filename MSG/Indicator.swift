@@ -28,6 +28,21 @@ final class Indicator {
     private var musicSuppressUntil: TimeInterval = 0
     /// Whether music info was shown in last refresh (for morph detection)
     private var musicDisplayShown = false
+    /// When music was last playing (for linger-after-pause)
+    private var musicLastPlayedAt: TimeInterval = 0
+    /// Cached title/artist shown during linger (MusicMonitor clears them on pause)
+    private var musicLingerTitle: String?
+    private var musicLingerArtist: String?
+    /// Previous title/artist for track-change cross-fade
+    private var lastMusicTitle: String?
+    private var lastMusicArtist: String?
+    /// Guard against overlapping swap fades
+    private var musicSwapFadeActive = false
+    /// Bars→dots morph progress (0 = bars, 1 = dots)
+    private var musicLingerMorphProgress: CGFloat = 0
+    private var musicLingerMorphTimer: Timer?
+    /// One-shot timer that fires when linger should expire
+    private var musicLingerExpireTimer: Timer?
 
     // Audio visualizer
     var visualizerHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
@@ -118,7 +133,8 @@ final class Indicator {
             }
             self.previousDisplaysForSuppression = newDisplays
             if spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
-                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + 3.0
+                let alreadySuppressed = ProcessInfo.processInfo.systemUptime < self.musicSuppressUntil
+                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 2.0 : 1.0)
             }
             guard self.systemState.isStable else { return }
             self.refresh()
@@ -197,6 +213,70 @@ final class Indicator {
         visualizerTimer?.invalidate(); visualizerTimer = nil
     }
 
+    private func startLingerMorph() {
+        guard musicLingerMorphTimer == nil else { return }
+        stopVisualizer()
+        musicLingerMorphProgress = 0
+        musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.musicLingerMorphProgress += 0.06
+            if self.musicLingerMorphProgress >= 1.0 {
+                self.musicLingerMorphProgress = 1.0
+                t.invalidate(); self.musicLingerMorphTimer = nil
+                self.stopVisualizer()
+            }
+            self.refresh()
+        }
+        if let t = musicLingerMorphTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
+    private func startSwapFade(toMusic: Bool) {
+        guard let button = statusItem.button else { return }
+        musicSwapFadeActive = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            button.animator().alphaValue = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.musicDisplayShown = toMusic
+            if !toMusic {
+                self.musicLingerExpireTimer?.invalidate(); self.musicLingerExpireTimer = nil
+                self.stopVisualizer()
+            }
+            self.lastMusicTitle = nil
+            self.lastMusicArtist = nil
+            self.refresh()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.25
+                self.statusItem.button?.animator().alphaValue = 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                self.musicSwapFadeActive = false
+            }
+        }
+    }
+
+    private func startTrackFade(title: String?, artist: String?) {
+        guard let button = statusItem.button else { return }
+        musicSwapFadeActive = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            button.animator().alphaValue = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            self.lastMusicTitle = title
+            self.lastMusicArtist = artist
+            self.refresh()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                self.statusItem.button?.animator().alphaValue = 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.musicSwapFadeActive = false
+            }
+        }
+    }
+
     // MARK: - Stability
 
     private func killAllAnimations() {
@@ -219,6 +299,10 @@ final class Indicator {
         animFocusTimer?.invalidate(); animFocusTimer = nil
         animFocusProgress = 1.0; animFocusOldDisplay = -1; animFocusNewDisplay = -1
 
+        musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
+        musicLingerMorphProgress = 0
+        musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
+        musicSwapFadeActive = false
         stopVisualizer()
     }
 
@@ -240,6 +324,15 @@ final class Indicator {
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
         musicSuppressUntil = 0
         musicDisplayShown = false
+        musicLastPlayedAt = 0
+        musicLingerTitle = nil
+        musicLingerArtist = nil
+        musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
+        musicLingerMorphProgress = 0
+        musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
+        musicSwapFadeActive = false
+        lastMusicTitle = nil
+        lastMusicArtist = nil
         stopVisualizer()
         refresh()
     }
@@ -280,24 +373,68 @@ final class Indicator {
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
 
-        let showMusic = settings.musicDisplayMode == .dynamic && musicMonitor.isPlaying
+        if musicMonitor.isPlaying {
+            musicLastPlayedAt = ProcessInfo.processInfo.systemUptime
+            musicLingerTitle = musicMonitor.currentTitle
+            musicLingerArtist = musicMonitor.currentArtist
+        }
+
+        let musicLingerActive = !musicMonitor.isPlaying
+            && musicLastPlayedAt > 0
+            && ProcessInfo.processInfo.systemUptime - musicLastPlayedAt < settings.musicLingerDuration
+
+        let showMusic = settings.musicDisplayMode == .dynamic
+            && (musicMonitor.isPlaying || musicLingerActive)
             && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
 
         // Swap between music and space indicator
-        if showMusic != musicDisplayShown {
-            musicDisplayShown = showMusic
-            if !showMusic { stopVisualizer() }
+        if showMusic != musicDisplayShown && !musicSwapFadeActive {
+            startSwapFade(toMusic: showMusic)
+            return
         }
 
         // Music mode
         if musicDisplayShown {
-            startVisualizer()
+            if musicLingerActive && musicLingerMorphProgress < 1.0 {
+                startLingerMorph()
+            } else if !musicLingerActive {
+                musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
+                musicLingerMorphProgress = 0
+                musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
+                startVisualizer()
+            }
+            // Schedule linger expiry if not already set
+            if musicLingerActive && musicLingerExpireTimer == nil {
+                let remaining = settings.musicLingerDuration - (ProcessInfo.processInfo.systemUptime - musicLastPlayedAt)
+                if remaining > 0 {
+                    musicLingerExpireTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
+                        self?.musicLingerExpireTimer = nil
+                        self?.refresh()
+                    }
+                    if let t = musicLingerExpireTimer { RunLoop.current.add(t, forMode: .common) }
+                }
+            }
+
+            let currentTitle = musicLingerActive ? musicLingerTitle : musicMonitor.currentTitle
+            let currentArtist = musicLingerActive ? musicLingerArtist : musicMonitor.currentArtist
+            let trackChanged = !musicLingerActive && (currentTitle != lastMusicTitle || currentArtist != lastMusicArtist)
+
+            if trackChanged && !musicSwapFadeActive {
+                startTrackFade(title: currentTitle, artist: currentArtist)
+                return
+            }
+
+            lastMusicTitle = currentTitle
+            lastMusicArtist = currentArtist
+
             button.attributedTitle = NSAttributedString()
+            let morphDone = musicLingerMorphProgress >= 1.0
             let frame = renderer.makeMusicFrame(
-                title: musicMonitor.currentTitle,
-                artist: musicMonitor.currentArtist,
+                title: currentTitle,
+                artist: currentArtist,
                 barHeights: visualizerHeights,
-                marqueeOffset: marqueeOffset
+                marqueeOffset: morphDone ? 0 : marqueeOffset,
+                barToDots: musicLingerMorphProgress
             )
             button.image = frame
             musicFrameWidth = frame.size.width

@@ -541,7 +541,7 @@ final class IndicatorRenderer {
         return result
     }
 
-    func makeMusicFrame(title: String?, artist: String?, barHeights: [CGFloat], marqueeOffset: CGFloat = 0) -> NSImage {
+    func makeMusicFrame(title: String?, artist: String?, barHeights: [CGFloat], marqueeOffset: CGFloat = 0, barToDots: CGFloat = 0) -> NSImage {
         let t = title ?? "—"
         let a = artist ?? "—"
         let imgH: CGFloat = 22
@@ -598,16 +598,24 @@ final class IndicatorRenderer {
                 ctx.restoreGraphicsState()
             }
 
-            // Draw bars
+            // Draw bars interpolating into dots (barToDots: 0 = bars, 1 = dots)
+            let t = barToDots
+            let dotDiam: CGFloat = 4
             let barBaseY: CGFloat = (imgH - barMaxH) / 2
+            let barCenterY = barBaseY + barMaxH / 2
             let barOriginX = pad + textW + barGapToText
-            for i in 0..<min(barCount, barHeights.count) {
-                let h = barMinH + (barMaxH - barMinH) * barHeights[i]
-                let x = barOriginX + CGFloat(i) * (barW + barGap)
-                let y = barBaseY + (barMaxH - h) / 2
-                let rect = NSRect(x: x, y: y, width: barW, height: h)
-                let path = NSBezierPath(roundedRect: rect, xRadius: barW / 2, yRadius: barW / 2)
-                textColor.setFill()
+            let morphColor = textColor.blended(withFraction: t, of: .white) ?? textColor
+            morphColor.setFill()
+            for i in 0..<barCount {
+                let barH = i < barHeights.count ? barMinH + (barMaxH - barMinH) * barHeights[i] : 0
+                let h = barH + (dotDiam - barH) * t
+                let w = barW + (dotDiam - barW) * t
+                let cx = barOriginX + CGFloat(i) * (barW + barGap) + barW / 2
+                let x = cx - w / 2
+                let y = barCenterY - h / 2
+                let radius = w / 2
+                let rect = NSRect(x: x, y: y, width: w, height: h)
+                let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
                 path.fill()
             }
             return true

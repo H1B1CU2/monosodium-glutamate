@@ -329,7 +329,6 @@ private final class TouchPad: NSView {
         let wasPlaying = monitor?.isPlaying ?? false
         monitor?.togglePlayPause()
         flashIcon(wasPlaying ? "pause.fill" : "play.fill")
-        haptic(.generic)
     }
 
     // MARK: Swipe
@@ -375,7 +374,7 @@ private final class TouchPad: NSView {
                 let velocityFactor = min(2.0, max(0.5, peakVelocity / 15))
                 let effectiveThreshold = deadZone + skipThreshold / velocityFactor
                 if abs(accumX) >= effectiveThreshold {
-                    haptic(.generic)
+                    haptic(.alignment)
                     thresholdHapticFired = true
                 }
             }
@@ -386,7 +385,7 @@ private final class TouchPad: NSView {
                 let steps = Int(volumeRemainder / volumeStep)
                 monitor?.adjustVolume(by: steps * 2)
                 volumeRemainder -= CGFloat(steps) * volumeStep
-                haptic(.levelChange)
+                haptic(.alignment)
             }
             volumeBar?.setLevel(CGFloat(monitor?.volume ?? 50) / 100.0)
             showVolumeHint()

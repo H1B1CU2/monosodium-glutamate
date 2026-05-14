@@ -157,7 +157,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Launch, permissions, and app behavior"
         case .about:   return "Version info and acknowledgements"
-        case .spacer:  return "Menu bar indicator for Mission Control spaces"
+        case .spacer:  return "Menu bar Deskspace indicator for Mission Control spaces"
         case .corner:  return "Paint black corner masks to match each display's curvature"
         case .music:   return "Menu bar music label with trackpad gesture control"
         }
@@ -621,7 +621,7 @@ struct MusicPopoverScene: View {
                     Image(systemName: "switch.2")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundColor(Color.black.opacity(0.85))
-                    Text("20:28")
+                    Text("10:00")
                         .font(.system(size: 12))
                         .foregroundColor(Color.black.opacity(0.85))
                 }
