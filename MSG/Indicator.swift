@@ -23,16 +23,16 @@ final class Indicator {
 
     var onStatusBarClicked: (() -> Void)?
     var onMCStateChanged: (() -> Void)?
+    var onMCEnter: (() -> Void)?
 
     /// When > now, music display suppressed (space change cooldown)
     private var musicSuppressUntil: TimeInterval = 0
     /// Whether music info was shown in last refresh (for morph detection)
     private var musicDisplayShown = false
+    /// Whether currently in linger mode (stored for timer access)
+    private var musicLingerActive = false
     /// When music was last playing (for linger-after-pause)
     private var musicLastPlayedAt: TimeInterval = 0
-    /// Cached title/artist shown during linger (MusicMonitor clears them on pause)
-    private var musicLingerTitle: String?
-    private var musicLingerArtist: String?
     /// Previous title/artist for track-change cross-fade
     private var lastMusicTitle: String?
     private var lastMusicArtist: String?
@@ -88,6 +88,10 @@ final class Indicator {
     var animFocusNewDisplay: Int = -1
     private var animFocusTimer: Timer?
 
+    /// Blocks number-text refresh while a boldNumber fade-out is in flight
+    /// so the old value stays visible until the fade completes.
+    var numberFadeActive = false
+
     // MARK: Snapshot state (only mutated when systemState.isStable)
 
     private var previousSpaces: [Int] = []
@@ -105,7 +109,7 @@ final class Indicator {
         self.systemState = SystemState()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.spaceWatcher = SpaceWatcher()
-        self.musicMonitor = MusicMonitor()
+        self.musicMonitor = MusicMonitor(settings: settings)
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
         self.musicPopover = MusicPopover(monitor: musicMonitor)
     }
@@ -134,7 +138,7 @@ final class Indicator {
             self.previousDisplaysForSuppression = newDisplays
             if spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
                 let alreadySuppressed = ProcessInfo.processInfo.systemUptime < self.musicSuppressUntil
-                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 2.0 : 1.0)
+                self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 3.0 : 1.5)
             }
             guard self.systemState.isStable else { return }
             self.refresh()
@@ -148,7 +152,10 @@ final class Indicator {
         musicMonitor.start()
 
         systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
-        systemState.didEnterUnstable = { [weak self] in self?.killAllAnimations() }
+        systemState.didEnterUnstable = { [weak self] in
+            self?.killAllAnimations()
+            self?.onMCEnter?()
+        }
         systemState.onChange = { [weak self] in self?.onMCStateChanged?() }
         systemState.start()
 
@@ -182,29 +189,22 @@ final class Indicator {
         guard visualizerTimer == nil else { return }
         visualizerTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            // Pick new random targets
-            for i in 0..<4 {
-                if Float.random(in: 0...1) < 0.2 {
-                    self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
+            if !self.musicLingerActive {
+                // Pick new random targets
+                for i in 0..<4 {
+                    if Float.random(in: 0...1) < 0.2 {
+                        self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
+                    }
+                }
+                // Smooth toward targets
+                for i in 0..<4 {
+                    self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
                 }
             }
-            // Smooth toward targets
-            for i in 0..<4 {
-                self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
-            }
-            // Advance marquee
+            // Always advance marquee
             self.marqueeOffset += 0.4
-            // Redraw button
-            if let button = self.statusItem.button {
-                let frame = self.renderer.makeMusicFrame(
-                    title: self.musicMonitor.currentTitle,
-                    artist: self.musicMonitor.currentArtist,
-                    barHeights: self.visualizerHeights,
-                    marqueeOffset: self.marqueeOffset
-                )
-                button.image = frame
-                self.musicFrameWidth = frame.size.width
-            }
+            // Delegate to refresh for single render path (handles barToDots morph)
+            self.refresh()
         }
         if let t = visualizerTimer { RunLoop.current.add(t, forMode: .common) }
     }
@@ -215,7 +215,6 @@ final class Indicator {
 
     private func startLingerMorph() {
         guard musicLingerMorphTimer == nil else { return }
-        stopVisualizer()
         musicLingerMorphProgress = 0
         musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
@@ -223,7 +222,21 @@ final class Indicator {
             if self.musicLingerMorphProgress >= 1.0 {
                 self.musicLingerMorphProgress = 1.0
                 t.invalidate(); self.musicLingerMorphTimer = nil
-                self.stopVisualizer()
+            }
+            self.refresh()
+        }
+        if let t = musicLingerMorphTimer { RunLoop.current.add(t, forMode: .common) }
+    }
+
+    private func startReverseMorph() {
+        musicLingerMorphTimer?.invalidate()
+        musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.musicLingerMorphProgress -= 0.12
+            if self.musicLingerMorphProgress <= 0 {
+                self.musicLingerMorphProgress = 0
+                t.invalidate(); self.musicLingerMorphTimer = nil
+                self.startVisualizer()
             }
             self.refresh()
         }
@@ -241,6 +254,8 @@ final class Indicator {
             self.musicDisplayShown = toMusic
             if !toMusic {
                 self.musicLingerExpireTimer?.invalidate(); self.musicLingerExpireTimer = nil
+                self.musicLingerMorphTimer?.invalidate(); self.musicLingerMorphTimer = nil
+                self.musicLingerMorphProgress = 0
                 self.stopVisualizer()
             }
             self.lastMusicTitle = nil
@@ -303,6 +318,7 @@ final class Indicator {
         musicLingerMorphProgress = 0
         musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
         musicSwapFadeActive = false
+        musicLingerActive = false
         stopVisualizer()
     }
 
@@ -325,8 +341,7 @@ final class Indicator {
         musicSuppressUntil = 0
         musicDisplayShown = false
         musicLastPlayedAt = 0
-        musicLingerTitle = nil
-        musicLingerArtist = nil
+        musicLingerActive = false
         musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
         musicLingerMorphProgress = 0
         musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
@@ -375,13 +390,10 @@ final class Indicator {
 
         if musicMonitor.isPlaying {
             musicLastPlayedAt = ProcessInfo.processInfo.systemUptime
-            musicLingerTitle = musicMonitor.currentTitle
-            musicLingerArtist = musicMonitor.currentArtist
+            musicLingerActive = false
+        } else if !musicLingerActive && musicDisplayShown && musicLastPlayedAt > 0 {
+            musicLingerActive = true
         }
-
-        let musicLingerActive = !musicMonitor.isPlaying
-            && musicLastPlayedAt > 0
-            && ProcessInfo.processInfo.systemUptime - musicLastPlayedAt < settings.musicLingerDuration
 
         let showMusic = settings.musicDisplayMode == .dynamic
             && (musicMonitor.isPlaying || musicLingerActive)
@@ -398,10 +410,12 @@ final class Indicator {
             if musicLingerActive && musicLingerMorphProgress < 1.0 {
                 startLingerMorph()
             } else if !musicLingerActive {
-                musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
-                musicLingerMorphProgress = 0
                 musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
-                startVisualizer()
+                if musicLingerMorphProgress > 0 {
+                    startReverseMorph()
+                } else {
+                    startVisualizer()
+                }
             }
             // Schedule linger expiry if not already set
             if musicLingerActive && musicLingerExpireTimer == nil {
@@ -409,14 +423,15 @@ final class Indicator {
                 if remaining > 0 {
                     musicLingerExpireTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
                         self?.musicLingerExpireTimer = nil
+                        self?.musicLingerActive = false
                         self?.refresh()
                     }
                     if let t = musicLingerExpireTimer { RunLoop.current.add(t, forMode: .common) }
                 }
             }
 
-            let currentTitle = musicLingerActive ? musicLingerTitle : musicMonitor.currentTitle
-            let currentArtist = musicLingerActive ? musicLingerArtist : musicMonitor.currentArtist
+            let currentTitle = musicMonitor.currentTitle
+            let currentArtist = musicMonitor.currentArtist
             let trackChanged = !musicLingerActive && (currentTitle != lastMusicTitle || currentArtist != lastMusicArtist)
 
             if trackChanged && !musicSwapFadeActive {
@@ -428,12 +443,11 @@ final class Indicator {
             lastMusicArtist = currentArtist
 
             button.attributedTitle = NSAttributedString()
-            let morphDone = musicLingerMorphProgress >= 1.0
             let frame = renderer.makeMusicFrame(
                 title: currentTitle,
                 artist: currentArtist,
                 barHeights: visualizerHeights,
-                marqueeOffset: morphDone ? 0 : marqueeOffset,
+                marqueeOffset: marqueeOffset,
                 barToDots: musicLingerMorphProgress
             )
             button.image = frame
@@ -510,10 +524,12 @@ final class Indicator {
             button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
 
         case .boldNumber:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
+            if stable, !numberFadeActive { tryStartSpaceChange(info: info, isDots: false) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
+            if !numberFadeActive {
+                button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
+            }
 
         case .dots:
             if stable { tryStartSpaceChange(info: info, isDots: true) }
@@ -539,8 +555,10 @@ final class Indicator {
                     startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
                 case .dots:
                     startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
-                case .numbers, .boldNumber:
+                case .numbers:
                     startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
+                case .boldNumber:
+                    startNumberFade(displayIndex: i, oldActive: prev, newActive: cur)
                 }
                 return
             }
@@ -630,6 +648,32 @@ final class Indicator {
         }
     }
 
+    private func startNumberFade(displayIndex: Int, oldActive: Int, newActive: Int) {
+        guard settings.animationStyle != .none else {
+            refresh(); return
+        }
+        guard let button = statusItem.button else { return }
+
+        // Freeze the old number during fade-out
+        button.attributedTitle = button.attributedTitle
+        numberFadeActive = true
+
+        let duration = settings.animationStyle == .solid ? 0.08 : 0.18
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            button.animator().alphaValue = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self else { return }
+            self.numberFadeActive = false
+            self.refresh()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = duration
+                self.statusItem.button?.animator().alphaValue = 1
+            }
+        }
+    }
+
     private func startTextAnimation(displayIndex: Int, oldActive: Int, newActive: Int) {
         animTextTimer?.invalidate()
         guard settings.animationStyle != .none else {
@@ -642,7 +686,7 @@ final class Indicator {
         animTextProgress = 0
         let distance = abs(newActive - oldActive)
         let base = settings.animationStyle == .solid
-            ? (settings.displayStyle == .dots ? 0.075 : 0.18)
+            ? (settings.displayStyle == .dots ? 0.075 : 0.08)
             : (settings.displayStyle == .dots ? 0.4 : 0.16)
         let duration = (settings.displayStyle == .dots && settings.animationStyle == .solid)
             ? (0.075 + Double(distance) * 0.025) : (base + Double(distance) * base)

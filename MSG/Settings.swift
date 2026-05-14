@@ -39,6 +39,11 @@ enum MusicDisplayMode: String, CaseIterable {
     case off     = "Off"
 }
 
+enum MusicSource: String, CaseIterable {
+    case nowPlaying = "System Now Playing"
+    case appleMusic = "Apple Music"
+}
+
 // MARK: - Settings
 
 /// Centralized persistent settings. All values flush to UserDefaults on change.
@@ -71,6 +76,7 @@ final class AppSettings {
         static let displayOrder             = "displayOrder"
         static let musicDisplayMode          = "musicDisplayMode"
         static let musicLingerDuration      = "musicLingerDuration"
+        static let musicSource               = "musicSource"
         static let menuBarVisible           = "menuBarVisible"
         static let dockIcon                 = "dockIcon"
         static let autoUpdate               = "autoUpdate"
@@ -171,6 +177,7 @@ final class AppSettings {
     var displayOrder: [Int]             { didSet { save(); onChange?(.indicator) } }
     var musicDisplayMode: MusicDisplayMode { didSet { save(); onChange?(.indicator) } }
     var musicLingerDuration: TimeInterval { didSet { save() } }
+    var musicSource: MusicSource { didSet { save(); onChange?(.indicator) } }
     var menuBarVisible: Bool { didSet { save(); onChange?(.structural) } }
     var dockIcon: Bool       { didSet { save(); onChange?(.structural) } }
     var autoUpdate: Bool     { didSet { save() } }
@@ -199,6 +206,7 @@ final class AppSettings {
             Key.displayOrder:           [Int](),
             Key.musicDisplayMode:       MusicDisplayMode.dynamic.rawValue,
             Key.musicLingerDuration:    TimeInterval(15),
+            Key.musicSource:            MusicSource.nowPlaying.rawValue,
             Key.menuBarVisible:         true,
             Key.dockIcon:               false,
             Key.autoUpdate:             true,
@@ -224,6 +232,7 @@ final class AppSettings {
         displayOrder      = (d.array(forKey: Key.displayOrder) as? [Int]) ?? []
         musicDisplayMode     = MusicDisplayMode(rawValue: d.string(forKey: Key.musicDisplayMode) ?? "") ?? .dynamic
         musicLingerDuration  = d.double(forKey: Key.musicLingerDuration)
+        musicSource          = MusicSource(rawValue: d.string(forKey: Key.musicSource) ?? "") ?? .nowPlaying
         menuBarVisible       = d.object(forKey: Key.menuBarVisible) as? Bool ?? true
         dockIcon             = d.bool(forKey: Key.dockIcon)
         autoUpdate           = d.object(forKey: Key.autoUpdate) as? Bool ?? true
@@ -251,6 +260,7 @@ final class AppSettings {
         d.set(displayOrder,                 forKey: Key.displayOrder)
         d.set(musicDisplayMode.rawValue,    forKey: Key.musicDisplayMode)
         d.set(musicLingerDuration,          forKey: Key.musicLingerDuration)
+        d.set(musicSource.rawValue,         forKey: Key.musicSource)
         d.set(menuBarVisible,               forKey: Key.menuBarVisible)
         d.set(dockIcon,                     forKey: Key.dockIcon)
         d.set(autoUpdate,                   forKey: Key.autoUpdate)

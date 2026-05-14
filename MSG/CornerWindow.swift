@@ -18,10 +18,12 @@ extension NSScreen {
 final class CornerWindow: NSWindow {
 
     let targetScreen: NSScreen
+    var displayUUID: String? { view.displayUUID }
     private let view: CornerView
 
     init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
+        self.settings = settings
         self.view = CornerView(screen: screen, settings: settings)
 
         super.init(
@@ -35,15 +37,12 @@ final class CornerWindow: NSWindow {
         isOpaque           = false
         hasShadow          = false
         ignoresMouseEvents = true
-        // kCGAssistiveTechHighWindowLevel sits above everything short of the cursor
         level              = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        animationBehavior  = .none
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
 
         contentView = view
     }
-
-    private var fadeTimer: Timer?
-    private var lastSkipTop: Bool?
 
     func updateFrame() {
         setFrame(targetScreen.frame, display: true)
@@ -51,49 +50,17 @@ final class CornerWindow: NSWindow {
         view.needsDisplay = true
     }
 
-    func redraw(skipTop: Bool = false) {
-        if skipTop != lastSkipTop {
-            lastSkipTop = skipTop
-            animateSkipChange(hide: skipTop)
-        }
-        view.skipTopCorners = skipTop
+    func redraw() {
         view.needsDisplay = true
         view.display()
     }
 
-    private func animateSkipChange(hide: Bool) {
-        guard contentView != nil else { return }
-        fadeTimer?.invalidate()
-        let startProgress = view.animProgress
-        let targetProgress: CGFloat = hide ? 0 : 1
-        let duration: TimeInterval = 0.5
-        let start = ProcessInfo.processInfo.systemUptime
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] t in
-            guard let self, let cv = self.contentView else { t.invalidate(); return }
-            let raw = min(1.0, (ProcessInfo.processInfo.systemUptime - start) / duration)
-            let curve = 1.0 - pow(1.0 - raw, 3)
-            let p = startProgress + (targetProgress - startProgress) * CGFloat(curve)
-            cv.alphaValue = p
-            self.view.animProgress = p
-            self.view.needsDisplay = true
-            self.view.display()
-            if raw >= 1.0 {
-                t.invalidate()
-                self.fadeTimer = nil
-                self.view.animProgress = targetProgress
-                self.view.needsDisplay = true
-            }
-        }
-        if let t = fadeTimer { RunLoop.current.add(t, forMode: .common) }
+    func setSkipTop(_ skip: Bool) {
+        view.skipTopCorners = skip
+        redraw()
     }
 
-    /// One-shot grow-in from zero on first appearance.
-    func animateIn() {
-        fadeTimer?.invalidate()
-        view.animProgress = 0
-        contentView?.alphaValue = 0
-        animateSkipChange(hide: false)
-    }
+    private let settings: AppSettings
 }
 
 // MARK: - CornerView
@@ -102,7 +69,6 @@ final class CornerView: NSView {
 
     var targetScreen: NSScreen
     var skipTopCorners = false
-    var animProgress: CGFloat = 1.0
     var displayUUID: String?
     private let settings: AppSettings
 
@@ -126,8 +92,7 @@ final class CornerView: NSView {
         let isBuiltin = screen.isBuiltin
 
         let uuid = displayUUID ?? "_default"
-        let targetR = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
-        let r = targetR * animProgress
+        let r = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
         let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)

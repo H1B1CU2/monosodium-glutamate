@@ -291,7 +291,7 @@ private final class TouchPad: NSView {
     private let lockThreshold: CGFloat = 8
     private let skipThreshold: CGFloat = 60
     private let deadZone: CGFloat = 20
-    private let volumeStep: CGFloat = 15
+    private let volumeStep: CGFloat = 6
 
     override var acceptsTouchEvents: Bool { get { true } set {} }
     override func hitTest(_ point: NSPoint) -> NSView? { self }
@@ -383,7 +383,7 @@ private final class TouchPad: NSView {
             volumeRemainder -= event.scrollingDeltaY
             if abs(volumeRemainder) >= volumeStep {
                 let steps = Int(volumeRemainder / volumeStep)
-                monitor?.adjustVolume(by: steps * 2)
+                monitor?.adjustVolume(by: steps * 4)
                 volumeRemainder -= CGFloat(steps) * volumeStep
                 haptic(.alignment)
             }

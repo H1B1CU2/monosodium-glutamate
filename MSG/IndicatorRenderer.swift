@@ -200,6 +200,8 @@ final class IndicatorRenderer {
         let pad: CGFloat = 4
         let fixedW = naturalW + pad * 2
 
+        let brightColor = menuBarTextColor
+        let dimColor = menuBarDimColor
         return NSImage(size: NSSize(width: fixedW, height: imgH), flipped: false) { _ in
             let rmDisplaysToDraw = isRowMorphing && !isMorphing && rowMorphFromCount > displays.count ? oldDisplays : displays
             let displaysToDraw = (isMorphing && oldDisplays.count > displays.count) ? oldDisplays : rmDisplaysToDraw
@@ -262,20 +264,24 @@ final class IndicatorRenderer {
                         rowY = (imgH - totalH_static) / 2 + CGFloat(displays.count - 1 - dIdx) * (rowH + gap)
                     }
 
-                    let isFocusCrossfade = focusProgress < 1.0 && (dIdx == focusOld || dIdx == focusNew)
                     let isActive: Bool
                     let bright: NSColor
                     let dim: NSColor
 
-                    if isFocusCrossfade {
+                    if dIdx == focusOld && focusProgress < 1.0 {
                         let ft = Easing.outQuart(focusProgress)
-                        bright = NSColor.secondaryLabelColor.blended(withFraction: ft, of: .labelColor) ?? .labelColor
-                        dim = NSColor.secondaryLabelColor
+                        bright = brightColor.blended(withFraction: ft, of: dimColor) ?? brightColor
+                        dim = dimColor
+                        isActive = true
+                    } else if dIdx == focusNew && focusProgress < 1.0 {
+                        let ft = Easing.outQuart(focusProgress)
+                        bright = dimColor.blended(withFraction: ft, of: brightColor) ?? brightColor
+                        dim = dimColor
                         isActive = true
                     } else {
                         isActive = self.settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                        bright = isActive ? .labelColor : .secondaryLabelColor
-                        dim = .secondaryLabelColor
+                        bright = isActive ? brightColor : dimColor
+                        dim = dimColor
                     }
                     let isAnim = dIdx == _spacePillActive
 
@@ -359,7 +365,7 @@ final class IndicatorRenderer {
                         if dIdx > 0 {
                             let sepX = x - 10
                             let sepRect = NSRect(x: sepX, y: (imgH - 8) / 2, width: 1.5, height: 8)
-                            NSColor.secondaryLabelColor.withAlphaComponent(rowAlpha).set()
+                            dimColor.withAlphaComponent(rowAlpha).set()
                             NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                         }
                     }
@@ -400,6 +406,8 @@ final class IndicatorRenderer {
         focusOld: Int, focusNew: Int, focusProgress: CGFloat,
         textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
     ) {
+        let brightColor = self.menuBarTextColor
+        let dimColor = self.menuBarDimColor
         let totalRows = gridRows.count
         let totalGridH = CGFloat(totalRows) * gridRowH + CGFloat(max(0, totalRows - 1)) * gridGap
         let gridBaseY = (imgH - totalGridH) / 2
@@ -427,22 +435,27 @@ final class IndicatorRenderer {
                 if relIdx > 0 {
                     let sepRect = NSRect(x: x - 10, y: rowY + (gridRowH - 8) / 2, width: 1.5, height: 8)
                     let sp = NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75)
-                    NSColor.secondaryLabelColor.setFill()
+                    dimColor.setFill()
                     sp.fill()
                 }
 
                 let isActiveDisplay: Bool
                 let bright: NSColor
                 let dim: NSColor
-                if focusProgress < 1.0 && (dIdx == focusOld || dIdx == focusNew) {
+                if dIdx == focusOld && focusProgress < 1.0 {
                     let ft = Easing.outQuart(focusProgress)
-                    bright = NSColor.secondaryLabelColor.blended(withFraction: ft, of: .labelColor) ?? .labelColor
-                    dim = .secondaryLabelColor
+                    bright = brightColor.blended(withFraction: ft, of: dimColor) ?? brightColor
+                    dim = dimColor
+                    isActiveDisplay = true
+                } else if dIdx == focusNew && focusProgress < 1.0 {
+                    let ft = Easing.outQuart(focusProgress)
+                    bright = dimColor.blended(withFraction: ft, of: brightColor) ?? brightColor
+                    dim = dimColor
                     isActiveDisplay = true
                 } else {
                     isActiveDisplay = settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                    bright = isActiveDisplay ? .labelColor : .secondaryLabelColor
-                    dim = .secondaryLabelColor
+                    bright = isActiveDisplay ? brightColor : dimColor
+                    dim = dimColor
                 }
                 let isAnimDisplay = dIdx == spacePillActive
 
@@ -529,8 +542,8 @@ final class IndicatorRenderer {
     func makeMusicAttributedString(title: String?, artist: String?) -> NSAttributedString {
         let t = title ?? "—"
         let a = artist ?? "—"
-        let textColor = NSColor.labelColor
-        let dimColor = NSColor.secondaryLabelColor
+        let textColor = menuBarTextColor
+        let dimColor = menuBarDimColor
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
 
@@ -546,8 +559,8 @@ final class IndicatorRenderer {
         let a = artist ?? "—"
         let imgH: CGFloat = 22
 
-        let textColor = NSColor.labelColor
-        let dimColor = NSColor.secondaryLabelColor
+        let textColor = menuBarTextColor
+        let dimColor = menuBarDimColor
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
 
@@ -604,7 +617,7 @@ final class IndicatorRenderer {
             let barBaseY: CGFloat = (imgH - barMaxH) / 2
             let barCenterY = barBaseY + barMaxH / 2
             let barOriginX = pad + textW + barGapToText
-            let morphColor = textColor.blended(withFraction: t, of: .white) ?? textColor
+            let morphColor = textColor
             morphColor.setFill()
             for i in 0..<barCount {
                 let barH = i < barHeights.count ? barMinH + (barMaxH - barMinH) * barHeights[i] : 0
@@ -624,10 +637,33 @@ final class IndicatorRenderer {
 
     // MARK: - Numbers / Bold
 
+    /// Adapts text/pill color to the menu bar's actual translucency
+    /// background. labelColor stays white on a light translucent menu bar
+    /// → invisible. Reading effectiveAppearance gives the real answer.
+    private var menuBarTextColor: NSColor {
+        guard let button = statusItem?.button else { return .labelColor }
+        let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+        switch name {
+        case .darkAqua, .vibrantDark:  return NSColor(white: 0.90, alpha: 1)
+        default:                        return NSColor(white: 0.15, alpha: 1)
+        }
+    }
+    private var menuBarDimColor: NSColor {
+        let bright = menuBarTextColor
+        guard let button = statusItem?.button else { return .secondaryLabelColor }
+        let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+        switch name {
+        case .darkAqua, .vibrantDark:  return bright.withAlphaComponent(0.55)
+        default:                        return bright.withAlphaComponent(0.60)
+        }
+    }
+
     func makeNumbersAttributedString(indicator: Indicator, info: SpaceInfo, bold: Bool) -> NSAttributedString {
+        let textColor = menuBarTextColor
+        let dimColor = menuBarDimColor
         let result = NSMutableAttributedString()
         let separator = NSAttributedString(string: " | ", attributes: [
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: dimColor,
             .font: NSFont.systemFont(ofSize: 13, weight: .light)
         ])
 
@@ -639,13 +675,15 @@ final class IndicatorRenderer {
                                              textProgress: indicator.animTextProgress,
                                              textDisplay: indicator.animTextDisplay,
                                              textOld: indicator.animTextOldActive,
-                                             textNew: indicator.animTextNewActive))
+                                             textNew: indicator.animTextNewActive,
+                                             textColor: textColor))
             } else {
                 result.append(makeNumbers(display, displayIdx: idx, isActive: isActive,
                                           textProgress: indicator.animTextProgress,
                                           textDisplay: indicator.animTextDisplay,
                                           textOld: indicator.animTextOldActive,
-                                          textNew: indicator.animTextNewActive))
+                                          textNew: indicator.animTextNewActive,
+                                          textColor: textColor, dimColor: dimColor))
             }
         }
         return result
@@ -653,7 +691,8 @@ final class IndicatorRenderer {
 
     private func makeNumbers(
         _ d: SpaceInfo.DisplayInfo, displayIdx: Int, isActive: Bool,
-        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
+        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
+        textColor: NSColor, dimColor: NSColor
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let nf = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -663,15 +702,13 @@ final class IndicatorRenderer {
         let currentPos: CGFloat = isAnimDisplay
             ? (CGFloat(textOld) + CGFloat(textNew - textOld) * Easing.outQuart(textProgress))
             : CGFloat(d.current)
-        let dim = NSColor.secondaryLabelColor
-        let bright = NSColor.labelColor
 
         for i in 1...max(1, d.total) {
-            if i > 1 { result.append(NSAttributedString(string: " ", attributes: [.font: nf, .foregroundColor: dim])) }
+            if i > 1 { result.append(NSAttributedString(string: " ", attributes: [.font: nf, .foregroundColor: dimColor])) }
             let iF = CGFloat(i)
             let dist = abs(iF - currentPos)
             let blend = max(0, 1.0 - dist)
-            let color = dim.blended(withFraction: blend, of: bright) ?? dim
+            let color = dimColor.blended(withFraction: blend, of: textColor) ?? dimColor
             let font: NSFont = (isAnimDisplay && dist < 0.5) || (!isAnimDisplay && i == d.current) ? bf : nf
             result.append(NSAttributedString(string: "\(i)", attributes: [.font: font, .foregroundColor: color]))
         }
@@ -680,10 +717,11 @@ final class IndicatorRenderer {
 
     private func makeBoldNumber(
         _ d: SpaceInfo.DisplayInfo, displayIdx: Int, isActive: Bool,
-        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
+        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
+        textColor: NSColor
     ) -> NSAttributedString {
         return NSAttributedString(string: "\(d.current)",
                                   attributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
-                                               .foregroundColor: NSColor.labelColor])
+                                               .foregroundColor: textColor])
     }
 }

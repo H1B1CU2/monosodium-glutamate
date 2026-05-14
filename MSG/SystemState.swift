@@ -44,7 +44,7 @@ final class SystemState {
     // MARK: - State refresh
 
     private func refreshState() {
-        let mc = Self.detectMissionControl()
+        let mc = MissionControlDetector.isActive()
         let fs = Self.detectFullscreen()
         let wasStable = isStable
 
@@ -82,24 +82,6 @@ final class SystemState {
     }
 
     // MARK: - Detection
-
-    /// True when Dock owns on-screen windows at positive CGWindowLevel < 1000.
-    /// These are MC space-preview thumbnails (typically layer 15–25) and only
-    /// exist while Mission Control is open.
-    static func detectMissionControl() -> Bool {
-        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return false
-        }
-        for w in list {
-            let owner = w[kCGWindowOwnerName as String] as? String ?? ""
-            guard owner == "Dock" else { continue }
-            let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            if layer > 0 && layer < 1000 {
-                return true
-            }
-        }
-        return false
-    }
 
     static func detectFullscreen() -> Bool {
         if !NSMenu.menuBarVisible() { return true }

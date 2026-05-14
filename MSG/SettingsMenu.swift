@@ -10,13 +10,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     private var externalSepItem: NSMenuItem?
     private var focusDetectionItem: NSMenuItem?
     private var displayOrderItem: NSMenuItem?
-    private var sliderItem: NSMenuItem?
-    private var extSliderItem: NSMenuItem?
     private var musicModePickerItem: NSMenuItem?
     private var lingerSlider: NSSlider?
     private var lingerLabel: NSTextField?
     private var extMirrorFadeItems: [NSMenuItem] = []
-    private var extSliderSpacerItems: [String: NSMenuItem] = [:]
     private var extHeaderItems: [NSMenuItem] = []
 
     var onOpenSettings: (() -> Void)?
@@ -39,7 +36,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         externalSectionItems.removeAll(); externalSepItem = nil
         extMirrorFadeItems.removeAll()
         extToggleItems.removeAll()
-        extSliderSpacerItems.removeAll()
         extHeaderItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
@@ -118,6 +114,18 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         addSpaceItem()
         addHeaderItem("Music Display", to: menu)
 
+        let sourcePickerItem = NSMenuItem(title: "  Source", action: nil, keyEquivalent: "")
+        let sourcePickerMenu = NSMenu()
+        for src in MusicSource.allCases {
+            let m = NSMenuItem(title: "  \(src.rawValue)", action: #selector(musicSourcePicked(_:)), keyEquivalent: "")
+            m.target = self
+            m.state = settings.musicSource == src ? .on : .off
+            m.tag = MusicSource.allCases.firstIndex(of: src) ?? 0
+            sourcePickerMenu.addItem(m)
+        }
+        sourcePickerItem.submenu = sourcePickerMenu
+        menu.addItem(sourcePickerItem)
+
         let musicPickerItem = NSMenuItem(title: "  Mode", action: nil, keyEquivalent: "")
         let musicPickerMenu = NSMenu()
         for mode in MusicDisplayMode.allCases {
@@ -156,8 +164,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addToggleItem("Bottom Corners", state: settings.bottomCornersEnabled, action: #selector(bottomToggle(_:)))
 
-        addSliderItem(value: settings.cornerRadius, isExternal: false)
-
         addSpaceItem()
 
         // ── External Monitors ───────
@@ -184,13 +190,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
                 extToggleItems.append(menu.items.last!)
                 extMirrorFadeItems.append(menu.items.last!)
                 externalSectionItems.append(menu.items.last!)
-
-                addExtSliderItem(value: settings.extCornerRadius(for: uuid), uuid: uuid, initiallyHidden: mirroring)
-                extMirrorFadeItems.append(menu.items.last!)
-                externalSectionItems.append(menu.items.last!)
-
-                let spacerItem = addExtSliderSpacerItem(uuid: uuid)
-                extSliderSpacerItems[uuid] = spacerItem
             }
         }
 
@@ -220,16 +219,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     // MARK: - Visibility
 
     private func updateAllVisibilities(animated: Bool = true) {
-        updateSliderVisibility(animated: animated)
-        updateExtSliderVisibility(animated: animated)
         updateExtTogglesVisibility(animated: animated)
-        // Per-display slider visibility
-        let builtIn = NSScreen.screens.first
-        for ext in NSScreen.screens where ext != builtIn {
-            if let uuid = screenUUID(ext) {
-                updateExtSliderForUUID(uuid)
-            }
-        }
     }
 
     func updateExternalMonitorVisibility(animated: Bool = true) {
@@ -272,40 +262,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         item.view = container
         item.isEnabled = false
         targetMenu.addItem(item)
-    }
-
-    private func addSliderItem(value: CGFloat, isExternal: Bool) {
-        let item = NSMenuItem()
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 44))
-        container.wantsLayer = true
-        // Start hidden — visibility refreshes at end of menu build
-        if !isExternal && !settings.topCornersEnabled && !settings.bottomCornersEnabled {
-            container.isHidden = true; container.alphaValue = 0; item.isHidden = true
-        }
-        let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
-                              target: self, action: isExternal ? #selector(extRadiusChanged(_:)) : #selector(radiusChanged(_:)))
-        slider.controlSize = .mini
-        slider.numberOfTickMarks = 15
-        slider.tickMarkPosition = .below
-        slider.allowsTickMarkValuesOnly = false
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(slider)
-
-        let title = NSTextField(labelWithAttributedString: sliderLabelText(value: Int(value)))
-        title.alignment = .right
-        title.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(title)
-
-        NSLayoutConstraint.activate([
-            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
-            title.trailingAnchor.constraint(equalTo: slider.trailingAnchor)
-        ])
-        item.view = container
-        menu.addItem(item)
-        if isExternal { extSliderItem = item } else { sliderItem = item }
     }
 
     private func createPositionMenu(isExternal: Bool) -> NSMenu {
@@ -369,39 +325,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         return s
     }
 
-    private func addExtSliderItem(value: CGFloat, uuid: String, initiallyHidden: Bool = false) {
-        let item = NSMenuItem()
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 44))
-        container.wantsLayer = true
-        container.identifier = NSUserInterfaceItemIdentifier("slider_\(uuid)")
-        let noCorners = !settings.extTopCornersEnabled(for: uuid) && !settings.extBottomCornersEnabled(for: uuid)
-        if initiallyHidden || noCorners { container.isHidden = true; container.alphaValue = 0; item.isHidden = true }
-        let slider = NSSlider(value: Double(value), minValue: 1, maxValue: 30,
-                              target: self, action: #selector(extRadiusChangedUUID(_:)))
-        slider.controlSize = .mini
-        slider.numberOfTickMarks = 15
-        slider.tickMarkPosition = .below
-        slider.allowsTickMarkValuesOnly = false
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(slider)
-
-        let title = NSTextField(labelWithAttributedString: sliderLabelText(value: Int(value)))
-        title.alignment = .right
-        title.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(title)
-
-        NSLayoutConstraint.activate([
-            slider.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            slider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            slider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            title.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -2),
-            title.trailingAnchor.constraint(equalTo: slider.trailingAnchor)
-        ])
-        item.view = container
-        item.representedObject = uuid
-        menu.addItem(item)
-    }
-
     private func createExtPositionMenu(uuid: String) -> NSMenu {
         let underBar = settings.extTopCornersUnderMenuBar(for: uuid)
         let sub = NSMenu()
@@ -419,46 +342,14 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
               raw.hasPrefix("toggle_") else { return }
         let uuid = String(raw.dropFirst(7))
         settings.setExtTopCornersEnabled(sender.state == .on, for: uuid)
-        updateExtSliderForUUID(uuid)
     }
     @objc private func extBottomToggleUUID(_ sender: NSButton) {
         guard let raw = sender.superview?.identifier?.rawValue,
               raw.hasPrefix("toggle_") else { return }
         let uuid = String(raw.dropFirst(7))
         settings.setExtBottomCornersEnabled(sender.state == .on, for: uuid)
-        updateExtSliderForUUID(uuid)
     }
 
-    private func addExtSliderSpacerItem(uuid: String) -> NSMenuItem {
-        let item = NSMenuItem()
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 14))
-        v.identifier = NSUserInterfaceItemIdentifier("spacer_\(uuid)")
-        v.isHidden = true; v.alphaValue = 0
-        item.view = v
-        item.isHidden = true
-        menu.addItem(item)
-        return item
-    }
-
-    private func updateExtSliderForUUID(_ uuid: String) {
-        let visible = !settings.mirrorMainDisplay && (settings.extTopCornersEnabled(for: uuid) || settings.extBottomCornersEnabled(for: uuid))
-        for item in externalSectionItems {
-            guard item.view?.identifier?.rawValue == "slider_\(uuid)" else { continue }
-            animateItemVisibility(item, visible: visible, animated: true)
-            break
-        }
-        if let spacer = extSliderSpacerItems[uuid] {
-            animateItemVisibility(spacer, visible: !visible, animated: true)
-        }
-    }
-    @objc private func extRadiusChangedUUID(_ sender: NSSlider) {
-        guard let raw = sender.superview?.identifier?.rawValue, raw.hasPrefix("slider_") else { return }
-        let uuid = String(raw.dropFirst(7))
-        let val = Int(sender.doubleValue)
-        if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
-        settings.setExtCornerRadius(CGFloat(sender.doubleValue), for: uuid)
-        updateSliderLabels(in: sender.superview, value: sender.doubleValue)
-    }
     @objc private func extPosEdgeUUID(_ sender: NSMenuItem) {
         guard let uuid = sender.representedObject as? String else { return }
         settings.setExtTopCornersUnderMenuBar(false, for: uuid)
@@ -480,15 +371,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     // MARK: - Visibility helpers
 
-    private func updateSliderVisibility(animated: Bool = true) {
-        let visible = settings.topCornersEnabled || settings.bottomCornersEnabled
-        animateItemVisibility(sliderItem, visible: visible, animated: animated)
-    }
-    private func updateExtSliderVisibility(animated: Bool = true) {
-        let visible = NSScreen.screens.count > 1 && !settings.mirrorMainDisplay
-            && (settings.extTopCornersEnabled || settings.extBottomCornersEnabled)
-        animateItemVisibility(extSliderItem, visible: visible, animated: animated)
-    }
     private var extToggleItems: [NSMenuItem] = []
 
     private func updateExtTogglesVisibility(animated: Bool = true) {
@@ -536,83 +418,25 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         if let s = sender.representedObject as? DisplayOrderMode { settings.displayOrderMode = s }
     }
 
-    private var lastHapticValue: Int = -1
-    private var lastExtHapticValue: Int = -1
-
-    @objc func radiusChanged(_ sender: NSSlider) {
-        let val = Int(sender.doubleValue)
-        if val != lastHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastHapticValue = val }
-        settings.cornerRadius = CGFloat(sender.doubleValue)
-        updateSliderLabels(in: sender.superview, value: sender.doubleValue)
-    }
-    @objc func extRadiusChanged(_ sender: NSSlider) {
-        let val = Int(sender.doubleValue)
-        if val != lastExtHapticValue { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now); lastExtHapticValue = val }
-        settings.extCornerRadius = CGFloat(sender.doubleValue)
-        updateSliderLabels(in: sender.superview, value: sender.doubleValue)
-    }
-    private func sliderLabelText(value: Int) -> NSAttributedString {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        let color = NSColor.secondaryLabelColor
-        let full = NSMutableAttributedString(string: "Radius: ", attributes: [
-            .font: font, .foregroundColor: color
-        ])
-        full.append(NSAttributedString(string: "\(value) px", attributes: [
-            .font: font, .foregroundColor: color
-        ]))
-        return full
-    }
-
-    private func updateSliderLabels(in container: NSView?, value: Double) {
-        guard let c = container else { return }
-        for v in c.subviews {
-            if let l = v as? NSTextField, l.attributedStringValue.string.hasPrefix("Radius") {
-                l.attributedStringValue = sliderLabelText(value: Int(value))
-            }
-        }
-    }
-
-    @objc func topToggle(_ sender: NSButton)     {
-        settings.topCornersEnabled = (sender.state == .on)
-        updateSliderVisibility(animated: true)
-    }
-    @objc func bottomToggle(_ sender: NSButton)  {
-        settings.bottomCornersEnabled = (sender.state == .on)
-        updateSliderVisibility(animated: true)
-    }
-    @objc func extTopToggle(_ sender: NSButton)  {
-        settings.extTopCornersEnabled = (sender.state == .on)
-        updateExtSliderVisibility(animated: true)
-    }
-    @objc func extBottomToggle(_ sender: NSButton) {
-        settings.extBottomCornersEnabled = (sender.state == .on)
-        updateExtSliderVisibility(animated: true)
-    }
+    @objc func topToggle(_ sender: NSButton)     { settings.topCornersEnabled = (sender.state == .on) }
+    @objc func bottomToggle(_ sender: NSButton)  { settings.bottomCornersEnabled = (sender.state == .on) }
+    @objc func extTopToggle(_ sender: NSButton)  { settings.extTopCornersEnabled = (sender.state == .on) }
+    @objc func extBottomToggle(_ sender: NSButton) { settings.extBottomCornersEnabled = (sender.state == .on) }
     private var mirrorToggleItem: NSMenuItem?
 
     @objc func mirrorToggle(_ sender: NSButton)  {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
         updateExtTogglesVisibility(animated: true)
-        updateExtSliderVisibility(animated: true)
-        let builtIn = NSScreen.screens.first
-        for ext in NSScreen.screens where ext != builtIn {
-            if let uuid = screenUUID(ext) {
-                updateExtSliderForUUID(uuid)
-            }
-        }
-        // Separator and other non-toggle/non-slider items
         for item in externalSectionItems where item != mirrorToggleItem && !extHeaderItems.contains(item) {
             let isToggle = extToggleItems.contains(item)
-            let isSlider = item.view?.identifier?.rawValue.hasPrefix("slider_") ?? false
-            if !isToggle && !isSlider {
+            if !isToggle {
                 animateItemVisibility(item, visible: !mirroring, animated: true)
             }
         }
         for item in extMirrorFadeItems where item != mirrorToggleItem {
             let isToggle = extToggleItems.contains(item)
-            let isSlider = item.view?.identifier?.rawValue.hasPrefix("slider_") ?? false
-            if !isToggle && !isSlider {
+            if !isToggle {
                 animateItemVisibility(item, visible: !mirroring, animated: true)
             }
         }
@@ -625,6 +449,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let modes = MusicDisplayMode.allCases
         guard sender.tag >= 0, sender.tag < modes.count else { return }
         settings.musicDisplayMode = modes[sender.tag]
+    }
+    @objc func musicSourcePicked(_ sender: NSMenuItem) {
+        let sources = MusicSource.allCases
+        guard sender.tag >= 0, sender.tag < sources.count else { return }
+        settings.musicSource = sources[sender.tag]
     }
     @objc func musicLingerChanged(_ sender: NSSlider) {
         let v = TimeInterval(sender.doubleValue)

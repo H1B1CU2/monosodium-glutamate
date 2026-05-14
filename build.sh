@@ -31,6 +31,7 @@ swiftc \
     MusicMonitor.swift \
     MusicPopover.swift \
     SettingsWindow.swift \
+    WallpaperEngine.swift \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos13.0 \
@@ -38,6 +39,9 @@ swiftc \
     -framework SwiftUI \
     -framework ServiceManagement \
     -framework IOKit \
+    -framework ImageIO \
+    -F/System/Library/PrivateFrameworks \
+    -framework MediaRemote \
     -O
 
 echo "▸ Copying Info.plist..."

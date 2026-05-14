@@ -102,6 +102,7 @@ final class SettingsViewModel: ObservableObject {
     var displayOrder: [Int]                { get { s.displayOrder }         set { s.displayOrder = newValue;         objectWillChange.send() } }
     var musicDisplayMode: MusicDisplayMode { get { s.musicDisplayMode }     set { s.musicDisplayMode = newValue;     objectWillChange.send() } }
     var musicLingerDuration: TimeInterval  { get { s.musicLingerDuration }  set { s.musicLingerDuration = newValue;  objectWillChange.send() } }
+    var musicSource: MusicSource            { get { s.musicSource }         set { s.musicSource = newValue;         objectWillChange.send() } }
     var mirrorMainDisplay: Bool            { get { s.mirrorMainDisplay }    set { s.mirrorMainDisplay = newValue;    objectWillChange.send() } }
     var cornerRadius: CGFloat              { get { s.cornerRadius }         set { s.cornerRadius = newValue;         objectWillChange.send() } }
     var topCornersEnabled: Bool            { get { s.topCornersEnabled }    set { s.topCornersEnabled = newValue;    objectWillChange.send() } }
@@ -386,7 +387,7 @@ struct IndicatorPreviewView: View {
 func indicatorAnimation(for style: AnimationStyle) -> Animation? {
     switch style {
     case .none:   return nil
-    case .solid:  return .linear(duration: 0.18)
+    case .solid:  return .linear(duration: 0.08)
     case .liquid: return .easeOut(duration: 0.5)
     case .jelly:  return .spring(response: 0.45, dampingFraction: 0.5, blendDuration: 0.5)
     }
@@ -598,7 +599,7 @@ struct MusicPopoverScene: View {
         Color.clear
             .aspectRatio(1.6, contentMode: .fit)
             .overlay(sceneContent)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var sceneContent: some View {
@@ -673,7 +674,7 @@ struct MusicPopoverScene: View {
 
     private func popoverAnim(at date: Date) -> (opacity: Double, offsetY: CGFloat) {
         let t = date.timeIntervalSinceReferenceDate
-        let cycle = t.truncatingRemainder(dividingBy: 4.0)
+        let cycle = t.truncatingRemainder(dividingBy: 10.0)
         let appearing = cycle < 0.35
         let opacity: Double = appearing ? cycle / 0.35 : 1.0
         let offsetY: CGFloat = appearing ? CGFloat((1.0 - cycle / 0.35) * 10.0) : 0
@@ -1144,6 +1145,7 @@ struct CornermizationPane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var lastHaptic: Int = -1
     @State private var screens: [NSScreen] = NSScreen.screens
+    @State private var hasPendingChanges = false
 
     private var externals: [NSScreen] {
         guard let builtIn = screens.first else { return [] }
@@ -1153,87 +1155,129 @@ struct CornermizationPane: View {
     private var radiusVisible: Bool { vm.topCornersEnabled || vm.bottomCornersEnabled }
 
     var body: some View {
-        PaneContainer(section: .corner) {
-            Section("Preview") {
-                CornerPreviewView(
-                    radius: vm.cornerRadius,
-                    topEnabled: vm.topCornersEnabled,
-                    bottomEnabled: vm.bottomCornersEnabled,
-                    underBar: vm.topCornersUnderMenuBar
-                )
-                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                .listRowBackground(Color.clear)
-            }
-
-            Section(swCachedModelName()) {
-                if hasExternals {
-                    Toggle("Apply to all displays",
-                           isOn: Binding(get: { vm.mirrorMainDisplay }, set: { vm.mirrorMainDisplay = $0 }))
+        ZStack(alignment: .bottom) {
+            PaneContainer(section: .corner) {
+                Section("Preview") {
+                    CornerPreviewView(
+                        radius: vm.cornerRadius,
+                        topEnabled: vm.topCornersEnabled,
+                        bottomEnabled: vm.bottomCornersEnabled,
+                        underBar: vm.topCornersUnderMenuBar
+                    )
+                                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    .listRowBackground(Color.clear)
                 }
-                Toggle("Top Corners",
-                       isOn: Binding(get: { vm.topCornersEnabled }, set: { vm.topCornersEnabled = $0 }))
-                if vm.topCornersEnabled {
-                    Picker("Position", selection: Binding(
-                        get: { vm.topCornersUnderMenuBar },
-                        set: { vm.topCornersUnderMenuBar = $0 }
-                    )) {
-                        Text("At Screen Edge").tag(false)
-                        Text("Below Menu Bar").tag(true)
+
+                Section(swCachedModelName()) {
+                    if hasExternals {
+                        Toggle("Apply to all displays",
+                               isOn: bind({ vm.mirrorMainDisplay }, { vm.mirrorMainDisplay = $0 }))
                     }
-                    .pickerStyle(.segmented)
-                }
-                Toggle("Bottom Corners",
-                       isOn: Binding(get: { vm.bottomCornersEnabled }, set: { vm.bottomCornersEnabled = $0 }))
-                if radiusVisible {
-                    radiusSlider(value: Binding(
-                        get: { Double(vm.cornerRadius) },
-                        set: { vm.cornerRadius = CGFloat($0) }
-                    ))
-                }
-            }
-
-            ForEach(externals, id: \.self) { screen in
-                if let uuid = swScreenUUID(screen) {
-                    let pos = screens.first.map { swDisplayPosition(for: screen, relativeTo: $0) } ?? ""
-                    let label = pos.isEmpty ? screen.localizedName : "\(screen.localizedName) (\(pos))"
-                    Section(label) {
-                        externalControls(uuid: uuid, vm: vm)
-                            .disabled(vm.mirrorMainDisplay)
-                            .opacity(vm.mirrorMainDisplay ? 0.4 : 1)
-                            .animation(.easeInOut(duration: 0.2), value: vm.mirrorMainDisplay)
+                    Toggle("Top Corners",
+                           isOn: bind({ vm.topCornersEnabled }, { vm.topCornersEnabled = $0 }))
+                    if vm.topCornersEnabled {
+                        Picker("Position", selection: bind({ vm.topCornersUnderMenuBar },
+                                                           { vm.topCornersUnderMenuBar = $0 })) {
+                            Text("At Screen Edge").tag(false)
+                            Text("Below Menu Bar").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    Toggle("Bottom Corners",
+                           isOn: bind({ vm.bottomCornersEnabled }, { vm.bottomCornersEnabled = $0 }))
+                    if radiusVisible {
+                        radiusSlider(value: bind({ Double(vm.cornerRadius) },
+                                                 { vm.cornerRadius = CGFloat($0) }))
                     }
                 }
+
+                ForEach(externals, id: \.self) { screen in
+                    if let uuid = swScreenUUID(screen) {
+                        let pos = screens.first.map { swDisplayPosition(for: screen, relativeTo: $0) } ?? ""
+                        let label = pos.isEmpty ? screen.localizedName : "\(screen.localizedName) (\(pos))"
+                        Section(label) {
+                            externalControls(uuid: uuid, vm: vm)
+                                .disabled(vm.mirrorMainDisplay)
+                                .opacity(vm.mirrorMainDisplay ? 0.4 : 1)
+                                .animation(.easeInOut(duration: 0.2), value: vm.mirrorMainDisplay)
+                        }
+                    }
+                }
+
+                Section { Color.clear.frame(height: 36).listRowBackground(Color.clear) }
             }
+
+            applyFooter
         }
+        .onAppear { WallpaperEngine.shared.beginEditing() }
+        .onDisappear { WallpaperEngine.shared.commit() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
         }
     }
 
+    /// Wraps a Binding so every write pokes the wallpaper engine and marks changes pending.
+    private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
+        Binding(get: get, set: { newValue in
+            set(newValue)
+            hasPendingChanges = true
+            WallpaperEngine.shared.noteUserInteraction()
+        })
+    }
+
+    @ViewBuilder
+    private var applyFooter: some View {
+        HStack(spacing: 12) {
+            Spacer()
+            Button("Apply") {
+                WallpaperEngine.shared.commit()
+                hasPendingChanges = false
+            }
+            .controlSize(.large)
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!hasPendingChanges)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(
+            VisualEffectBlur(material: .headerView, blendingMode: .withinWindow)
+                .mask(LinearGradient(stops: [
+                    .init(color: .clear,                location: 0.00),
+                    .init(color: .black.opacity(0.20), location: 0.08),
+                    .init(color: .black.opacity(0.55), location: 0.20),
+                    .init(color: .black,                location: 0.45),
+                    .init(color: .black,                location: 1.00),
+                ], startPoint: .top, endPoint: .bottom))
+        )
+        .ignoresSafeArea(.container, edges: .bottom)
+    }
+
     @ViewBuilder
     private func externalControls(uuid: String, vm: SettingsViewModel) -> some View {
-        Toggle("Top Corners", isOn: Binding(
-            get: { AppSettings.shared.extTopCornersEnabled(for: uuid) },
-            set: { AppSettings.shared.setExtTopCornersEnabled($0, for: uuid); vm.objectWillChange.send() }
+        Toggle("Top Corners", isOn: bind(
+            { AppSettings.shared.extTopCornersEnabled(for: uuid) },
+            { AppSettings.shared.setExtTopCornersEnabled($0, for: uuid); vm.objectWillChange.send() }
         ))
         if AppSettings.shared.extTopCornersEnabled(for: uuid) {
-            Picker("Position", selection: Binding(
-                get: { AppSettings.shared.extTopCornersUnderMenuBar(for: uuid) },
-                set: { AppSettings.shared.setExtTopCornersUnderMenuBar($0, for: uuid); vm.objectWillChange.send() }
+            Picker("Position", selection: bind(
+                { AppSettings.shared.extTopCornersUnderMenuBar(for: uuid) },
+                { AppSettings.shared.setExtTopCornersUnderMenuBar($0, for: uuid); vm.objectWillChange.send() }
             )) {
                 Text("At Screen Edge").tag(false)
                 Text("Below Menu Bar").tag(true)
             }
             .pickerStyle(.segmented)
         }
-        Toggle("Bottom Corners", isOn: Binding(
-            get: { AppSettings.shared.extBottomCornersEnabled(for: uuid) },
-            set: { AppSettings.shared.setExtBottomCornersEnabled($0, for: uuid); vm.objectWillChange.send() }
+        Toggle("Bottom Corners", isOn: bind(
+            { AppSettings.shared.extBottomCornersEnabled(for: uuid) },
+            { AppSettings.shared.setExtBottomCornersEnabled($0, for: uuid); vm.objectWillChange.send() }
         ))
         if AppSettings.shared.extTopCornersEnabled(for: uuid) || AppSettings.shared.extBottomCornersEnabled(for: uuid) {
-            radiusSlider(value: Binding(
-                get: { Double(AppSettings.shared.extCornerRadius(for: uuid)) },
-                set: { AppSettings.shared.setExtCornerRadius(CGFloat($0), for: uuid); vm.objectWillChange.send() }
+            radiusSlider(value: bind(
+                { Double(AppSettings.shared.extCornerRadius(for: uuid)) },
+                { AppSettings.shared.setExtCornerRadius(CGFloat($0), for: uuid); vm.objectWillChange.send() }
             ))
         }
     }
@@ -1242,7 +1286,7 @@ struct CornermizationPane: View {
     private func radiusSlider(value: Binding<Double>) -> some View {
         HStack {
             Text("Radius")
-            Slider(value: value, in: 1...30, step: 1)
+            Slider(value: value, in: 0...30, step: 1)
                 .onChange(of: value.wrappedValue) { newVal in
                     let i = Int(newVal)
                     if i != lastHaptic {
@@ -1287,6 +1331,15 @@ struct MusicPane: View {
                     Spacer()
                 }
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+            }
+
+            Section("Source") {
+                Picker("Source", selection: Binding(
+                    get: { vm.musicSource },
+                    set: { vm.musicSource = $0 }
+                )) {
+                    ForEach(MusicSource.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
             }
 
             Section("Mode") {

@@ -20,6 +20,8 @@
 		BB00000A /* MusicMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010A /* MusicMonitor.swift */; };
 		BB00000C /* MusicPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010C /* MusicPopover.swift */; };
 		BB00000D /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010D /* SettingsWindow.swift */; };
+		BB00000E /* WallpaperEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010E /* WallpaperEngine.swift */; };
+		BB00000F /* MissionControlDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010F /* MissionControlDetector.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +41,8 @@
 		BB00010B /* MSG.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MSG.entitlements; sourceTree = "<group>"; };
 		BB00010C /* MusicPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPopover.swift; sourceTree = "<group>"; };
 		BB00010D /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
+		BB00010E /* WallpaperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperEngine.swift; sourceTree = "<group>"; };
+		BB00010F /* MissionControlDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MissionControlDetector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +71,8 @@
 				BB00010A /* MusicMonitor.swift */,
 				BB00010C /* MusicPopover.swift */,
 				BB00010D /* SettingsWindow.swift */,
+				BB00010E /* WallpaperEngine.swift */,
+				BB00010F /* MissionControlDetector.swift */,
 				BB00010B /* MSG.entitlements */,
 				189478512FADD198007A7799 /* Info.plist */,
 				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
@@ -175,6 +181,8 @@
 				BB00000A /* MusicMonitor.swift in Sources */,
 				BB00000C /* MusicPopover.swift in Sources */,
 				BB00000D /* SettingsWindow.swift in Sources */,
+				BB00000E /* WallpaperEngine.swift in Sources */,
+				BB00000F /* MissionControlDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -324,6 +332,12 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.4;
 				MARKETING_VERSION = 1.1.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-F/System/Library/PrivateFrameworks",
+					"-framework",
+					MediaRemote,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -362,6 +376,12 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 12.4;
 				MARKETING_VERSION = 1.1.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-F/System/Library/PrivateFrameworks",
+					"-framework",
+					MediaRemote,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
