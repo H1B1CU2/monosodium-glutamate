@@ -108,16 +108,16 @@ final class SettingsViewModel: ObservableObject {
     var topCornersEnabled: Bool            { get { s.topCornersEnabled }    set { s.topCornersEnabled = newValue;    objectWillChange.send() } }
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
-    var menuBarVisible: Bool               { get { s.menuBarVisible }       set { s.menuBarVisible = newValue;       objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var autoUpdate: Bool                   { get { s.autoUpdate }           set { s.autoUpdate = newValue;           objectWillChange.send() } }
     var updateChannel: String              { get { s.updateChannel }        set { s.updateChannel = newValue;        objectWillChange.send() } }
+    var fakeMonitor: Bool                   { get { s.fakeMonitor }          set { s.fakeMonitor = newValue;          objectWillChange.send() } }
 }
 
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, spacer, corner, music
+    case general, about, spacer, corner, music, developer
     var id: String { rawValue }
 
     var title: String {
@@ -126,7 +126,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:   return "About"
         case .spacer:  return "Spacer"
         case .corner:  return "Cornermization"
-        case .music:   return "Music Display"
+        case .music:      return "Music Display"
+        case .developer:  return "Developer"
         }
     }
 
@@ -136,7 +137,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:   return "info.circle.fill"
         case .spacer:  return "rectangle.split.3x1.fill"
         case .corner:  return "viewfinder"
-        case .music:   return "music.note"
+        case .music:      return "music.note"
+        case .developer:  return "hammer.fill"
         }
     }
 
@@ -150,7 +152,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:   return Color(hex: 0xff5a3c)
         case .spacer:  return Color(hex: 0x117cfc)
         case .corner:  return Color(hex: 0x5e5ce6)
-        case .music:   return Color(hex: 0xff2d55)
+        case .music:      return Color(hex: 0xff2d55)
+        case .developer:  return Color(hex: 0x30d158)
         }
     }
 
@@ -160,7 +163,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:   return "Version info and acknowledgements"
         case .spacer:  return "Menu bar Deskspace indicator for Mission Control spaces"
         case .corner:  return "Paint black corner masks to match each display's curvature"
-        case .music:   return "Menu bar music label with trackpad gesture control"
+        case .music:      return "Menu bar music label with trackpad gesture control"
+        case .developer:  return "Debug tools for development and testing"
         }
     }
 }
@@ -318,7 +322,7 @@ struct SettingsWindow: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section { sidebarRow(.general) }
-                Section { sidebarRow(.spacer); sidebarRow(.corner); sidebarRow(.music) }
+                Section { sidebarRow(.corner); sidebarRow(.spacer); sidebarRow(.music); sidebarRow(.developer) }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -347,6 +351,7 @@ struct SettingsWindow: View {
         case .spacer:  SpacerPane(vm: vm)
         case .corner:  CornermizationPane(vm: vm)
         case .music:   MusicPane(vm: vm)
+        case .developer: DeveloperPane(vm: vm)
         case .about:   GeneralPane(vm: vm)
         }
     }
@@ -360,18 +365,18 @@ struct IndicatorPreviewView: View {
     let animationStyle: AnimationStyle
     let stackMode: StackMode
     let screens: Int
+    var wallpaperImage: NSImage? = nil
     @State private var activeSpace: Int = 2
     private let spaceCount = 5
 
     var body: some View {
-        VStack(spacing: 10) {
-            DisplayPreviewView(
-                style: style, animationStyle: animationStyle, stackMode: stackMode,
-                spaceCount: spaceCount, activeSpace: activeSpace,
-                showMusic: false, screenCount: screens,
-                fixedHeight: 80
-            )
-        }
+        DisplayPreviewView(
+            style: style, animationStyle: animationStyle, stackMode: stackMode,
+            spaceCount: spaceCount, activeSpace: activeSpace,
+            showMusic: false, screenCount: screens,
+            fixedHeight: 80,
+            wallpaperImage: wallpaperImage
+        )
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             activeSpace = activeSpace >= spaceCount ? 1 : activeSpace + 1
         }
@@ -401,6 +406,7 @@ struct CornerPreviewView: View {
     let topEnabled: Bool
     let bottomEnabled: Bool
     let underBar: Bool
+    var wallpaperImage: NSImage? = nil
 
     var body: some View {
         DisplayPreviewView(
@@ -410,7 +416,8 @@ struct CornerPreviewView: View {
             cornerRadius: radius,
             topCornersEnabled: topEnabled,
             bottomCornersEnabled: bottomEnabled,
-            underMenuBar: underBar
+            underMenuBar: underBar,
+            wallpaperImage: wallpaperImage
         )
     }
 }
@@ -420,25 +427,16 @@ struct CornerPreviewView: View {
 @available(macOS 14.0, *)
 struct MusicPreviewView: View {
     let mode: MusicDisplayMode
+    var wallpaperImage: NSImage? = nil
 
     var body: some View {
-        ZStack(alignment: .top) {
-            LinearGradient(
-                stops: [
-                    .init(color: Color(hex: 0x5b8def), location: 0),
-                    .init(color: Color(hex: 0x8a6df3), location: 0.5),
-                    .init(color: Color(hex: 0xd660b4), location: 1),
-                ],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            PreviewMenuBar(
-                style: .pill, stackMode: .inline,
-                spaceCount: 4, activeSpace: 2,
-                showMusic: mode != .off, screenCount: 1
-            )
-        }
-        .frame(height: 80)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        DisplayPreviewView(
+            style: .pill, stackMode: .inline,
+            spaceCount: 4, activeSpace: 2,
+            showMusic: mode != .off, screenCount: 1,
+            fixedHeight: 80,
+            wallpaperImage: wallpaperImage
+        )
     }
 }
 
@@ -461,6 +459,77 @@ struct TrackpadPreview: View {
         }
         .onAppear {
             withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) { fingerX = 20 }
+        }
+    }
+}
+
+// MARK: - Spacer Preview Scene (top-right crop, mirrors MusicPopoverScene)
+
+@available(macOS 14.0, *)
+struct SpacerPreviewScene: View {
+    let style: DisplayStyle
+    let animationStyle: AnimationStyle
+    let stackMode: StackMode
+    let screenCount: Int
+    var wallpaperImage: NSImage? = nil
+    @State private var activeSpace: Int = 2
+    private let spaceCount = 5
+    private let menuBarHeight: CGFloat = 30
+    private let trailingPad: CGFloat = 16
+
+    private var screenRatio: CGFloat {
+        guard let s = NSScreen.main else { return 1.6 }
+        return s.frame.width / s.frame.height
+    }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(screenRatio, contentMode: .fit)
+            .overlay(sceneContent)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.15), lineWidth: 1))
+            .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
+                activeSpace = activeSpace >= spaceCount ? 1 : activeSpace + 1
+            }
+    }
+
+    private var sceneContent: some View {
+        ZStack(alignment: .topTrailing) {
+            if let wp = wallpaperImage {
+                Image(nsImage: wp).resizable().aspectRatio(contentMode: .fill)
+                    .scaleEffect(2.0, anchor: .topTrailing)
+            } else {
+                LinearGradient(
+                    stops: [
+                        .init(color: Color(hex: 0x5b8def), location: 0),
+                        .init(color: Color(hex: 0x8a6df3), location: 0.5),
+                        .init(color: Color(hex: 0xd660b4), location: 1),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Spacer()
+                    PreviewSpaceIndicator(
+                        style: style, animationStyle: animationStyle,
+                        stackMode: stackMode,
+                        spaceCount: spaceCount, activeSpace: activeSpace,
+                        screenCount: screenCount,
+                        scale: 2.0
+                    )
+                    Image(systemName: "switch.2")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(Color.black.opacity(0.85))
+                    Text("10:00")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color.black.opacity(0.85))
+                }
+                .padding(.horizontal, trailingPad)
+                .frame(height: menuBarHeight)
+                .background(Color.white.opacity(0.65))
+                Spacer()
+            }
         }
     }
 }
@@ -591,28 +660,39 @@ struct DownNotch: Shape {
 
 @available(macOS 14.0, *)
 struct MusicPopoverScene: View {
+    var wallpaperImage: NSImage? = nil
     private let popoverWidth: CGFloat = 200
     private let menuBarHeight: CGFloat = 30
     private let trailingPad: CGFloat = 16
 
+    private var screenRatio: CGFloat {
+        guard let s = NSScreen.main else { return 1.6 }
+        return s.frame.width / s.frame.height
+    }
+
     var body: some View {
         Color.clear
-            .aspectRatio(1.6, contentMode: .fit)
+            .aspectRatio(screenRatio, contentMode: .fit)
             .overlay(sceneContent)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.15), lineWidth: 1))
     }
 
     private var sceneContent: some View {
         ZStack(alignment: .topTrailing) {
-            // Wallpaper backdrop
-            LinearGradient(
-                stops: [
-                    .init(color: Color(hex: 0x5b8def), location: 0),
-                    .init(color: Color(hex: 0x8a6df3), location: 0.5),
-                    .init(color: Color(hex: 0xd660b4), location: 1),
-                ],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
+            if let wp = wallpaperImage {
+                Image(nsImage: wp).resizable().aspectRatio(contentMode: .fill)
+                    .scaleEffect(2.0, anchor: .topTrailing)
+            } else {
+                LinearGradient(
+                    stops: [
+                        .init(color: Color(hex: 0x5b8def), location: 0),
+                        .init(color: Color(hex: 0x8a6df3), location: 0.5),
+                        .init(color: Color(hex: 0xd660b4), location: 1),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            }
 
             // Minimal right-edge menu bar slice (music label + control center + time)
             VStack(spacing: 0) {
@@ -698,15 +778,21 @@ struct DisplayPreviewView: View {
     var bottomCornersEnabled: Bool = false
     var underMenuBar: Bool = false
     var fixedHeight: CGFloat? = nil
+    var wallpaperImage: NSImage? = nil
 
-    private let menuBarH: CGFloat = 26
+    private let menuBarH: CGFloat = 20
+
+    private var screenRatio: CGFloat {
+        guard let s = NSScreen.main else { return 1.6 }
+        return s.frame.width / s.frame.height
+    }
 
     var body: some View {
         Group {
             if let h = fixedHeight {
-                Color.clear.frame(height: h).aspectRatio(1.6, contentMode: .fill)
+                Color.clear.frame(height: h).aspectRatio(screenRatio, contentMode: .fill)
             } else {
-                Color.clear.aspectRatio(1.6, contentMode: .fit)
+                Color.clear.aspectRatio(screenRatio, contentMode: .fit)
             }
         }
         .overlay(displayContent)
@@ -715,16 +801,20 @@ struct DisplayPreviewView: View {
     }
 
     private var displayContent: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                LinearGradient(
-                    stops: [
-                        .init(color: Color(hex: 0x5b8def), location: 0),
-                        .init(color: Color(hex: 0x8a6df3), location: 0.5),
-                        .init(color: Color(hex: 0xd660b4), location: 1),
-                    ],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
+                if let wp = wallpaperImage {
+                    Image(nsImage: wp).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color(hex: 0x5b8def), location: 0),
+                            .init(color: Color(hex: 0x8a6df3), location: 0.5),
+                            .init(color: Color(hex: 0xd660b4), location: 1),
+                        ],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                }
 
                 VStack(spacing: 0) {
                     PreviewMenuBar(
@@ -736,7 +826,8 @@ struct DisplayPreviewView: View {
                 }
 
                 if cornerRadius > 0 {
-                    Canvas { ctx, size in drawCorners(ctx: &ctx, size: size) }
+                    Canvas { ctx, _ in drawCorners(ctx: &ctx, size: geo.size) }
+                        .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
         }
@@ -780,42 +871,46 @@ struct PreviewMenuBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "apple.logo").font(.system(size: 8, weight: .medium))
-            Text("Finder").font(.system(size: 9, weight: .semibold))
-            Text("File").font(.system(size: 9)).opacity(0.75)
-            Text("Edit").font(.system(size: 9)).opacity(0.75)
-            Text("View").font(.system(size: 9)).opacity(0.75)
+            Image(systemName: "apple.logo").font(.system(size: 7, weight: .medium))
+            Text("Finder").font(.system(size: 8, weight: .semibold))
+            Text("File").font(.system(size: 8)).opacity(0.75)
+            Text("Edit").font(.system(size: 8)).opacity(0.75)
+            Text("View").font(.system(size: 8)).opacity(0.75)
             Spacer()
             PreviewSpaceIndicator(style: style, animationStyle: animationStyle, stackMode: stackMode,
                                   spaceCount: spaceCount, activeSpace: activeSpace, screenCount: screenCount)
             if showMusic { PreviewMusicPill() }
             Image(systemName: "switch.2")
-                .font(.system(size: 10))
+                .font(.system(size: 9))
             TimelineView(.periodic(from: .now, by: 30)) { _ in
                 Text(Date.now, format: .dateTime.hour().minute())
-                    .font(.system(size: 9))
+                    .font(.system(size: 8))
             }
+            Spacer().frame(width: 4)
         }
         .foregroundColor(Color.black.opacity(0.85))
         .padding(.horizontal, 10)
-        .frame(height: 26)
+        .frame(height: 20)
         .background(Color.white.opacity(0.65))
     }
 }
 
-// Real renderer constants from IndicatorRenderer.swift, scaled ~0.7 for 26pt preview menu bar.
+// Real renderer constants from IndicatorRenderer.swift, scaled for 20pt preview menu bar.
 struct PillDotsDims {
     let dotD: CGFloat, pillW: CGFloat, pillH: CGFloat, sp: CGFloat, rowH: CGFloat
     static func pill(compact: Bool) -> PillDotsDims {
-        compact ? .init(dotD: 3, pillW: 12, pillH: 3, sp: 3, rowH: 6)
-                : .init(dotD: 4, pillW: 18, pillH: 6, sp: 4, rowH: 14)
+        compact ? .init(dotD: 2, pillW: 9, pillH: 2, sp: 2, rowH: 4)
+                : .init(dotD: 3, pillW: 14, pillH: 5, sp: 3, rowH: 11)
     }
     static func dots(compact: Bool) -> PillDotsDims {
-        compact ? .init(dotD: 4, pillW: 4, pillH: 4, sp: 4, rowH: 6)
-                : .init(dotD: 6, pillW: 6, pillH: 6, sp: 6, rowH: 8)
+        compact ? .init(dotD: 3, pillW: 3, pillH: 3, sp: 3, rowH: 5)
+                : .init(dotD: 5, pillW: 5, pillH: 5, sp: 5, rowH: 6)
     }
     func naturalWidth(spaceCount: Int) -> CGFloat {
         CGFloat(spaceCount) * dotD + max(0, CGFloat(spaceCount - 1)) * sp + (pillW - dotD)
+    }
+    func scaled(_ s: CGFloat) -> PillDotsDims {
+        .init(dotD: dotD*s, pillW: pillW*s, pillH: pillH*s, sp: sp*s, rowH: rowH*s)
     }
 }
 
@@ -826,6 +921,7 @@ struct PreviewSpaceIndicator: View {
     let spaceCount: Int
     let activeSpace: Int
     let screenCount: Int
+    var scale: CGFloat = 1.0
 
     // Only pill/dots respect stack mode. Numbers/boldNumber always render inline (real renderer behavior).
     private var stacked: Bool {
@@ -846,13 +942,13 @@ struct PreviewSpaceIndicator: View {
     private var pillDotsBody: some View {
         let isDots = style == .dots
         let compact = stacked
-        let dims = isDots ? PillDotsDims.dots(compact: compact) : PillDotsDims.pill(compact: compact)
+        let dims = (isDots ? PillDotsDims.dots(compact: compact) : PillDotsDims.pill(compact: compact)).scaled(scale)
         let rowCounts: [Int] = screenCount > 1 ? [spaceCount, max(1, spaceCount - 1)] : [spaceCount]
 
         if stacked {
             // Equal-length stacked rows — matches real renderer's rowStretch behavior.
             let widest = rowCounts.map { dims.naturalWidth(spaceCount: $0) }.max() ?? 0
-            VStack(spacing: 1) {
+            VStack(spacing: 1 * scale) {
                 ForEach(0..<rowCounts.count, id: \.self) { i in
                     AnimatedPillDotsRow(
                         spaceCount: rowCounts[i],
@@ -865,14 +961,14 @@ struct PreviewSpaceIndicator: View {
                 }
             }
         } else if rowCounts.count > 1 {
-            // Inline multi-display: side-by-side rows with a 1.5×8 separator capsule.
+            // Inline multi-display: side-by-side rows with a separator capsule.
             HStack(spacing: 0) {
                 ForEach(0..<rowCounts.count, id: \.self) { i in
                     if i > 0 {
                         Capsule()
                             .fill(Color.black.opacity(0.40))
-                            .frame(width: 1.5, height: 8)
-                            .padding(.horizontal, 8)
+                            .frame(width: 1.5 * scale, height: 8 * scale)
+                            .padding(.horizontal, 8 * scale)
                     }
                     AnimatedPillDotsRow(
                         spaceCount: rowCounts[i],
@@ -899,22 +995,22 @@ struct PreviewSpaceIndicator: View {
             ForEach(0..<displayCount, id: \.self) { i in
                 if i > 0 {
                     Text(" | ")
-                        .font(.system(size: 11, weight: .light, design: .monospaced))
+                        .font(.system(size: 9 * scale, weight: .light, design: .monospaced))
                         .foregroundColor(Color.black.opacity(0.40))
                 }
                 let activeForDisplay = clamp(activeSpace - i, inRange: spaceCount)
                 if bold {
                     Text("\(activeForDisplay)")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9 * scale, weight: .bold, design: .monospaced))
                         .foregroundColor(Color.black.opacity(0.85))
                         .animation(indicatorAnimation(for: animationStyle), value: activeForDisplay)
                 } else {
-                    HStack(spacing: 2) {
+                    HStack(spacing: 2 * scale) {
                         ForEach(1...spaceCount, id: \.self) { n in
                             let dist = CGFloat(abs(n - activeForDisplay))
                             let blend = max(0, 1.0 - dist)
                             Text("\(n)")
-                                .font(.system(size: 9, weight: n == activeForDisplay ? .bold : .regular, design: .monospaced))
+                                .font(.system(size: 8 * scale, weight: n == activeForDisplay ? .bold : .regular, design: .monospaced))
                                 .foregroundColor(blendBlack(weight: blend, dimmed: false))
                                 .animation(indicatorAnimation(for: animationStyle), value: activeForDisplay)
                         }
@@ -1055,13 +1151,13 @@ private func blendBlack(weight: CGFloat, dimmed: Bool) -> Color {
 
 struct PreviewMusicPill: View {
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Text("Miss Summer — temp.")
-                .font(.system(size: 9))
+                .font(.system(size: 8))
                 .foregroundColor(Color.black.opacity(0.85))
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
-                HStack(spacing: 1.5) {
+                HStack(spacing: 1) {
                     ForEach(0..<4) { i in
                         RoundedRectangle(cornerRadius: 0.75)
                             .fill(Color.black.opacity(0.6))
@@ -1076,7 +1172,7 @@ struct PreviewMusicPill: View {
         let offsets: [CGFloat] = [0, 0.4, 0.9, 1.3]
         let phase = t * 2 * .pi / 1.2
         let h = sin(phase + offsets[i]) * 0.5 + 0.5
-        return 3 + h * 6
+        return 2 + h * 4
     }
 }
 
@@ -1086,6 +1182,7 @@ struct PreviewMusicPill: View {
 struct SpacerPane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var screens: [NSScreen] = NSScreen.screens
+    @State private var previewWallpaper: NSImage? = nil
 
     private var hideJelly: Bool {
         vm.displayStyle == .numbers || vm.displayStyle == .boldNumber || vm.displayStyle == .dots
@@ -1096,13 +1193,14 @@ struct SpacerPane: View {
     var body: some View {
         PaneContainer(section: .spacer) {
             Section("Preview") {
-                IndicatorPreviewView(
+                SpacerPreviewScene(
                     style: vm.displayStyle,
                     animationStyle: vm.animationStyle,
                     stackMode: vm.stackMode,
-                    screens: screens.count
+                    screenCount: screens.count,
+                    wallpaperImage: previewWallpaper
                 )
-                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                 .listRowBackground(Color.clear)
             }
 
@@ -1132,6 +1230,12 @@ struct SpacerPane: View {
             }
 
         }
+        .onAppear {
+            if let screen = NSScreen.main ?? NSScreen.screens.first {
+                previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
+                    ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
         }
@@ -1146,10 +1250,13 @@ struct CornermizationPane: View {
     @State private var lastHaptic: Int = -1
     @State private var screens: [NSScreen] = NSScreen.screens
     @State private var hasPendingChanges = false
+    @State private var externalChangeDetected = false
+    @State private var rememberedRadius: CGFloat = 0
+    @State private var rememberedExtRadii: [String: CGFloat] = [:]
+    @State private var previewWallpaper: NSImage? = nil
 
     private var externals: [NSScreen] {
-        guard let builtIn = screens.first else { return [] }
-        return screens.filter { $0 != builtIn }
+        screens.filter { !$0.isBuiltin }
     }
     private var hasExternals: Bool { !externals.isEmpty }
     private var radiusVisible: Bool { vm.topCornersEnabled || vm.bottomCornersEnabled }
@@ -1162,11 +1269,14 @@ struct CornermizationPane: View {
                         radius: vm.cornerRadius,
                         topEnabled: vm.topCornersEnabled,
                         bottomEnabled: vm.bottomCornersEnabled,
-                        underBar: vm.topCornersUnderMenuBar
+                        underBar: vm.topCornersUnderMenuBar,
+                        wallpaperImage: previewWallpaper
                     )
                                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                     .listRowBackground(Color.clear)
                 }
+
+                Section { actionButtons }
 
                 Section(swCachedModelName()) {
                     if hasExternals {
@@ -1190,6 +1300,7 @@ struct CornermizationPane: View {
                                                  { vm.cornerRadius = CGFloat($0) }))
                     }
                 }
+                .disabled(externalChangeDetected)
 
                 ForEach(externals, id: \.self) { screen in
                     if let uuid = swScreenUUID(screen) {
@@ -1204,54 +1315,138 @@ struct CornermizationPane: View {
                     }
                 }
 
-                Section { Color.clear.frame(height: 36).listRowBackground(Color.clear) }
             }
 
-            applyFooter
+            externalChangeBanner
         }
-        .onAppear { WallpaperEngine.shared.beginEditing() }
-        .onDisappear { WallpaperEngine.shared.commit() }
+        .onAppear {
+            loadPreviewWallpaper()
+            WallpaperEngine.shared.showBaseline()
+            WallpaperEngine.shared.onExternalChange = {
+                // Remember current settings before resetting
+                rememberedRadius = vm.cornerRadius
+                rememberedExtRadii.removeAll()
+                for screen in screens {
+                    if let uuid = swScreenUUID(screen) {
+                        rememberedExtRadii[uuid] = AppSettings.shared.extCornerRadius(for: uuid)
+                    }
+                }
+                // Reset corners so user sees the raw new wallpaper
+                vm.cornerRadius = 0
+                for screen in screens {
+                    if let uuid = swScreenUUID(screen) {
+                        AppSettings.shared.setExtCornerRadius(0, for: uuid)
+                    }
+                }
+                externalChangeDetected = true
+                hasPendingChanges = false
+            }
+        }
+        .onDisappear {
+            if hasPendingChanges { WallpaperEngine.shared.bake() }
+            hasPendingChanges = false
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
         }
     }
 
-    /// Wraps a Binding so every write pokes the wallpaper engine and marks changes pending.
+    /// Wraps a Binding so every write marks changes pending.
+    /// On the first change after a clean state, reverts the desktop to the
+    /// uncornered baseline so the overlay previews against a clean original.
     private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
         Binding(get: get, set: { newValue in
             set(newValue)
+            if !hasPendingChanges { WallpaperEngine.shared.showBaseline() }
             hasPendingChanges = true
-            WallpaperEngine.shared.noteUserInteraction()
         })
     }
 
+    private var isFetchable: Bool {
+        guard vm.cornerRadius == 0 else { return false }
+        for screen in externals {
+            if let uuid = swScreenUUID(screen),
+               AppSettings.shared.extCornerRadius(for: uuid) != 0 { return false }
+        }
+        return true
+    }
+
+    private var fetchStatusLabel: String {
+        if externalChangeDetected { return "Wallpaper changed externally" }
+        if !isFetchable { return "Set all radii to 0 before capturing" }
+        if WallpaperEngine.shared.isFetched { return "Re-snapshot to update the baseline" }
+        return "Snapshot the current wallpaper as baseline"
+    }
+
     @ViewBuilder
-    private var applyFooter: some View {
-        HStack(spacing: 12) {
+    private var actionButtons: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Capture baseline")
+                Text(fetchStatusLabel)
+                    .font(.caption)
+                    .foregroundStyle(externalChangeDetected ? .orange : .secondary)
+            }
+            Spacer()
+            Button {
+                WallpaperEngine.shared.fetch()
+                loadPreviewWallpaper()
+                if externalChangeDetected {
+                    vm.cornerRadius = rememberedRadius
+                    for (uuid, radius) in rememberedExtRadii {
+                        AppSettings.shared.setExtCornerRadius(radius, for: uuid)
+                    }
+                    WallpaperEngine.shared.bake()
+                }
+                externalChangeDetected = false
+                hasPendingChanges = false
+            } label: {
+                Label(externalChangeDetected ? "Re-fetch" : "Fetch",
+                      systemImage: externalChangeDetected ? "arrow.triangle.2.circlepath" : "square.and.arrow.down")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(externalChangeDetected ? .orange : .accentColor)
+            .disabled(!isFetchable && !externalChangeDetected)
+        }
+
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Bake corners")
+                Text(hasPendingChanges ? "Corner settings changed — apply to wallpaper" : "No pending changes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Apply") {
-                WallpaperEngine.shared.commit()
+                WallpaperEngine.shared.bake()
                 hasPendingChanges = false
             }
-            .controlSize(.large)
             .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
             .disabled(!hasPendingChanges)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
-        .background(
-            VisualEffectBlur(material: .headerView, blendingMode: .withinWindow)
-                .mask(LinearGradient(stops: [
-                    .init(color: .clear,                location: 0.00),
-                    .init(color: .black.opacity(0.20), location: 0.08),
-                    .init(color: .black.opacity(0.55), location: 0.20),
-                    .init(color: .black,                location: 0.45),
-                    .init(color: .black,                location: 1.00),
-                ], startPoint: .top, endPoint: .bottom))
-        )
-        .ignoresSafeArea(.container, edges: .bottom)
+    }
+
+    private func loadPreviewWallpaper() {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
+            ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+    }
+
+    @ViewBuilder
+    private var externalChangeBanner: some View {
+        if externalChangeDetected {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text("Re-fetch will update the baseline and restore your previous corner settings")
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(Color.orange.opacity(0.1))
+        }
     }
 
     @ViewBuilder
@@ -1308,13 +1503,13 @@ struct CornermizationPane: View {
 struct MusicPane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var lastHaptic: Int = -1
+    @State private var previewWallpaper: NSImage? = nil
 
     var body: some View {
         PaneContainer(section: .music) {
             Section("Preview") {
-                MusicPopoverScene()
-                                        .frame(maxWidth: .infinity)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 0, trailing: 16))
+                MusicPopoverScene(wallpaperImage: previewWallpaper)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                     .listRowBackground(Color.clear)
 
                 HStack(spacing: 14) {
@@ -1333,16 +1528,18 @@ struct MusicPane: View {
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
             }
 
-            Section("Source") {
+            Section {
                 Picker("Source", selection: Binding(
                     get: { vm.musicSource },
                     set: { vm.musicSource = $0 }
                 )) {
-                    ForEach(MusicSource.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(MusicSource.allCases, id: \.self) { source in
+                        Text(source.displayLabel).tag(source).disabled(!source.isAvailable)
+                    }
                 }
             }
 
-            Section("Mode") {
+            Section {
                 Picker("Mode", selection: Binding(
                     get: { vm.musicDisplayMode },
                     set: { vm.musicDisplayMode = $0 }
@@ -1372,6 +1569,49 @@ struct MusicPane: View {
                 .animation(.easeInOut(duration: 0.15), value: vm.musicDisplayMode)
             }
         }
+        .onAppear {
+            if let screen = NSScreen.main ?? NSScreen.screens.first {
+                previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
+                    ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+            }
+        }
+    }
+}
+
+// MARK: - Developer pane
+
+@available(macOS 14.0, *)
+struct DeveloperPane: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        PaneContainer(section: .developer) {
+            Section {
+                Toggle("Fake Monitor", isOn: Binding(
+                    get: { vm.fakeMonitor },
+                    set: { vm.fakeMonitor = $0 }
+                ))
+                Text("Simulates an additional display for testing multi-display features")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Button {
+                    repositionDisplays()
+                } label: {
+                    Label("Reposition Displays", systemImage: "arrow.triangle.swap")
+                }
+                Text("Re-arrange displays to their default layout positions")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func repositionDisplays() {
+        // Trigger display reconfiguration
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 }
 
@@ -1468,8 +1708,6 @@ struct GeneralPane: View {
                             }
                         }
                 }
-                Toggle("Show in menu bar",
-                       isOn: Binding(get: { vm.menuBarVisible }, set: { vm.menuBarVisible = $0 }))
                 Toggle("Show in Dock",
                        isOn: Binding(get: { vm.dockIcon }, set: { vm.dockIcon = $0 }))
             }
