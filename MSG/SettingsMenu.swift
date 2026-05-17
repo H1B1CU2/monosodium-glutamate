@@ -52,7 +52,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             item.representedObject = style
             item.target = self
             item.state = (style == settings.displayStyle) ? .on : .off
-            if style == .pill && NSScreen.screens.count > 1 && settings.displayStyle == .pill {
+            if style == .pill && AppSettings.shared.effectiveDisplayCount > 1 && settings.displayStyle == .pill {
                 let stackSub = NSMenu()
                 for mode in StackMode.allCases {
                     let sItem = NSMenuItem(title: mode.rawValue, action: #selector(selStack(_:)), keyEquivalent: "")
@@ -117,10 +117,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let sourcePickerItem = NSMenuItem(title: "  Source", action: nil, keyEquivalent: "")
         let sourcePickerMenu = NSMenu()
         for src in MusicSource.allCases {
-            let m = NSMenuItem(title: "  \(src.rawValue)", action: #selector(musicSourcePicked(_:)), keyEquivalent: "")
+            let m = NSMenuItem(title: "  \(src.displayLabel)", action: #selector(musicSourcePicked(_:)), keyEquivalent: "")
             m.target = self
             m.state = settings.musicSource == src ? .on : .off
             m.tag = MusicSource.allCases.firstIndex(of: src) ?? 0
+            m.isEnabled = src.isAvailable
             sourcePickerMenu.addItem(m)
         }
         sourcePickerItem.submenu = sourcePickerMenu

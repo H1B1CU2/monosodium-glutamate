@@ -115,6 +115,7 @@ final class Indicator {
     }
 
     func start() {
+        statusItem.isVisible = true
         statusItem.button?.target = self
         statusItem.button?.action = #selector(buttonClicked(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -363,7 +364,8 @@ final class Indicator {
         case .stack:  return true
         case .dynamic:
             let screens = NSScreen.screens
-            guard screens.count >= 2 else { return false }
+            guard AppSettings.shared.effectiveDisplayCount >= 2 else { return false }
+            guard screens.count >= 2 else { return true }
             let f1 = screens[0].frame, f2 = screens[1].frame
             let xOv = max(0, min(f1.maxX, f2.maxX) - max(f1.minX, f2.minX))
             let yOv = max(0, min(f1.maxY, f2.maxY) - max(f1.minY, f2.minY))
@@ -375,7 +377,7 @@ final class Indicator {
         return (settings.displayStyle == .pill || settings.displayStyle == .dots)
             && settings.stackMode == .dynamic
             && settings.displayOrderMode == .physicalDetection
-            && NSScreen.screens.count >= 3
+            && AppSettings.shared.effectiveDisplayCount >= 3
     }
 
     private func effectiveRowCount(for displays: [SpaceInfo.DisplayInfo]) -> Int {
@@ -424,9 +426,13 @@ final class Indicator {
                     musicLingerExpireTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
                         self?.musicLingerExpireTimer = nil
                         self?.musicLingerActive = false
+                        self?.musicLastPlayedAt = 0
                         self?.refresh()
                     }
                     if let t = musicLingerExpireTimer { RunLoop.current.add(t, forMode: .common) }
+                } else {
+                    musicLingerActive = false
+                    musicLastPlayedAt = 0
                 }
             }
 
@@ -515,7 +521,13 @@ final class Indicator {
             if stable { tryStartFocusChange(info: info) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.image = renderer.makePillFrame(indicator: self, info: info, isDots: false)
+            // The space animation timer writes button.image directly using captured info.
+            // A competing write from refresh() using current info causes per-frame conflicts
+            // (active display index differs between captured vs current). Let the animation
+            // timer own rendering; it already reads animFocus* from self for the focus overlay.
+            if animSpacePillDisplay < 0 {
+                button.image = renderer.makePillFrame(indicator: self, info: info, isDots: false)
+            }
 
         case .numbers:
             if stable { tryStartSpaceChange(info: info, isDots: false) }
@@ -638,8 +650,15 @@ final class Indicator {
             }
             let p = useSpring ? Easing.spring(self.animSpacePillProgress) : Easing.outQuart(self.animSpacePillProgress)
             if let cap = self.animSpacePillCaptured {
+                // Use current focus index rather than captured so the bright/dim state
+                // stays correct after the focus animation completes. Without this, the
+                // renderer's else-branch snaps back to cap.activeDisplayIndex mid-animation.
+                let liveIdx = max(0, min(self.previousActiveDisplayIndex, cap.displays.count - 1))
+                let effectiveInfo = liveIdx == cap.activeDisplayIndex ? cap : SpaceInfo(
+                    displays: cap.displays, activeDisplayIndex: liveIdx, mainDisplayIndex: cap.mainDisplayIndex
+                )
                 self.statusItem.button?.image = self.renderer.makePillFrame(
-                    indicator: self, info: cap, isDots: isDots,
+                    indicator: self, info: effectiveInfo, isDots: isDots,
                     animatingDisplay: displayIndex,
                     spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
                     spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
@@ -757,7 +776,7 @@ final class Indicator {
 
     func computeGridLayout(for displays: [SpaceInfo.DisplayInfo]) -> [GridRow] {
         let screens = NSScreen.screens
-        guard screens.count >= 2 else { return [GridRow(displayIndices: Array(0..<displays.count))] }
+        guard AppSettings.shared.effectiveDisplayCount >= 2 else { return [GridRow(displayIndices: Array(0..<displays.count))] }
         var uuidToDisplayIndex: [String: Int] = [:]
         for (i, d) in displays.enumerated() { uuidToDisplayIndex[d.uuid] = i }
         let builtIn = screens[0]

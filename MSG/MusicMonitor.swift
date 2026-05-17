@@ -238,21 +238,33 @@ final class MusicMonitor {
     // MARK: - Controls
 
     func togglePlayPause() {
-        if let mr = MRSendCommand { _ = mr(kMRTogglePlayPause, nil); return }
-        let app = currentSource == "Spotify" ? "Spotify" : "Music"
-        tellApp(app, "playpause")
+        switch settings.musicSource {
+        case .nowPlaying:
+            if let mr = MRSendCommand { _ = mr(kMRTogglePlayPause, nil); return }
+            tellApp("Music", "playpause")
+        case .appleMusic:
+            tellMusic("playpause")
+        }
     }
 
     func nextTrack() {
-        if let mr = MRSendCommand { _ = mr(kMRNextTrack, nil); return }
-        let app = currentSource == "Spotify" ? "Spotify" : "Music"
-        tellApp(app, "next track")
+        switch settings.musicSource {
+        case .nowPlaying:
+            if let mr = MRSendCommand { _ = mr(kMRNextTrack, nil); return }
+            tellApp("Music", "next track")
+        case .appleMusic:
+            tellMusic("next track")
+        }
     }
 
     func previousTrack() {
-        if let mr = MRSendCommand { _ = mr(kMRPreviousTrack, nil); return }
-        let app = currentSource == "Spotify" ? "Spotify" : "Music"
-        tellApp(app, "previous track")
+        switch settings.musicSource {
+        case .nowPlaying:
+            if let mr = MRSendCommand { _ = mr(kMRPreviousTrack, nil); return }
+            tellApp("Music", "previous track")
+        case .appleMusic:
+            tellMusic("previous track")
+        }
     }
 
     func adjustVolume(by delta: Int) {

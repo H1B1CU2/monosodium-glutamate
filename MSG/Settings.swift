@@ -42,6 +42,27 @@ enum MusicDisplayMode: String, CaseIterable {
 enum MusicSource: String, CaseIterable {
     case nowPlaying = "System Now Playing"
     case appleMusic = "Apple Music"
+
+    var isAvailable: Bool {
+        switch self {
+        case .nowPlaying: return false
+        case .appleMusic: return true
+        }
+    }
+
+    var displayLabel: String {
+        isAvailable ? rawValue : "\(rawValue) (unavailable)"
+    }
+}
+
+// MARK: - Fake Display
+
+struct FakeDisplay: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var name: String = "Fake Display"
+    var spaceCount: Int = 3
+    var arrangeX: CGFloat = 0
+    var arrangeY: CGFloat = 0
 }
 
 // MARK: - Settings
@@ -81,6 +102,7 @@ final class AppSettings {
         static let dockIcon                 = "dockIcon"
         static let autoUpdate               = "autoUpdate"
         static let updateChannel            = "updateChannel"
+        static let fakeDisplays             = "fakeDisplays"
     }
 
     static let shared = AppSettings()
@@ -182,6 +204,9 @@ final class AppSettings {
     var dockIcon: Bool       { didSet { save(); onChange?(.structural) } }
     var autoUpdate: Bool     { didSet { save() } }
     var updateChannel: String { didSet { save() } }
+    var fakeDisplays: [FakeDisplay] { didSet { save(); onChange?(.structural) } }
+
+    var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
     // MARK: Init
 
@@ -211,6 +236,7 @@ final class AppSettings {
             Key.dockIcon:               false,
             Key.autoUpdate:             true,
             Key.updateChannel:          "stable",
+            Key.fakeDisplays:            Data(),
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -237,6 +263,10 @@ final class AppSettings {
         dockIcon             = d.bool(forKey: Key.dockIcon)
         autoUpdate           = d.object(forKey: Key.autoUpdate) as? Bool ?? true
         updateChannel        = d.string(forKey: Key.updateChannel) ?? "stable"
+        if let data = d.data(forKey: Key.fakeDisplays),
+           let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
+            fakeDisplays = decoded
+        } else { fakeDisplays = [] }
     }
 
     private func save() {
@@ -265,5 +295,6 @@ final class AppSettings {
         d.set(dockIcon,                     forKey: Key.dockIcon)
         d.set(autoUpdate,                   forKey: Key.autoUpdate)
         d.set(updateChannel,                forKey: Key.updateChannel)
+        if let data = try? JSONEncoder().encode(fakeDisplays) { d.set(data, forKey: Key.fakeDisplays) }
     }
 }

@@ -30,7 +30,7 @@ final class MusicPopover {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = .popUpMenu
-        window.collectionBehavior = [.transient, .ignoresCycle]
+        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary, .canJoinAllSpaces]
         window.contentView = root
     }
 

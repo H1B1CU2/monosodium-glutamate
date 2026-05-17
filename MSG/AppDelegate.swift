@@ -58,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.applyFocusDetectionMode()
             case .structural:
                 self.rebuildCornerWindows()
-                self.applyMenuBarVisibility()
                 self.applyDockIcon()
+                self.indicator.spaceWatcher.updateInfo()
             }
         }
 
@@ -78,6 +78,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rebuildCornerWindows()
             self?.checkScreenArrangement()
             self?.settingsMenu.updateExternalMonitorVisibility()
+        }
+
+        // Space / fullscreen transitions: re-assert corner window ordering and
+        // redraw so NSMenu.menuBarVisible() is re-evaluated for the new state.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.redrawCornerWindows()
         }
 
         // CGDisplay callback for arrangement changes
@@ -124,12 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func applyMenuBarVisibility() {
-        indicator.statusItem.isVisible = settings.menuBarVisible
-    }
-
     private func applyDockIcon() {
-        NSApp.setActivationPolicy(settings.dockIcon ? .regular : .accessory)
+        if settings.dockIcon {
+            NSApp.setActivationPolicy(.regular)
+        } else if #available(macOS 14.0, *), SettingsWindowController.shared.isVisible {
+            // Settings window is open — don't demote to .accessory mid-interaction.
+            // windowShouldClose restores .accessory when the window actually closes.
+        } else {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     // MARK: - AppSettings menu
@@ -151,8 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard inMC != self.wasInMC else { return }
             self.wasInMC = inMC
             for win in self.cornerWindows {
-                // Only drop top corners during MC when in "Below Menu Bar" mode.
-                // "At Screen Edge" corners stay visible through MC.
                 let uuid = win.displayUUID ?? "_default"
                 let underBar = win.targetScreen.isBuiltin
                     ? settings.topCornersUnderMenuBar
@@ -168,10 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildCornerWindows() {
         for win in cornerWindows { win.orderOut(nil) }
         cornerWindows.removeAll()
-        let screens = settings.externalMonitorCorners ? NSScreen.screens : [NSScreen.main ?? NSScreen.screens[0]]
-        for screen in screens {
+        for screen in NSScreen.screens {
             let win = CornerWindow(screen: screen, settings: settings)
-            win.orderFront(nil)
+            win.setFrame(screen.frame, display: false)
+            win.orderFrontRegardless()
+            win.redraw()
             cornerWindows.append(win)
         }
     }

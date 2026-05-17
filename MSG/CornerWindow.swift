@@ -5,9 +5,10 @@ import AppKit
 extension NSScreen {
     /// True if this screen is the built-in display (laptop screen).
     var isBuiltin: Bool {
-        return localizedName.localizedCaseInsensitiveContains("Built-in") ||
-               localizedName.localizedCaseInsensitiveContains("Retina") ||
-               self == NSScreen.screens.first
+        guard let dID = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return self == NSScreen.screens.first
+        }
+        return CGDisplayIsBuiltin(dID) != 0
     }
 }
 
@@ -20,6 +21,7 @@ final class CornerWindow: NSWindow {
     let targetScreen: NSScreen
     var displayUUID: String? { view.displayUUID }
     private let view: CornerView
+    private var growTimer: Timer?
 
     init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
@@ -45,12 +47,18 @@ final class CornerWindow: NSWindow {
     }
 
     func updateFrame() {
+        growTimer?.invalidate(); growTimer = nil
+        view.growRadius = nil
+        view.alphaValue = 1
         setFrame(targetScreen.frame, display: true)
         view.targetScreen = targetScreen
         view.needsDisplay = true
     }
 
     func redraw() {
+        growTimer?.invalidate(); growTimer = nil
+        view.growRadius = nil
+        view.alphaValue = 1
         view.needsDisplay = true
         view.display()
     }
@@ -58,6 +66,39 @@ final class CornerWindow: NSWindow {
     func setSkipTop(_ skip: Bool) {
         view.skipTopCorners = skip
         redraw()
+    }
+
+    /// 0.5s grow-in animation — triggered when exiting Mission Control.
+    func animateGrowIn() {
+        growTimer?.invalidate()
+        let uuid = view.displayUUID ?? "_default"
+        let isBuiltin = targetScreen.isBuiltin
+        let target = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        guard target > 0 else { view.growRadius = nil; redraw(); return }
+
+        view.alphaValue = 1
+        view.growRadius = 0
+        view.needsDisplay = true
+        view.display()
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let t = Timer(fire: Date(), interval: 0.016, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let p = min((ProcessInfo.processInfo.systemUptime - start) / 0.5, 1.0)
+            let eased = 1.0 - pow(1.0 - p, 3)
+            self.view.growRadius = target * eased
+            self.view.needsDisplay = true
+            self.view.displayIfNeeded()
+            if p >= 1.0 {
+                self.view.growRadius = nil
+                self.view.needsDisplay = true
+                self.view.displayIfNeeded()
+                t.invalidate()
+                self.growTimer = nil
+            }
+        }
+        growTimer = t
+        RunLoop.current.add(t, forMode: .common)
     }
 
     private let settings: AppSettings
@@ -70,6 +111,7 @@ final class CornerView: NSView {
     var targetScreen: NSScreen
     var skipTopCorners = false
     var displayUUID: String?
+    var growRadius: CGFloat?
     private let settings: AppSettings
 
     init(screen: NSScreen, settings: AppSettings) {
@@ -92,7 +134,9 @@ final class CornerView: NSView {
         let isBuiltin = screen.isBuiltin
 
         let uuid = displayUUID ?? "_default"
-        let r = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        let r: CGFloat
+        if let gr = growRadius { r = gr }
+        else { r = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid) }
         let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)

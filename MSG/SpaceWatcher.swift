@@ -103,7 +103,8 @@ final class SpaceWatcher {
             customOrder: customOrder,
             focusDetection: focusDetection,
             focusedUUID: currentFocusedUUID,
-            previous: currentInfo
+            previous: currentInfo,
+            fakeDisplays: AppSettings.shared.fakeDisplays
         )
         guard newInfo != currentInfo else {
             if forceNotify { onChange?() }
@@ -120,7 +121,8 @@ final class SpaceWatcher {
         customOrder: [Int] = [],
         focusDetection: Bool = true,
         focusedUUID: String? = nil,
-        previous: SpaceInfo? = nil
+        previous: SpaceInfo? = nil,
+        fakeDisplays: [FakeDisplay] = []
     ) -> SpaceInfo {
         let cid = CGSMainConnectionID()
         let activeID = CGSGetActiveSpace(cid)
@@ -133,6 +135,7 @@ final class SpaceWatcher {
         if let prev = previous { for d in prev.displays { prevByUUID[d.uuid] = d.current } }
 
         var uuidToX: [String: CGFloat] = [:]
+        var uuidToMidX: [String: CGFloat] = [:]
         var primaryUUID: String? = nil
         for (idx, screen) in NSScreen.screens.enumerated() {
             if let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
@@ -141,6 +144,7 @@ final class SpaceWatcher {
                 let uuid = uuidUnmanaged.takeRetainedValue()
                 if let uuidString = CFUUIDCreateString(nil, uuid) as String? {
                     uuidToX[uuidString] = screen.frame.origin.x
+                    uuidToMidX[uuidString] = screen.frame.midX
                     if idx == 0 { primaryUUID = uuidString }
                 }
             }
@@ -222,7 +226,7 @@ final class SpaceWatcher {
             }
         }
 
-        let displays = temps.map { $0.info }
+        var displays = temps.map { $0.info }
         var activeIdx: Int = 0
         if focusDetection, let fUUID = focusedUUID,
            let idx = temps.firstIndex(where: { $0.identifier.caseInsensitiveCompare(fUUID) == .orderedSame }) {
@@ -231,6 +235,45 @@ final class SpaceWatcher {
             activeIdx = temps.firstIndex(where: { $0.containsActive }) ?? 0
         }
         let mainIdx = temps.firstIndex(where: { $0.isMain }) ?? 0
+
+        // Physical detection: interleave fake displays with real displays by their canvas X position.
+        // fd.arrangeX is a canvas-space offset from center, using the same scale as ArrangeDisplaysView:
+        //   scale = (canvasH - padY*2) / screenHeight = 120 / screenHeight
+        // Real display sort key = (screen.midX - screenCX) * scale, directly comparable to arrangeX.
+        if !fakeDisplays.isEmpty && !prioritizeMain {
+            let screens = NSScreen.screens
+            let allX = screens.flatMap { [$0.frame.minX, $0.frame.maxX] }
+            let allY = screens.flatMap { [$0.frame.minY, $0.frame.maxY] }
+            if let sMinX = allX.min(), let sMaxX = allX.max(),
+               let sMinY = allY.min(), let sMaxY = allY.max() {
+                let screenCX = (sMinX + sMaxX) / 2
+                let scale = 120.0 / max(1, sMaxY - sMinY)
+                func realSortX(_ t: Temp) -> CGFloat {
+                    let key = t.identifier == "Main" ? (primaryUUID ?? "") : t.identifier
+                    let midX = uuidToMidX[key] ?? (t.xOrigin == 0 ? screenCX : t.xOrigin)
+                    return (midX - screenCX) * scale
+                }
+                var merged: [(SpaceInfo.DisplayInfo, CGFloat, String)] =
+                    temps.map { ($0.info, realSortX($0), $0.identifier) }
+                for fd in fakeDisplays {
+                    merged.append((.init(current: 1, total: fd.spaceCount, uuid: fd.id.uuidString),
+                                   fd.arrangeX, fd.id.uuidString))
+                }
+                merged.sort { $0.1 < $1.1 }
+                let activeUUID = activeIdx < temps.count ? temps[activeIdx].identifier : ""
+                let mainUUID   = mainIdx   < temps.count ? temps[mainIdx].identifier   : ""
+                let mergedDisplays = merged.map { $0.0 }
+                let newAct  = merged.firstIndex(where: { $0.2 == activeUUID }) ?? 0
+                let newMain = merged.firstIndex(where: { $0.2 == mainUUID   }) ?? 0
+                return mergedDisplays.isEmpty ? fallback :
+                    SpaceInfo(displays: mergedDisplays, activeDisplayIndex: newAct, mainDisplayIndex: newMain)
+            }
+        }
+
+        // Prioritize-main mode or no screens: append fake displays after real displays
+        for fd in fakeDisplays {
+            displays.append(SpaceInfo.DisplayInfo(current: 1, total: fd.spaceCount, uuid: fd.id.uuidString))
+        }
 
         return displays.isEmpty ? fallback :
             SpaceInfo(displays: displays, activeDisplayIndex: activeIdx, mainDisplayIndex: mainIdx)

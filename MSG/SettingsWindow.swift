@@ -68,6 +68,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window = w
     }
 
+    var isVisible: Bool { window?.isVisible ?? false }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         DispatchQueue.main.async {
             if !AppSettings.shared.dockIcon {
@@ -111,7 +113,7 @@ final class SettingsViewModel: ObservableObject {
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var autoUpdate: Bool                   { get { s.autoUpdate }           set { s.autoUpdate = newValue;           objectWillChange.send() } }
     var updateChannel: String              { get { s.updateChannel }        set { s.updateChannel = newValue;        objectWillChange.send() } }
-    var fakeMonitor: Bool                   { get { s.fakeMonitor }          set { s.fakeMonitor = newValue;          objectWillChange.send() } }
+    var fakeDisplays: [FakeDisplay]          { get { s.fakeDisplays }         set { s.fakeDisplays = newValue;         objectWillChange.send() } }
 }
 
 // MARK: - Sidebar sections
@@ -1187,8 +1189,9 @@ struct SpacerPane: View {
     private var hideJelly: Bool {
         vm.displayStyle == .numbers || vm.displayStyle == .boldNumber || vm.displayStyle == .dots
     }
+    private var effectiveScreenCount: Int { screens.count + vm.fakeDisplays.count }
     private var stackVisible: Bool {
-        (vm.displayStyle == .pill || vm.displayStyle == .dots) && screens.count > 1
+        (vm.displayStyle == .pill || vm.displayStyle == .dots) && effectiveScreenCount > 1
     }
     var body: some View {
         PaneContainer(section: .spacer) {
@@ -1197,7 +1200,7 @@ struct SpacerPane: View {
                     style: vm.displayStyle,
                     animationStyle: vm.animationStyle,
                     stackMode: vm.stackMode,
-                    screenCount: screens.count,
+                    screenCount: effectiveScreenCount,
                     wallpaperImage: previewWallpaper
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -1233,7 +1236,9 @@ struct SpacerPane: View {
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
                 previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-                    ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+                    ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
+                        WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
+                    }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
@@ -1429,7 +1434,9 @@ struct CornermizationPane: View {
     private func loadPreviewWallpaper() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-            ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+            ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
+                WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
+            }
     }
 
     @ViewBuilder
@@ -1572,9 +1579,239 @@ struct MusicPane: View {
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
                 previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-                    ?? (NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) })
+                    ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
+                        WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
+                    }
             }
         }
+    }
+}
+
+// MARK: - Arrange Displays View
+
+@available(macOS 14.0, *)
+struct ArrangeDisplaysView: View {
+    @ObservedObject var vm: SettingsViewModel
+    @State private var realScreens: [NSScreen] = NSScreen.screens
+    @State private var draggingID: UUID? = nil
+    @State private var dragStartArrange: CGPoint = .zero
+
+    private let canvasH: CGFloat = 200
+    private let snapRadius: CGFloat = 14
+
+    // Stable tile identity: real screens use their CGDirectDisplayID,
+    // fake displays use their stored UUID. Avoids new UUID() on every render.
+    private enum TileID: Hashable {
+        case real(UInt32)
+        case fake(UUID)
+    }
+
+    private struct Tile {
+        let id: TileID
+        let name: String
+        let isMain: Bool
+        let isReal: Bool
+        let cx: CGFloat   // center in canvas coords
+        let cy: CGFloat
+        let w: CGFloat
+        let h: CGFloat
+        var fakeUUID: UUID? {
+            if case .fake(let u) = id { return u }
+            return nil
+        }
+    }
+
+    // MARK: Layout
+
+    private struct LayoutParams {
+        let scale: CGFloat
+        let canvasCX: CGFloat
+        let canvasCY: CGFloat
+        let screenCX: CGFloat
+        let screenCY: CGFloat
+        let fakeW: CGFloat
+        let fakeH: CGFloat
+    }
+
+    private func layoutParams(canvasSize: CGSize) -> LayoutParams? {
+        guard !realScreens.isEmpty else { return nil }
+        let allX = realScreens.flatMap { [$0.frame.minX, $0.frame.maxX] }
+        let allY = realScreens.flatMap { [$0.frame.minY, $0.frame.maxY] }
+        guard let sMinX = allX.min(), let sMaxX = allX.max(),
+              let sMinY = allY.min(), let sMaxY = allY.max() else { return nil }
+        let padX: CGFloat = 60, padY: CGFloat = 40
+        let scaleX = (canvasSize.width - padX * 2) / max(1, sMaxX - sMinX)
+        let scaleY = (canvasH - padY * 2) / max(1, sMaxY - sMinY)
+        let scale = min(scaleX, scaleY)
+        let main = realScreens[0]
+        let aspect = main.frame.width / max(1, main.frame.height)
+        let fakeW = max(80, min(main.frame.width * scale * 0.75, 130))
+        return LayoutParams(
+            scale: scale,
+            canvasCX: canvasSize.width / 2,
+            canvasCY: canvasH / 2,
+            screenCX: (sMinX + sMaxX) / 2,
+            screenCY: (sMinY + sMaxY) / 2,
+            fakeW: fakeW,
+            fakeH: fakeW / aspect
+        )
+    }
+
+    private func buildTiles(canvasSize: CGSize) -> [Tile] {
+        guard let lp = layoutParams(canvasSize: canvasSize) else {
+            return vm.fakeDisplays.map { fd in
+                Tile(id: .fake(fd.id), name: fd.name, isMain: false, isReal: false,
+                     cx: canvasSize.width / 2 + fd.arrangeX,
+                     cy: canvasH / 2 + fd.arrangeY, w: 100, h: 62)
+            }
+        }
+        var tiles: [Tile] = []
+        for screen in realScreens {
+            let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+            tiles.append(Tile(
+                id: .real(dID), name: screen.localizedName,
+                isMain: screen == NSScreen.main, isReal: true,
+                cx: lp.canvasCX + (screen.frame.midX - lp.screenCX) * lp.scale,
+                cy: lp.canvasCY - (screen.frame.midY - lp.screenCY) * lp.scale,
+                w: screen.frame.width * lp.scale,
+                h: screen.frame.height * lp.scale
+            ))
+        }
+        for fd in vm.fakeDisplays {
+            tiles.append(Tile(
+                id: .fake(fd.id), name: fd.name, isMain: false, isReal: false,
+                cx: lp.canvasCX + fd.arrangeX,
+                cy: lp.canvasCY + fd.arrangeY,
+                w: lp.fakeW, h: lp.fakeH
+            ))
+        }
+        return tiles
+    }
+
+    // MARK: Body
+
+    var body: some View {
+        GeometryReader { geo in
+            let tiles = buildTiles(canvasSize: geo.size)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.3))
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
+
+                ForEach(tiles, id: \.id) { tile in
+                    tileView(tile)
+                        .position(x: tile.cx, y: tile.cy)
+                        .gesture(
+                            DragGesture(minimumDistance: 2)
+                                .onChanged { v in
+                                    guard let fakeID = tile.fakeUUID else { return }
+                                    if draggingID == nil {
+                                        draggingID = fakeID
+                                        if let fd = vm.fakeDisplays.first(where: { $0.id == fakeID }) {
+                                            dragStartArrange = CGPoint(x: fd.arrangeX, y: fd.arrangeY)
+                                        }
+                                    }
+                                    guard draggingID == fakeID,
+                                          let idx = vm.fakeDisplays.firstIndex(where: { $0.id == fakeID }) else { return }
+                                    var newX = dragStartArrange.x + v.translation.width
+                                    var newY = dragStartArrange.y + v.translation.height
+                                    if let lp = layoutParams(canvasSize: geo.size) {
+                                        let fakeW = lp.fakeW, fakeH = lp.fakeH
+                                        let fakeCX = lp.canvasCX + newX
+                                        let fakeCY = lp.canvasCY + newY
+                                        var snappedX = false, snappedY = false
+                                        for screen in realScreens {
+                                            let rx = lp.canvasCX + (screen.frame.midX - lp.screenCX) * lp.scale
+                                            let ry = lp.canvasCY - (screen.frame.midY - lp.screenCY) * lp.scale
+                                            let rw = screen.frame.width * lp.scale
+                                            let rh = screen.frame.height * lp.scale
+                                            if !snappedX {
+                                                if abs((fakeCX - fakeW / 2) - (rx + rw / 2)) < snapRadius {
+                                                    newX = rx + rw / 2 + fakeW / 2 - lp.canvasCX; snappedX = true
+                                                } else if abs((fakeCX + fakeW / 2) - (rx - rw / 2)) < snapRadius {
+                                                    newX = rx - rw / 2 - fakeW / 2 - lp.canvasCX; snappedX = true
+                                                }
+                                            }
+                                            if !snappedY {
+                                                if abs((fakeCY - fakeH / 2) - (ry + rh / 2)) < snapRadius {
+                                                    newY = ry + rh / 2 + fakeH / 2 - lp.canvasCY; snappedY = true
+                                                } else if abs((fakeCY + fakeH / 2) - (ry - rh / 2)) < snapRadius {
+                                                    newY = ry - rh / 2 - fakeH / 2 - lp.canvasCY; snappedY = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                    var updated = vm.fakeDisplays
+                                    updated[idx].arrangeX = newX
+                                    updated[idx].arrangeY = newY
+                                    vm.fakeDisplays = updated
+                                }
+                                .onEnded { _ in draggingID = nil; dragStartArrange = .zero }
+                        )
+                        .zIndex(tile.fakeUUID != nil && tile.fakeUUID == draggingID ? 10 : 0)
+                }
+            }
+            .frame(width: geo.size.width, height: canvasH)
+            .clipped()
+        }
+        .frame(height: canvasH)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            realScreens = NSScreen.screens
+        }
+    }
+
+    // MARK: Tile View
+
+    @ViewBuilder
+    private func tileView(_ tile: Tile) -> some View {
+        let isDragging = tile.fakeUUID != nil && tile.fakeUUID == draggingID
+        let menuBarH: CGFloat = max(5, tile.h * 0.09)
+        let labelPt: CGFloat = min(9, max(7, tile.w * 0.065))
+
+        VStack(spacing: 0) {
+            // Menu bar stripe sits above every tile (visible only on primary display).
+            // All tiles reserve the same height so .position() centers the body consistently.
+            ZStack {
+                Color.clear
+                if tile.isMain {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: tile.w * 0.55, height: menuBarH)
+                }
+            }
+            .frame(width: tile.w, height: menuBarH + 3)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(tile.isReal ? Color(hex: 0x2c2c2e) : Color(hex: 0x2d1a00))
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(
+                        isDragging ? Color.blue :
+                        tile.isReal ? Color.white.opacity(0.2) : Color.orange.opacity(0.55),
+                        lineWidth: isDragging ? 2 : 1.5
+                    )
+                VStack(spacing: max(2, tile.h * 0.06)) {
+                    Image(systemName: tile.isReal ? "display" : "display.and.arrow.down")
+                        .font(.system(size: max(12, tile.h * 0.22)))
+                        .foregroundStyle(tile.isReal ? Color.white.opacity(0.45) : Color.orange)
+                    Text(tile.name)
+                        .font(.system(size: labelPt, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: tile.w - 10)
+                    if !tile.isReal {
+                        Text("virtual")
+                            .font(.system(size: 6.5))
+                            .foregroundStyle(.orange.opacity(0.8))
+                    }
+                }
+            }
+            .frame(width: tile.w, height: tile.h)
+            .shadow(color: isDragging ? Color.blue.opacity(0.4) : .clear, radius: 12, y: 4)
+        }
+        .contentShape(Rectangle())
     }
 }
 
@@ -1587,31 +1824,66 @@ struct DeveloperPane: View {
     var body: some View {
         PaneContainer(section: .developer) {
             Section {
-                Toggle("Fake Monitor", isOn: Binding(
-                    get: { vm.fakeMonitor },
-                    set: { vm.fakeMonitor = $0 }
-                ))
-                Text("Simulates an additional display for testing multi-display features")
+                ForEach(vm.fakeDisplays) { display in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(display.name)
+                                .font(.system(size: 13, weight: .medium))
+                            Text("\(display.spaceCount) deskspaces")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Stepper("Spaces", value: Binding(
+                            get: { display.spaceCount },
+                            set: { newCount in
+                                if let idx = vm.fakeDisplays.firstIndex(where: { $0.id == display.id }) {
+                                    var updated = vm.fakeDisplays
+                                    updated[idx].spaceCount = max(1, min(10, newCount))
+                                    vm.fakeDisplays = updated
+                                }
+                            }
+                        ), in: 1...10)
+                        .labelsHidden()
+                        .frame(width: 100)
+                        Button {
+                            vm.fakeDisplays.removeAll { $0.id == display.id }
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Button {
+                    let count = vm.fakeDisplays.count + 1
+                    vm.fakeDisplays.append(FakeDisplay(
+                        name: "Fake Display \(count)",
+                        spaceCount: 3
+                    ))
+                } label: {
+                    Label("Add Fake Display", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.green)
+
+                Text("Fake displays only affect MSG's internal display count for testing multi-display layouts")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                Button {
-                    repositionDisplays()
-                } label: {
-                    Label("Reposition Displays", systemImage: "arrow.triangle.swap")
-                }
-                Text("Re-arrange displays to their default layout positions")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                ArrangeDisplaysView(vm: vm)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+            } header: {
+                Text("Arrange Displays")
+            } footer: {
+                Text("Drag virtual displays to position them. They snap to the edges of real displays.")
             }
         }
-    }
-
-    private func repositionDisplays() {
-        // Trigger display reconfiguration
-        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 }
 
