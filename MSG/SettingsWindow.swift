@@ -1256,8 +1256,6 @@ struct CornermizationPane: View {
     @State private var screens: [NSScreen] = NSScreen.screens
     @State private var hasPendingChanges = false
     @State private var externalChangeDetected = false
-    @State private var rememberedRadius: CGFloat = 0
-    @State private var rememberedExtRadii: [String: CGFloat] = [:]
     @State private var previewWallpaper: NSImage? = nil
 
     private var externals: [NSScreen] {
@@ -1267,167 +1265,185 @@ struct CornermizationPane: View {
     private var radiusVisible: Bool { vm.topCornersEnabled || vm.bottomCornersEnabled }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            PaneContainer(section: .corner) {
-                Section("Preview") {
-                    CornerPreviewView(
-                        radius: vm.cornerRadius,
-                        topEnabled: vm.topCornersEnabled,
-                        bottomEnabled: vm.bottomCornersEnabled,
-                        underBar: vm.topCornersUnderMenuBar,
-                        wallpaperImage: previewWallpaper
-                    )
-                                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                    .listRowBackground(Color.clear)
-                }
+        PaneContainer(section: .corner) {
+            Section("Preview") {
+                CornerPreviewView(
+                    radius: vm.cornerRadius,
+                    topEnabled: vm.topCornersEnabled,
+                    bottomEnabled: vm.bottomCornersEnabled,
+                    underBar: vm.topCornersUnderMenuBar,
+                    wallpaperImage: previewWallpaper
+                )
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .listRowBackground(Color.clear)
 
-                Section { actionButtons }
-
-                Section(swCachedModelName()) {
-                    if hasExternals {
-                        Toggle("Apply to all displays",
-                               isOn: bind({ vm.mirrorMainDisplay }, { vm.mirrorMainDisplay = $0 }))
-                    }
-                    Toggle("Top Corners",
-                           isOn: bind({ vm.topCornersEnabled }, { vm.topCornersEnabled = $0 }))
-                    if vm.topCornersEnabled {
-                        Picker("Position", selection: bind({ vm.topCornersUnderMenuBar },
-                                                           { vm.topCornersUnderMenuBar = $0 })) {
-                            Text("At Screen Edge").tag(false)
-                            Text("Below Menu Bar").tag(true)
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                    Toggle("Bottom Corners",
-                           isOn: bind({ vm.bottomCornersEnabled }, { vm.bottomCornersEnabled = $0 }))
-                    if radiusVisible {
-                        radiusSlider(value: bind({ Double(vm.cornerRadius) },
-                                                 { vm.cornerRadius = CGFloat($0) }))
-                    }
-                }
-                .disabled(externalChangeDetected)
-
-                ForEach(externals, id: \.self) { screen in
-                    if let uuid = swScreenUUID(screen) {
-                        let pos = screens.first.map { swDisplayPosition(for: screen, relativeTo: $0) } ?? ""
-                        let label = pos.isEmpty ? screen.localizedName : "\(screen.localizedName) (\(pos))"
-                        Section(label) {
-                            externalControls(uuid: uuid, vm: vm)
-                                .disabled(vm.mirrorMainDisplay)
-                                .opacity(vm.mirrorMainDisplay ? 0.4 : 1)
-                                .animation(.easeInOut(duration: 0.2), value: vm.mirrorMainDisplay)
-                        }
-                    }
-                }
-
+                statusCard
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
 
-            externalChangeBanner
+            Section(swCachedModelName()) {
+                if hasExternals {
+                    Toggle("Apply to all displays",
+                           isOn: bind({ vm.mirrorMainDisplay }, { vm.mirrorMainDisplay = $0 }))
+                }
+                Toggle("Top Corners",
+                       isOn: bind({ vm.topCornersEnabled }, { vm.topCornersEnabled = $0 }))
+                if vm.topCornersEnabled {
+                    Picker("Position", selection: bind({ vm.topCornersUnderMenuBar },
+                                                       { vm.topCornersUnderMenuBar = $0 })) {
+                        Text("At Screen Edge").tag(false)
+                        Text("Below Menu Bar").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Toggle("Bottom Corners",
+                       isOn: bind({ vm.bottomCornersEnabled }, { vm.bottomCornersEnabled = $0 }))
+                if radiusVisible {
+                    radiusSlider(value: bind({ Double(vm.cornerRadius) },
+                                             { vm.cornerRadius = CGFloat($0) }))
+                }
+            }
+
+            ForEach(externals, id: \.self) { screen in
+                if let uuid = swScreenUUID(screen) {
+                    let pos = screens.first.map { swDisplayPosition(for: screen, relativeTo: $0) } ?? ""
+                    let label = pos.isEmpty ? screen.localizedName : "\(screen.localizedName) (\(pos))"
+                    Section(label) {
+                        externalControls(uuid: uuid, vm: vm)
+                            .disabled(vm.mirrorMainDisplay)
+                            .opacity(vm.mirrorMainDisplay ? 0.4 : 1)
+                            .animation(.easeInOut(duration: 0.2), value: vm.mirrorMainDisplay)
+                    }
+                }
+            }
         }
         .onAppear {
+            externalChangeDetected = WallpaperEngine.shared.externalChangePending
             loadPreviewWallpaper()
-            WallpaperEngine.shared.showBaseline()
+            // Only revert to the clean baseline for preview when there is no
+            // unresolved external wallpaper change. If the user changed their
+            // wallpaper we must NOT overwrite it with the old baseline.
+            if !WallpaperEngine.shared.externalChangePending {
+                WallpaperEngine.shared.showBaseline()
+            }
+            if !WallpaperEngine.shared.isFetched {
+                WallpaperEngine.shared.fetch()
+                loadPreviewWallpaper()
+            }
             WallpaperEngine.shared.onExternalChange = {
-                // Remember current settings before resetting
-                rememberedRadius = vm.cornerRadius
-                rememberedExtRadii.removeAll()
-                for screen in screens {
-                    if let uuid = swScreenUUID(screen) {
-                        rememberedExtRadii[uuid] = AppSettings.shared.extCornerRadius(for: uuid)
-                    }
-                }
-                // Reset corners so user sees the raw new wallpaper
-                vm.cornerRadius = 0
-                for screen in screens {
-                    if let uuid = swScreenUUID(screen) {
-                        AppSettings.shared.setExtCornerRadius(0, for: uuid)
-                    }
-                }
                 externalChangeDetected = true
-                hasPendingChanges = false
             }
         }
         .onDisappear {
-            if hasPendingChanges { WallpaperEngine.shared.bake() }
+            if hasPendingChanges && !WallpaperEngine.shared.externalChangePending {
+                WallpaperEngine.shared.bake()
+            } else if !WallpaperEngine.shared.externalChangePending {
+                // showBaseline() was called on appear; put the baked wallpaper back.
+                WallpaperEngine.shared.restoreBakedWallpaper()
+            }
             hasPendingChanges = false
+            WallpaperEngine.shared.onExternalChange = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
         }
     }
 
-    /// Wraps a Binding so every write marks changes pending.
-    /// On the first change after a clean state, reverts the desktop to the
-    /// uncornered baseline so the overlay previews against a clean original.
     private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
         Binding(get: get, set: { newValue in
             set(newValue)
-            if !hasPendingChanges { WallpaperEngine.shared.showBaseline() }
-            hasPendingChanges = true
+            // Defer @State mutation to the next run-loop tick so it doesn't
+            // publish in the same cycle as objectWillChange from the vm setter.
+            DispatchQueue.main.async {
+                if !hasPendingChanges && !WallpaperEngine.shared.externalChangePending {
+                    WallpaperEngine.shared.showBaseline()
+                }
+                hasPendingChanges = true
+            }
         })
     }
 
-    private var isFetchable: Bool {
-        guard vm.cornerRadius == 0 else { return false }
-        for screen in externals {
-            if let uuid = swScreenUUID(screen),
-               AppSettings.shared.extCornerRadius(for: uuid) != 0 { return false }
-        }
-        return true
-    }
-
-    private var fetchStatusLabel: String {
-        if externalChangeDetected { return "Wallpaper changed externally" }
-        if !isFetchable { return "Set all radii to 0 before capturing" }
-        if WallpaperEngine.shared.isFetched { return "Re-snapshot to update the baseline" }
-        return "Snapshot the current wallpaper as baseline"
-    }
+    // MARK: - Status card
 
     @ViewBuilder
-    private var actionButtons: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Capture baseline")
-                Text(fetchStatusLabel)
-                    .font(.caption)
-                    .foregroundStyle(externalChangeDetected ? .orange : .secondary)
+    private var statusCard: some View {
+        if externalChangeDetected {
+            // Wallpaper was changed in System Settings while the pane was open.
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wallpaper changed")
+                    Text("Update the snapshot to keep your corner settings")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Update") {
+                    WallpaperEngine.shared.fetch()   // clears externalChangePending
+                    loadPreviewWallpaper()
+                    WallpaperEngine.shared.bake()
+                    externalChangeDetected = false
+                    hasPendingChanges = false
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
             }
-            Spacer()
-            Button {
-                WallpaperEngine.shared.fetch()
-                loadPreviewWallpaper()
-                if externalChangeDetected {
-                    vm.cornerRadius = rememberedRadius
-                    for (uuid, radius) in rememberedExtRadii {
-                        AppSettings.shared.setExtCornerRadius(radius, for: uuid)
+        } else if hasPendingChanges {
+            // Settings changed, not yet baked into the wallpaper.
+            HStack(spacing: 10) {
+                Image(systemName: "circle.dotted")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Changes not applied")
+                    Text("Apply to save your corner settings to the wallpaper")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Apply") {
+                    if !WallpaperEngine.shared.isFetched {
+                        WallpaperEngine.shared.fetch()
+                        loadPreviewWallpaper()
                     }
                     WallpaperEngine.shared.bake()
+                    hasPendingChanges = false
                 }
-                externalChangeDetected = false
-                hasPendingChanges = false
-            } label: {
-                Label(externalChangeDetected ? "Re-fetch" : "Fetch",
-                      systemImage: externalChangeDetected ? "arrow.triangle.2.circlepath" : "square.and.arrow.down")
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(externalChangeDetected ? .orange : .accentColor)
-            .disabled(!isFetchable && !externalChangeDetected)
-        }
-
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Bake corners")
-                Text(hasPendingChanges ? "Corner settings changed — apply to wallpaper" : "No pending changes")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        } else if !WallpaperEngine.shared.isFetched {
+            // Auto-fetch failed (edge case). Show manual fallback.
+            HStack(spacing: 10) {
+                Image(systemName: "square.and.arrow.down")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Snapshot needed")
+                    Text("Snapshot your wallpaper so corners can be baked into it")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Snapshot") {
+                    WallpaperEngine.shared.fetch()
+                    loadPreviewWallpaper()
+                }
+                .buttonStyle(.borderedProminent)
             }
-            Spacer()
-            Button("Apply") {
-                WallpaperEngine.shared.bake()
-                hasPendingChanges = false
+        } else {
+            // Everything is in sync.
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Corners applied")
+                    Text("Your corner settings are baked into the wallpaper")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Re-snapshot") {
+                    WallpaperEngine.shared.fetch()
+                    loadPreviewWallpaper()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!hasPendingChanges)
         }
     }
 
@@ -1437,23 +1453,6 @@ struct CornermizationPane: View {
             ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
                 WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
             }
-    }
-
-    @ViewBuilder
-    private var externalChangeBanner: some View {
-        if externalChangeDetected {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.orange)
-                Text("Re-fetch will update the baseline and restore your previous corner settings")
-                    .font(.system(size: 12))
-                    .foregroundColor(.orange)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 8)
-            .background(Color.orange.opacity(0.1))
-        }
     }
 
     @ViewBuilder

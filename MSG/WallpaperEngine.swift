@@ -19,7 +19,7 @@ final class WallpaperEngine {
     // MARK: - Properties
 
     private let settings: AppSettings
-    private let queue = DispatchQueue(label: "msg.wallpaper", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "msg.wallpaper", qos: .utility)
 
     private var screens: [String: ScreenState] = [:]
     private var pollTimer: Timer?
@@ -39,6 +39,9 @@ final class WallpaperEngine {
 
     /// Fires when an external wallpaper change is detected (user changed wallpaper in System Settings).
     var onExternalChange: (() -> Void)?
+    /// Stays true from the moment an external change is detected until fetch() is called.
+    /// Survives settings-pane navigation so auto-apply stays suppressed until resolved.
+    private(set) var externalChangePending: Bool = false
 
     // MARK: - Init
 
@@ -60,6 +63,10 @@ final class WallpaperEngine {
             object: nil, queue: .main
         ) { [weak self] _ in
             self?.reapplyToAllSpaces()
+            // Chase reads: the macOS transition animation may complete slightly after
+            // the notification fires, so re-apply a couple of times to close the gap.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05)  { self?.reapplyToAllSpaces() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15)  { self?.reapplyToAllSpaces() }
         }
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -111,6 +118,17 @@ final class WallpaperEngine {
         }
     }
 
+    /// Re-applies the last baked PNG to all screens (undoes showBaseline).
+    /// Call when leaving the Cornermization pane without pending changes.
+    func restoreBakedWallpaper() {
+        guard !externalChangePending else { return }
+        for screen in NSScreen.screens {
+            guard let uuid = Self.screenUUID(screen),
+                  let url = lastBakedURLs[uuid] else { continue }
+            Self.setWallpaper(url: url, for: screen)
+        }
+    }
+
     // MARK: - Screen change
 
     /// Fetches baseline for any newly connected display and re-bakes.
@@ -144,6 +162,7 @@ final class WallpaperEngine {
         }
 
         guard !captured.isEmpty else { return }
+        externalChangePending = false  // user acknowledged the change by re-snapshotting
         screens = captured
         persistBaselines()
     }
@@ -176,6 +195,7 @@ final class WallpaperEngine {
 
     /// Applies corner masks to the cached baseline wallpapers and sets them as the desktop.
     func bake() {
+        guard !externalChangePending else { return }
         bakeItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.performBake()
@@ -234,6 +254,7 @@ final class WallpaperEngine {
     /// Re-applies the last baked PNG on space switch so the cornered wallpaper
     /// persists across all Spaces without re-rendering.
     private func reapplyToAllSpaces() {
+        guard !externalChangePending else { return }
         for screen in NSScreen.screens {
             guard let uuid = Self.screenUUID(screen),
                   let url = lastBakedURLs[uuid] else { continue }
@@ -251,12 +272,14 @@ final class WallpaperEngine {
     }
 
     private func checkForExternalChange() {
+        guard !externalChangePending else { return }  // already flagged, wait for user to resolve
         for screen in NSScreen.screens {
             guard let uuid = Self.screenUUID(screen),
                   let state = screens[uuid] else { continue }
             guard let cur = Self.wallpaperURL(for: screen) else { continue }
 
             if !Self.isMSGFile(url: cur), cur != state.baselineURL {
+                externalChangePending = true
                 onExternalChange?()
                 return
             }
@@ -343,6 +366,38 @@ final class WallpaperEngine {
             let src = "tell application \"System Events\" to set picture of desktop 1 to \"\(url.path)\""
             _ = NSAppleScript(source: src)?.executeAndReturnError(nil)
         }
+        // Best-effort: propagate to all spaces in the Dock DB so other spaces pick up
+        // the baked wallpaper without needing the user to visit them first.
+        if let uuid = screenUUID(screen) {
+            DispatchQueue.global(qos: .background).async {
+                propagateToAllSpacesInDB(url: url, displayUUID: uuid)
+            }
+        }
+    }
+
+    /// Writes the wallpaper URL to every space row for this display in the Dock
+    /// database. The same `data` table that `readPlacement` reads from stores
+    /// per-space file-path entries as plain text. Updating all text-valued rows
+    /// whose key contains this display's UUID covers all spaces without needing
+    /// to visit each one individually.
+    private static func propagateToAllSpacesInDB(url: URL, displayUUID: String) {
+        let db = NSHomeDirectory() + "/Library/Application Support/Dock/desktoppicture.db"
+        guard FileManager.default.fileExists(atPath: db) else { return }
+        let p = url.path.replacingOccurrences(of: "'", with: "''")
+        let u = displayUUID.replacingOccurrences(of: "'", with: "''")
+        // Cover both known schema patterns:
+        //  - macOS 12-13: key contains display UUID, value is text path
+        //  - macOS 14-15: separate display_uuid column
+        let sql = """
+        UPDATE data SET value='\(p)'
+         WHERE typeof(value)='text' AND value LIKE '/%'
+         AND (key GLOB '*\(u)*' OR display_uuid='\(u)');
+        """
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        task.arguments = [db, sql]
+        task.standardOutput = Pipe(); task.standardError = Pipe()
+        try? task.run(); task.waitUntilExit()
     }
 
     // MARK: - Placement
