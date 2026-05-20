@@ -27,6 +27,7 @@ swiftc \
     IndicatorRenderer.swift \
     CornerWindow.swift \
     AppDelegate.swift \
+    MissionControlDetector.swift \
     SettingsMenu.swift \
     MusicMonitor.swift \
     MusicPopover.swift \
@@ -36,6 +37,7 @@ swiftc \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos13.0 \
     -framework AppKit \
+    -framework CoreVideo \
     -framework SwiftUI \
     -framework ServiceManagement \
     -framework IOKit \

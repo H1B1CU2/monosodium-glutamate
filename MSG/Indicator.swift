@@ -61,10 +61,10 @@ final class Indicator {
     var animSpacePillDisplay: Int = -1
     var animSpacePillOldActive: Int = 0
     var animSpacePillNewActive: Int = 0
-    private var animSpacePillTimer: Timer?
     private var animSpacePillCaptured: SpaceInfo?
     private var animSpacePillCapturedGrid: [GridRow] = []
     private var animSpacePillIsDots: Bool = false
+    private var animSpacePillTimer: Timer?
 
     var animTextProgress: CGFloat = 1.0
     var animTextDisplay: Int = -1
@@ -142,6 +142,7 @@ final class Indicator {
                 self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 3.0 : 1.5)
             }
             guard self.systemState.isStable else { return }
+            guard self.animSpacePillDisplay < 0 else { return }
             self.refresh()
         }
         spaceWatcher.start()
@@ -217,10 +218,10 @@ final class Indicator {
     private func startLingerMorph() {
         guard musicLingerMorphTimer == nil else { return }
         musicLingerMorphProgress = 0
-        let morphStartTime = CFAbsoluteTimeGetCurrent()
+        let morphStartTime = CACurrentMediaTime()
         musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            self.musicLingerMorphProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - morphStartTime) / 0.267))
+            self.musicLingerMorphProgress = min(1.0, CGFloat((CACurrentMediaTime() - morphStartTime) / 0.267))
             if self.musicLingerMorphProgress >= 1.0 {
                 self.musicLingerMorphProgress = 1.0
                 t.invalidate(); self.musicLingerMorphTimer = nil
@@ -234,10 +235,10 @@ final class Indicator {
         musicLingerMorphTimer?.invalidate()
         let reverseStart = musicLingerMorphProgress
         let reverseDuration = max(0.001, Double(reverseStart) * 0.133)
-        let morphReverseStartTime = CFAbsoluteTimeGetCurrent()
+        let morphReverseStartTime = CACurrentMediaTime()
         musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            let elapsed = CFAbsoluteTimeGetCurrent() - morphReverseStartTime
+            let elapsed = CACurrentMediaTime() - morphReverseStartTime
             self.musicLingerMorphProgress = reverseStart * CGFloat(1.0 - min(1.0, elapsed / reverseDuration))
             if elapsed >= reverseDuration {
                 self.musicLingerMorphProgress = 0
@@ -553,7 +554,9 @@ final class Indicator {
             if stable { tryStartFocusChange(info: info) }
             if stable { previousSpaces = info.displays.map { $0.current } }
             if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
+            if animSpacePillDisplay < 0 {
+                button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
+            }
         }
 
     }
@@ -571,7 +574,7 @@ final class Indicator {
                 case .pill:
                     startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
                 case .dots:
-                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
+                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
                 case .numbers:
                     startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
                 case .boldNumber:
@@ -592,6 +595,9 @@ final class Indicator {
     // MARK: - Width
 
     private func applyStatusItemLength(info: SpaceInfo) {
+        // Don't resize during an active pill animation — the timer writes
+        // button.image directly and an async length change would race.
+        guard animSpacePillDisplay < 0 else { return }
         let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
         var naturalW: CGFloat
         if animLayoutProgress < 1.0 {
@@ -615,16 +621,16 @@ final class Indicator {
             let lenToSet = finalLen + pad * 2
             if abs(lenToSet - lastSetLength) > 0.1 {
                 lastSetLength = lenToSet
-                statusItem.length = lenToSet
+                DispatchQueue.main.async { [weak self] in self?.statusItem.length = lenToSet }
             }
         } else if animLayoutProgress < 1.0 {
             if abs(finalLen - lastSetLength) > 0.5 {
                 lastSetLength = finalLen
-                statusItem.length = finalLen
+                DispatchQueue.main.async { [weak self] in self?.statusItem.length = finalLen }
             }
         } else if lastSetLength != -1 {
             lastSetLength = -1
-            statusItem.length = NSStatusItem.variableLength
+            DispatchQueue.main.async { [weak self] in self?.statusItem.length = NSStatusItem.variableLength }
         }
     }
 
@@ -633,6 +639,8 @@ final class Indicator {
     private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int, isDots: Bool) {
         guard settings.animationStyle != .none else { refresh(); return }
         animSpacePillTimer?.invalidate()
+        spaceWatcher.cancelChaseReads()
+
         animSpacePillProgress = 0
         animSpacePillDisplay = displayIndex
         animSpacePillOldActive = oldSpace
@@ -643,22 +651,28 @@ final class Indicator {
 
         let style = settings.animationStyle
         let distance = abs(newSpace - oldSpace)
-        let duration: TimeInterval = style == .solid ? 0.18 : (style == .jelly ? (0.6 + Double(distance) * 0.2) : 0.5)
+        let duration: TimeInterval = style == .solid ? 0.18 : (style == .jelly ? (0.5 + Double(distance) * 0.15) : 0.32)
         let useSpring = style == .jelly
+        let useSolid = style == .solid
+        let startTime = CACurrentMediaTime()
 
-        let pillStartTime = CFAbsoluteTimeGetCurrent()
-        animSpacePillTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            self.animSpacePillProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - pillStartTime) / duration))
-            if self.animSpacePillProgress >= 1.0 {
-                t.invalidate(); self.animSpacePillTimer = nil; self.animSpacePillDisplay = -1
-                self.refresh(); return
+            let now = CACurrentMediaTime()
+            let raw = min(1.0, CGFloat((now - startTime) / duration))
+            self.animSpacePillProgress = raw
+
+            if raw >= 1.0 {
+                t.invalidate()
+                self.animSpacePillTimer = nil
+                self.animSpacePillDisplay = -1
+                self.refresh()
+                self.statusItem.button?.display()
+                return
             }
-            let p = useSpring ? Easing.spring(self.animSpacePillProgress) : Easing.outQuart(self.animSpacePillProgress)
+
+            let p = useSpring ? Easing.spring(raw) : (useSolid ? Easing.outQuart(raw) : Easing.outCubic(raw))
             if let cap = self.animSpacePillCaptured {
-                // Use current focus index rather than captured so the bright/dim state
-                // stays correct after the focus animation completes. Without this, the
-                // renderer's else-branch snaps back to cap.activeDisplayIndex mid-animation.
                 let liveIdx = max(0, min(self.previousActiveDisplayIndex, cap.displays.count - 1))
                 let effectiveInfo = liveIdx == cap.activeDisplayIndex ? cap : SpaceInfo(
                     displays: cap.displays, activeDisplayIndex: liveIdx, mainDisplayIndex: cap.mainDisplayIndex
@@ -670,8 +684,10 @@ final class Indicator {
                     spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
                 )
             }
+            self.statusItem.button?.display()
         }
-        if let t = animSpacePillTimer { RunLoop.current.add(t, forMode: .common) }
+        RunLoop.current.add(timer, forMode: .common)
+        animSpacePillTimer = timer
     }
 
     private func startNumberFade(displayIndex: Int, oldActive: Int, newActive: Int) {
@@ -716,17 +732,15 @@ final class Indicator {
             : (settings.displayStyle == .dots ? 0.4 : 0.16)
         let duration = (settings.displayStyle == .dots && settings.animationStyle == .solid)
             ? (0.075 + Double(distance) * 0.025) : (base + Double(distance) * base)
-        let textStartTime = CFAbsoluteTimeGetCurrent()
         animTextTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            self.animTextProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - textStartTime) / duration))
+            self.animTextProgress += CGFloat(0.016 / duration)
             if self.animTextProgress >= 1.0 {
                 self.animTextProgress = 1.0; t.invalidate()
                 self.animTextOldActive = -1; self.animTextNewActive = -1; self.animTextDisplay = -1
             }
             self.refresh()
         }
-        if let t = animTextTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     private func startLayoutMorph(from old: [SpaceInfo.DisplayInfo], to new: [SpaceInfo.DisplayInfo]) {
@@ -739,14 +753,12 @@ final class Indicator {
         animLayoutMorphNewW = renderer.targetWidth(for: new, style: settings.displayStyle, stackIndicators: stackIndicators)
         previousLayoutDisplays = old
         animLayoutProgress = 0
-        let layoutStartTime = CFAbsoluteTimeGetCurrent()
         animLayoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            self.animLayoutProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - layoutStartTime) / 0.4))
+            self.animLayoutProgress += CGFloat((1.0 / 60.0) / 0.4)
             if self.animLayoutProgress >= 1.0 { self.animLayoutProgress = 1.0; t.invalidate(); self.animLayoutTimer = nil }
             self.refresh()
         }
-        if let t = animLayoutTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     private func startRowMorph(fromCount: Int, fromStacked: Bool) {
@@ -758,14 +770,12 @@ final class Indicator {
             self.animRowMorphFromCount = capFromCount
             self.animRowMorphFromStacked = capFromStacked
             self.animRowMorphProgress = 0.0
-            let rowStartTime = CFAbsoluteTimeGetCurrent()
             self.animRowMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
                 guard let self else { return }
-                self.animRowMorphProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - rowStartTime) / 0.32))
+                self.animRowMorphProgress += 0.05
                 if self.animRowMorphProgress >= 1.0 { self.animRowMorphProgress = 1.0; t.invalidate() }
                 self.refresh(); self.statusItem.button?.display()
             }
-            if let t = self.animRowMorphTimer { RunLoop.current.add(t, forMode: .common) }
         }
         animRowMorphPending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
@@ -774,15 +784,13 @@ final class Indicator {
     private func startFocusAnimation(from: Int, to: Int) {
         animFocusTimer?.invalidate()
         animFocusOldDisplay = from; animFocusNewDisplay = to; animFocusProgress = 0.0
-        let focusStartTime = CFAbsoluteTimeGetCurrent()
         animFocusTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { return }
-            self.animFocusProgress = min(1.0, CGFloat((CFAbsoluteTimeGetCurrent() - focusStartTime) / 0.267))
+            self.animFocusProgress += 0.06
             if self.animFocusProgress >= 1.0 { self.animFocusProgress = 1.0; t.invalidate()
                 self.animFocusOldDisplay = -1; self.animFocusNewDisplay = -1 }
             self.refresh()
         }
-        if let t = animFocusTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     // MARK: - Grid
@@ -840,17 +848,29 @@ final class Indicator {
               let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
         return s
     }
+
+    private func currentScreenRefreshRate() -> Double {
+        guard let screen = NSScreen.main else { return 60.0 }
+        let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+        if displayID != 0, let mode = CGDisplayCopyDisplayMode(displayID) {
+            let rate = mode.refreshRate
+            return rate > 0 ? rate : 120.0
+        }
+        return 60.0
+    }
 }
 
 // MARK: - Easing
 
 enum Easing {
+    static func outCubic(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 3) }
     static func outQuart(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 4) }
     static func inOutQuart(_ t: CGFloat) -> CGFloat { t < 0.5 ? 8 * t * t * t * t : 1 - pow(-2 * t + 2, 4) / 2 }
     static func inOutCubic(_ t: CGFloat) -> CGFloat { t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2 }
     static func outExpo(_ t: CGFloat) -> CGFloat { t == 1 ? 1 : 1 - pow(2, -10 * t) }
     static func spring(_ t: CGFloat) -> CGFloat {
-        if t == 0 { return 0 }; if t == 1 { return 1 }
-        return pow(2, -2.5 * t) * 0.35 * sin((t - 0.03) * (2 * .pi) / 0.22) + 1
+        if t <= 0 { return 0 }
+        if t >= 1 { return 1 }
+        return 1.0 - exp(-6.0 * t) * cos(8.0 * t)
     }
 }

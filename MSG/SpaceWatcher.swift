@@ -89,6 +89,11 @@ final class SpaceWatcher {
         ) { [weak self] _ in self?.updateInfo() }
     }
 
+    func cancelChaseReads() {
+        chaseWork?.cancel()
+        chaseWork = nil
+    }
+
     func stop() {
         if let o = spaceObs  { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         if let o = screenObs { NotificationCenter.default.removeObserver(o) }

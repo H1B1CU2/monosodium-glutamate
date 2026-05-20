@@ -6,3 +6,4 @@ MainActor.assumeIsolated {
     app.delegate = delegate
     app.run()
 }
+

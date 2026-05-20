@@ -98,9 +98,11 @@ final class IndicatorRenderer {
 
         let displays = info.displays
         let activeDisplayIndex = info.activeDisplayIndex
+        let imgH = statusButtonHeight
+        let brightColor = menuBarTextColor
+        let dimColor = menuBarDimColor
 
         let stackIndicators = indicator.stackIndicators
-        let imgH = statusButtonHeight
 
         let gridRows = overrideGridRows ?? indicator.currentGridLayout
         let isMorphing = indicator.animLayoutProgress < 1.0
@@ -200,8 +202,6 @@ final class IndicatorRenderer {
         let pad: CGFloat = 4
         let fixedW = naturalW + pad * 2
 
-        let brightColor = menuBarTextColor
-        let dimColor = menuBarDimColor
         return NSImage(size: NSSize(width: fixedW, height: imgH), flipped: false) { _ in
             let rmDisplaysToDraw = isRowMorphing && !isMorphing && rowMorphFromCount > displays.count ? oldDisplays : displays
             let displaysToDraw = (isMorphing && oldDisplays.count > displays.count) ? oldDisplays : rmDisplaysToDraw
@@ -304,10 +304,6 @@ final class IndicatorRenderer {
 
                     let rowNaturalW = countFloat * dotD + max(0, countFloat - 1) * sp + (pillW - dotD)
                     let rowStretch = isStacked ? max(0, naturalW - rowNaturalW) : 0
-                    let stretchBase: CGFloat = (isDots && isAnim)
-                        ? abs(CGFloat(_spacePillNew - _spacePillOld))
-                        : (isDots ? 0 : (isAnim ? abs(CGFloat(_spacePillNew - _spacePillOld)) : 0))
-                    let stretch = stretchBase * sin(max(0, min(1, _spacePillProg)) * .pi) * 3.0
 
                     func widthForSpace(_ i: Int) -> CGFloat {
                         let iF = CGFloat(i)
@@ -315,12 +311,9 @@ final class IndicatorRenderer {
                         let frac = clampedPillIdx - pL
                         let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
                         func adj(_ w: CGFloat) -> CGFloat { w * dotAlpha }
-                        let animFade: CGFloat = (isDots && isAnim) ? (1.0 - _spacePillProg) : 0
-                        let effPillW: CGFloat = isDots && isAnim ? (dotD + dotD * 1.5 * animFade) : pillW
-                        let effStretch: CGFloat = (isDots && isAnim) ? (stretch * animFade) : stretch
-                        if pL == pH { return iF == pL ? (effPillW + rowStretch) : adj(dotD) }
-                        if iF == pL { return dotD + (effPillW + rowStretch - dotD) * (1.0 - frac) + effStretch * 0.5 }
-                        if iF == pH { return dotD + (effPillW + rowStretch - dotD) * frac + effStretch * 0.5 }
+                        if pL == pH { return iF == pL ? (pillW + rowStretch) : adj(dotD) }
+                        if iF == pL { return dotD + (pillW + rowStretch - dotD) * (1.0 - frac) }
+                        if iF == pH { return dotD + (pillW + rowStretch - dotD) * frac }
                         return adj(dotD)
                     }
 
@@ -370,15 +363,9 @@ final class IndicatorRenderer {
                         }
                     }
 
-                    let pulse: CGFloat = (isDots && isAnim) ? (1.0 + sin(_spacePillProg * .pi) * 0.35) : 1.0
                     for i in 1...count {
-                        var w = widthForSpace(i)
-                        var h = heightForSpace(i)
-                        if isDots && isAnim {
-                            let iF = CGFloat(i)
-                            let pL = floor(clampedPillIdx), pH = ceil(clampedPillIdx)
-                            if iF == pL || iF == pH { w *= pulse; h *= pulse }
-                        }
+                        let w = widthForSpace(i)
+                        let h = heightForSpace(i)
                         let rect = NSRect(x: x, y: rowY + (rowH - h) / 2, width: w, height: h)
                         let path = NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2)
                         colorForSpace(i).setFill()
@@ -406,8 +393,8 @@ final class IndicatorRenderer {
         focusOld: Int, focusNew: Int, focusProgress: CGFloat,
         textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
     ) {
-        let brightColor = self.menuBarTextColor
-        let dimColor = self.menuBarDimColor
+        let brightColor = menuBarTextColor
+        let dimColor = menuBarDimColor
         let totalRows = gridRows.count
         let totalGridH = CGFloat(totalRows) * gridRowH + CGFloat(max(0, totalRows - 1)) * gridGap
         let gridBaseY = (imgH - totalGridH) / 2
@@ -472,10 +459,6 @@ final class IndicatorRenderer {
                 }
                 let clamped = max(1.0, min(countFloat, clampedPillIdx))
                 let rowStretchLocal = perDisplayStretch
-                let stretchBase: CGFloat = (isDots && isAnimDisplay)
-                    ? abs(CGFloat(spacePillNew - spacePillOld))
-                    : (isDots ? 0 : (isAnimDisplay ? abs(CGFloat(spacePillNew - spacePillOld)) : 0))
-                let stretchLocal = stretchBase * sin(max(0, min(1, spacePillProgress)) * .pi) * 3.0
 
                 func gw(_ i: Int) -> CGFloat {
                     let iF = CGFloat(i)
@@ -483,12 +466,9 @@ final class IndicatorRenderer {
                     let frac = clamped - pL
                     let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
                     func adj(_ w: CGFloat) -> CGFloat { w * dotAlpha }
-                    let animFade: CGFloat = (isDots && isAnimDisplay) ? (1.0 - spacePillProgress) : 0
-                    let effPillW: CGFloat = isDots && isAnimDisplay ? (gridDotD + gridDotD * 1.5 * animFade) : gridPillW
-                    let effStretch: CGFloat = (isDots && isAnimDisplay) ? (stretchLocal * animFade) : stretchLocal
-                    if pL == pH { return iF == pL ? (effPillW + rowStretchLocal) : adj(gridDotD) }
-                    if iF == pL { return gridDotD + (effPillW + rowStretchLocal - gridDotD) * (1.0 - frac) + effStretch * 0.5 }
-                    if iF == pH { return gridDotD + (effPillW + rowStretchLocal - gridDotD) * frac + effStretch * 0.5 }
+                    if pL == pH { return iF == pL ? (gridPillW + rowStretchLocal) : adj(gridDotD) }
+                    if iF == pL { return gridDotD + (gridPillW + rowStretchLocal - gridDotD) * (1.0 - frac) }
+                    if iF == pH { return gridDotD + (gridPillW + rowStretchLocal - gridDotD) * frac }
                     return adj(gridDotD)
                 }
                 func gh(_ i: Int) -> CGFloat {
@@ -517,15 +497,10 @@ final class IndicatorRenderer {
                     return color.withAlphaComponent(color.alphaComponent * dotAlpha)
                 }
 
-                let pulse: CGFloat = (isDots && isAnimDisplay) ? (1.0 + sin(spacePillProgress * .pi) * 0.35) : 1.0
                 var px = x
                 for i in 1...count {
-                    var w = gw(i)
-                    var h = gh(i)
-                    if isDots && isAnimDisplay {
-                        let iF = CGFloat(i), pL = floor(clamped), pH = ceil(clamped)
-                        if iF == pL || iF == pH { w *= pulse; h *= pulse }
-                    }
+                    let w = gw(i)
+                    let h = gh(i)
                     let rect = NSRect(x: px, y: rowY + (gridRowH - h) / 2, width: w, height: h)
                     gc(i).setFill()
                     NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2).fill()
@@ -640,7 +615,7 @@ final class IndicatorRenderer {
     /// Adapts text/pill color to the menu bar's actual translucency
     /// background. labelColor stays white on a light translucent menu bar
     /// → invisible. Reading effectiveAppearance gives the real answer.
-    private var menuBarTextColor: NSColor {
+    var menuBarTextColor: NSColor {
         guard let button = statusItem?.button else { return .labelColor }
         let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
         switch name {
@@ -648,7 +623,7 @@ final class IndicatorRenderer {
         default:                        return NSColor(white: 0.15, alpha: 1)
         }
     }
-    private var menuBarDimColor: NSColor {
+    var menuBarDimColor: NSColor {
         let bright = menuBarTextColor
         guard let button = statusItem?.button else { return .secondaryLabelColor }
         let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])

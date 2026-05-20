@@ -1142,7 +1142,7 @@ private func applyEasing(_ style: AnimationStyle, _ t: CGFloat) -> CGFloat {
     case .none:   return 1
     case .solid:  return c                            // linear (matches text-anim solid path)
     case .liquid: return 1 - pow(1 - c, 4)            // Easing.outQuart
-    case .jelly:  return pow(2, -2.5 * c) * 0.35 * sin((c - 0.03) * 2 * .pi / 0.22) + 1  // Easing.spring
+    case .jelly:  return pow(2, -2.5 * c) * 0.35 * sin((c - 0.03) * 2 * .pi / 0.22) + 1
     }
 }
 

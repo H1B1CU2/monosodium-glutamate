@@ -25,9 +25,10 @@ final class SystemState {
     private var pollTimer: Timer?
     private var quiesceWorkItem: DispatchWorkItem?
     private let quiesceWindowSec: TimeInterval = 0
+    private let detectionQueue = DispatchQueue(label: "msg.sysstate.detect", qos: .userInteractive)
 
     func start() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             self?.refreshState()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
@@ -44,8 +45,16 @@ final class SystemState {
     // MARK: - State refresh
 
     private func refreshState() {
-        let mc = MissionControlDetector.isActive()
-        let fs = Self.detectFullscreen()
+        detectionQueue.async { [weak self] in
+            let mc = MissionControlDetector.isActive()
+            let fs = Self.detectFullscreen()
+            DispatchQueue.main.async { [weak self] in
+                self?.applyDetectedState(mc: mc, fs: fs)
+            }
+        }
+    }
+
+    private func applyDetectedState(mc: Bool, fs: Bool) {
         let wasStable = isStable
 
         if mc != isMissionControl {

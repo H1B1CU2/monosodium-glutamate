@@ -155,21 +155,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Mission Control poll
 
+    private let mcPollQueue = DispatchQueue(label: "msg.mcpoll", qos: .userInitiated)
+
     private func startMCPoll() {
         guard mcPollTimer == nil else { return }
         mcPollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let inMC = MissionControlDetector.isActive()
-            guard inMC != self.wasInMC else { return }
-            self.wasInMC = inMC
-            for win in self.cornerWindows {
-                let uuid = win.displayUUID ?? "_default"
-                let underBar = win.targetScreen.isBuiltin
-                    ? settings.topCornersUnderMenuBar
-                    : settings.extTopCornersUnderMenuBar(for: uuid)
-                win.setSkipTop(inMC && underBar)
+            self.mcPollQueue.async {
+                let inMC = MissionControlDetector.isActive()
+                DispatchQueue.main.async {
+                    guard inMC != self.wasInMC else { return }
+                    self.wasInMC = inMC
+                    for win in self.cornerWindows {
+                        let uuid = win.displayUUID ?? "_default"
+                        let underBar = win.targetScreen.isBuiltin
+                            ? self.settings.topCornersUnderMenuBar
+                            : self.settings.extTopCornersUnderMenuBar(for: uuid)
+                        win.setSkipTop(inMC && underBar)
+                    }
+                }
             }
         }
+        mcPollTimer?.tolerance = 0.05
         if let t = mcPollTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
