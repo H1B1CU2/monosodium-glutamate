@@ -96,8 +96,6 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    var displayStyle: DisplayStyle         { get { s.displayStyle }         set { s.displayStyle = newValue;         objectWillChange.send() } }
-    var animationStyle: AnimationStyle     { get { s.animationStyle }       set { s.animationStyle = newValue;       objectWillChange.send() } }
     var stackMode: StackMode               { get { s.stackMode }            set { s.stackMode = newValue;            objectWillChange.send() } }
     var focusDetectionMode: FocusDetectionMode { get { s.focusDetectionMode } set { s.focusDetectionMode = newValue; objectWillChange.send() } }
     var displayOrderMode: DisplayOrderMode { get { s.displayOrderMode }     set { s.displayOrderMode = newValue;     objectWillChange.send() } }
@@ -362,47 +360,6 @@ struct SettingsWindow: View {
     }
 }
 
-// MARK: - Spacer Preview
-
-@available(macOS 14.0, *)
-struct IndicatorPreviewView: View {
-    let style: DisplayStyle
-    let animationStyle: AnimationStyle
-    let stackMode: StackMode
-    let screens: Int
-    var wallpaperImage: NSImage? = nil
-    @State private var activeSpace: Int = 2
-    private let spaceCount = 5
-
-    var body: some View {
-        DisplayPreviewView(
-            style: style, animationStyle: animationStyle, stackMode: stackMode,
-            spaceCount: spaceCount, activeSpace: activeSpace,
-            showMusic: false, screenCount: screens,
-            fixedHeight: 80,
-            wallpaperImage: wallpaperImage
-        )
-        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
-            activeSpace = activeSpace >= spaceCount ? 1 : activeSpace + 1
-        }
-    }
-}
-
-// Maps the user's AnimationStyle selection to a SwiftUI Animation.
-// Durations / curves match what IndicatorRenderer + Indicator.swift actually use:
-//   solid  → linear 0.18s
-//   liquid → outQuart 0.5s  (approximated with easeOut)
-//   jelly  → spring (Easing.spring is a damped sine; SwiftUI spring approximates)
-//   none   → no animation (snap)
-func indicatorAnimation(for style: AnimationStyle) -> Animation? {
-    switch style {
-    case .none:   return nil
-    case .solid:  return .linear(duration: 0.08)
-    case .liquid: return .easeOut(duration: 0.5)
-    case .jelly:  return .spring(response: 0.45, dampingFraction: 0.5, blendDuration: 0.5)
-    }
-}
-
 // MARK: - Corner Preview
 
 @available(macOS 14.0, *)
@@ -415,7 +372,7 @@ struct CornerPreviewView: View {
 
     var body: some View {
         DisplayPreviewView(
-            style: .pill, stackMode: .inline,
+            stackMode: .inline,
             spaceCount: 4, activeSpace: 2,
             showMusic: false, screenCount: 1,
             cornerRadius: radius,
@@ -436,7 +393,7 @@ struct MusicPreviewView: View {
 
     var body: some View {
         DisplayPreviewView(
-            style: .pill, stackMode: .inline,
+            stackMode: .inline,
             spaceCount: 4, activeSpace: 2,
             showMusic: mode != .off, screenCount: 1,
             fixedHeight: 80,
@@ -472,8 +429,6 @@ struct TrackpadPreview: View {
 
 @available(macOS 14.0, *)
 struct SpacerPreviewScene: View {
-    let style: DisplayStyle
-    let animationStyle: AnimationStyle
     let stackMode: StackMode
     let screenCount: Int
     var wallpaperImage: NSImage? = nil
@@ -517,7 +472,6 @@ struct SpacerPreviewScene: View {
                 HStack(spacing: 12) {
                     Spacer()
                     PreviewSpaceIndicator(
-                        style: style, animationStyle: animationStyle,
                         stackMode: stackMode,
                         spaceCount: spaceCount, activeSpace: activeSpace,
                         screenCount: screenCount,
@@ -771,8 +725,6 @@ struct MusicPopoverScene: View {
 
 @available(macOS 14.0, *)
 struct DisplayPreviewView: View {
-    let style: DisplayStyle
-    var animationStyle: AnimationStyle = .none
     let stackMode: StackMode
     let spaceCount: Int
     let activeSpace: Int
@@ -823,7 +775,7 @@ struct DisplayPreviewView: View {
 
                 VStack(spacing: 0) {
                     PreviewMenuBar(
-                        style: style, animationStyle: animationStyle, stackMode: stackMode,
+                        stackMode: stackMode,
                         spaceCount: spaceCount, activeSpace: activeSpace,
                         showMusic: showMusic, screenCount: screenCount
                     )
@@ -866,8 +818,6 @@ struct DisplayPreviewView: View {
 // MARK: - Preview sub-views
 
 struct PreviewMenuBar: View {
-    let style: DisplayStyle
-    var animationStyle: AnimationStyle = .none
     let stackMode: StackMode
     let spaceCount: Int
     let activeSpace: Int
@@ -882,7 +832,7 @@ struct PreviewMenuBar: View {
             Text("Edit").font(.system(size: 8)).opacity(0.75)
             Text("View").font(.system(size: 8)).opacity(0.75)
             Spacer()
-            PreviewSpaceIndicator(style: style, animationStyle: animationStyle, stackMode: stackMode,
+            PreviewSpaceIndicator(stackMode: stackMode,
                                   spaceCount: spaceCount, activeSpace: activeSpace, screenCount: screenCount)
             if showMusic { PreviewMusicPill() }
             Image(systemName: "switch.2")
@@ -907,10 +857,6 @@ struct PillDotsDims {
         compact ? .init(dotD: 2, pillW: 9, pillH: 2, sp: 2, rowH: 4)
                 : .init(dotD: 3, pillW: 14, pillH: 5, sp: 3, rowH: 11)
     }
-    static func dots(compact: Bool) -> PillDotsDims {
-        compact ? .init(dotD: 3, pillW: 3, pillH: 3, sp: 3, rowH: 5)
-                : .init(dotD: 5, pillW: 5, pillH: 5, sp: 5, rowH: 6)
-    }
     func naturalWidth(spaceCount: Int) -> CGFloat {
         CGFloat(spaceCount) * dotD + max(0, CGFloat(spaceCount - 1)) * sp + (pillW - dotD)
     }
@@ -920,34 +866,25 @@ struct PillDotsDims {
 }
 
 struct PreviewSpaceIndicator: View {
-    let style: DisplayStyle
-    var animationStyle: AnimationStyle = .none
     let stackMode: StackMode
     let spaceCount: Int
     let activeSpace: Int
     let screenCount: Int
     var scale: CGFloat = 1.0
 
-    // Only pill/dots respect stack mode. Numbers/boldNumber always render inline (real renderer behavior).
     private var stacked: Bool {
-        (style == .pill || style == .dots)
-            && screenCount > 1
+        screenCount > 1
             && (stackMode == .stack || stackMode == .dynamic)
     }
 
     var body: some View {
-        switch style {
-        case .pill, .dots:    pillDotsBody
-        case .numbers:        numbersBody(bold: false)
-        case .boldNumber:     numbersBody(bold: true)
-        }
+        pillBody
     }
 
     @ViewBuilder
-    private var pillDotsBody: some View {
-        let isDots = style == .dots
+    private var pillBody: some View {
         let compact = stacked
-        let dims = (isDots ? PillDotsDims.dots(compact: compact) : PillDotsDims.pill(compact: compact)).scaled(scale)
+        let dims = PillDotsDims.pill(compact: compact).scaled(scale)
         let rowCounts: [Int] = screenCount > 1 ? [spaceCount, max(1, spaceCount - 1)] : [spaceCount]
 
         if stacked {
@@ -958,8 +895,7 @@ struct PreviewSpaceIndicator: View {
                     AnimatedPillDotsRow(
                         spaceCount: rowCounts[i],
                         activeSpace: i == 0 ? activeSpace : 1,
-                        isDots: isDots, dims: dims,
-                        animationStyle: i == 0 ? animationStyle : .none,
+                        dims: dims,
                         dimmed: i != 0,
                         stretchToWidth: widest
                     )
@@ -978,8 +914,7 @@ struct PreviewSpaceIndicator: View {
                     AnimatedPillDotsRow(
                         spaceCount: rowCounts[i],
                         activeSpace: i == 0 ? activeSpace : 1,
-                        isDots: isDots, dims: dims,
-                        animationStyle: i == 0 ? animationStyle : .none,
+                        dims: dims,
                         dimmed: false
                     )
                 }
@@ -987,48 +922,9 @@ struct PreviewSpaceIndicator: View {
         } else {
             AnimatedPillDotsRow(
                 spaceCount: spaceCount, activeSpace: activeSpace,
-                isDots: isDots, dims: dims,
-                animationStyle: animationStyle, dimmed: false
+                dims: dims, dimmed: false
             )
         }
-    }
-
-    @ViewBuilder
-    private func numbersBody(bold: Bool) -> some View {
-        let displayCount = max(1, screenCount)
-        HStack(spacing: 0) {
-            ForEach(0..<displayCount, id: \.self) { i in
-                if i > 0 {
-                    Text(" | ")
-                        .font(.system(size: 9 * scale, weight: .light, design: .monospaced))
-                        .foregroundColor(Color.black.opacity(0.40))
-                }
-                let activeForDisplay = clamp(activeSpace - i, inRange: spaceCount)
-                if bold {
-                    Text("\(activeForDisplay)")
-                        .font(.system(size: 9 * scale, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color.black.opacity(0.85))
-                        .animation(indicatorAnimation(for: animationStyle), value: activeForDisplay)
-                } else {
-                    HStack(spacing: 2 * scale) {
-                        ForEach(1...spaceCount, id: \.self) { n in
-                            let dist = CGFloat(abs(n - activeForDisplay))
-                            let blend = max(0, 1.0 - dist)
-                            Text("\(n)")
-                                .font(.system(size: 8 * scale, weight: n == activeForDisplay ? .bold : .regular, design: .monospaced))
-                                .foregroundColor(blendBlack(weight: blend, dimmed: false))
-                                .animation(indicatorAnimation(for: animationStyle), value: activeForDisplay)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func clamp(_ v: Int, inRange maxVal: Int) -> Int {
-        if v < 1 { return 1 }
-        if v > maxVal { return maxVal }
-        return v
     }
 }
 
@@ -1037,9 +933,7 @@ struct PreviewSpaceIndicator: View {
 struct AnimatedPillDotsRow: View {
     let spaceCount: Int
     let activeSpace: Int
-    let isDots: Bool
     let dims: PillDotsDims
-    let animationStyle: AnimationStyle
     let dimmed: Bool
     var stretchToWidth: CGFloat? = nil
 
@@ -1070,13 +964,12 @@ struct AnimatedPillDotsRow: View {
     }
 
     private func fractionalActive(at date: Date) -> CGFloat {
-        if animationStyle == .none { return CGFloat(toActive) }
         if fromActive == toActive { return CGFloat(toActive) }
         let elapsed = date.timeIntervalSince(transitionStart)
         let distance = max(1, abs(toActive - fromActive))
-        let duration = animDuration(animationStyle, distance: distance)
+        let duration: Double = 0.5
         let raw = max(0, min(1, CGFloat(elapsed / duration)))
-        let eased = applyEasing(animationStyle, raw)
+        let eased = applyEasing(raw)
         return CGFloat(fromActive) + CGFloat(toActive - fromActive) * eased
     }
 
@@ -1093,7 +986,6 @@ struct AnimatedPillDotsRow: View {
             return dims.dotD
         }
         func heightFor(_ i: Int) -> CGFloat {
-            if isDots { return dims.dotD }
             let iF = CGFloat(i)
             if pL == pH { return iF == pL ? dims.pillH : dims.dotD }
             if iF == pL { return dims.dotD + (dims.pillH - dims.dotD) * (1 - f) }
@@ -1102,10 +994,6 @@ struct AnimatedPillDotsRow: View {
         }
         func colorFor(_ i: Int) -> Color {
             let iF = CGFloat(i)
-            if isDots {
-                let dist = abs(iF - clamped)
-                return blendBlack(weight: max(0, 1 - dist), dimmed: dimmed)
-            }
             let alpha: CGFloat
             if pL == pH { alpha = iF == pL ? 1 : 0 }
             else if iF == pL { alpha = 1 - f }
@@ -1130,23 +1018,9 @@ struct AnimatedPillDotsRow: View {
 
 // MARK: - Animation helpers (mirroring Indicator.swift + IndicatorRenderer.swift constants)
 
-private func animDuration(_ style: AnimationStyle, distance: Int) -> Double {
-    switch style {
-    case .none:   return 0.0
-    case .solid:  return 0.18
-    case .liquid: return 0.5
-    case .jelly:  return 0.6 + Double(distance) * 0.2
-    }
-}
-
-private func applyEasing(_ style: AnimationStyle, _ t: CGFloat) -> CGFloat {
+private func applyEasing(_ t: CGFloat) -> CGFloat {
     let c = max(0, min(1, t))
-    switch style {
-    case .none:   return 1
-    case .solid:  return c                            // linear (matches text-anim solid path)
-    case .liquid: return 1 - pow(1 - c, 4)            // Easing.outQuart
-    case .jelly:  return pow(2, -2.5 * c) * 0.35 * sin((c - 0.03) * 2 * .pi / 0.22) + 1
-    }
+    return 1 - pow(1 - c, 4)  // Easing.outQuart
 }
 
 private func blendBlack(weight: CGFloat, dimmed: Bool) -> Color {
@@ -1189,19 +1063,12 @@ struct SpacerPane: View {
     @State private var screens: [NSScreen] = NSScreen.screens
     @State private var previewWallpaper: NSImage? = nil
 
-    private var hideJelly: Bool {
-        vm.displayStyle == .numbers || vm.displayStyle == .boldNumber || vm.displayStyle == .dots
-    }
     private var effectiveScreenCount: Int { screens.count + vm.fakeDisplays.count }
-    private var stackVisible: Bool {
-        (vm.displayStyle == .pill || vm.displayStyle == .dots) && effectiveScreenCount > 1
-    }
+    private var stackVisible: Bool { effectiveScreenCount > 1 }
     var body: some View {
         PaneContainer(section: .spacer) {
             Section("Preview") {
                 SpacerPreviewScene(
-                    style: vm.displayStyle,
-                    animationStyle: vm.animationStyle,
                     stackMode: vm.stackMode,
                     screenCount: effectiveScreenCount,
                     wallpaperImage: previewWallpaper
@@ -1211,14 +1078,6 @@ struct SpacerPane: View {
             }
 
             Section("Indicator") {
-                Picker("Style", selection: Binding(get: { vm.displayStyle }, set: { vm.displayStyle = $0 })) {
-                    ForEach(DisplayStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                Picker("Animation", selection: Binding(get: { vm.animationStyle }, set: { vm.animationStyle = $0 })) {
-                    ForEach(AnimationStyle.allCases.filter { !(hideJelly && $0 == .jelly) }, id: \.self) {
-                        Text($0.rawValue).tag($0)
-                    }
-                }
                 if stackVisible {
                     Picker("Stack Mode", selection: Binding(get: { vm.stackMode }, set: { vm.stackMode = $0 })) {
                         ForEach(StackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }

@@ -63,14 +63,13 @@ final class Indicator {
     var animSpacePillNewActive: Int = 0
     private var animSpacePillCaptured: SpaceInfo?
     private var animSpacePillCapturedGrid: [GridRow] = []
-    private var animSpacePillIsDots: Bool = false
     private var animSpacePillTimer: Timer?
-
-    var animTextProgress: CGFloat = 1.0
-    var animTextDisplay: Int = -1
-    var animTextOldActive: Int = -1
-    var animTextNewActive: Int = -1
-    private var animTextTimer: Timer?
+    /// Frames pre-rasterized at animation start. Nil once focus changes
+    /// mid-animation (the timer falls back to live rendering for the rest).
+    private var preRenderedPillFrames: [NSImage]?
+    /// `previousActiveDisplayIndex` captured at pre-render time. If this
+    /// diverges from the live value, the pre-rendered cache is stale.
+    private var preRenderedPillFocusIdx: Int = -1
 
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
@@ -87,10 +86,6 @@ final class Indicator {
     var animFocusOldDisplay: Int = -1
     var animFocusNewDisplay: Int = -1
     private var animFocusTimer: Timer?
-
-    /// Blocks number-text refresh while a boldNumber fade-out is in flight
-    /// so the old value stays visible until the fade completes.
-    var numberFadeActive = false
 
     // MARK: Snapshot state (only mutated when systemState.isStable)
 
@@ -306,10 +301,8 @@ final class Indicator {
         animSpacePillProgress = 1.0; animSpacePillDisplay = -1
         animSpacePillOldActive = 0; animSpacePillNewActive = 0
         animSpacePillCaptured = nil
-
-        animTextTimer?.invalidate(); animTextTimer = nil
-        animTextProgress = 1.0; animTextDisplay = -1
-        animTextOldActive = -1; animTextNewActive = -1
+        preRenderedPillFrames = nil
+        preRenderedPillFocusIdx = -1
 
         animLayoutTimer?.invalidate(); animLayoutTimer = nil
         animLayoutProgress = 1.0
@@ -364,7 +357,6 @@ final class Indicator {
     // MARK: - Computed
 
     var stackIndicators: Bool {
-        if settings.displayStyle == .dots { return false }
         switch settings.stackMode {
         case .inline: return false
         case .stack:  return true
@@ -380,8 +372,7 @@ final class Indicator {
     }
 
     var shouldUseGridLayout: Bool {
-        return (settings.displayStyle == .pill || settings.displayStyle == .dots)
-            && settings.stackMode == .dynamic
+        return settings.stackMode == .dynamic
             && settings.displayOrderMode == .physicalDetection
             && AppSettings.shared.effectiveDisplayCount >= 3
     }
@@ -496,7 +487,7 @@ final class Indicator {
         } else if fullPreviousDisplays.isEmpty {
             fullPreviousDisplays = info.displays
             previousLayoutDisplays = info.displays
-            animLayoutMorphOldW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
+            animLayoutMorphOldW = renderer.targetWidth(for: info.displays, stackIndicators: stackIndicators)
             animLayoutMorphNewW = animLayoutMorphOldW
             if !shouldUseGridLayout { previousEffectiveRowCount = effectiveRowCount(for: info.displays) }
         }
@@ -509,8 +500,7 @@ final class Indicator {
         }
 
         // Row morph
-        if stable && !shouldUseGridLayout && (settings.displayStyle == .pill || settings.displayStyle == .dots)
-            && animLayoutProgress >= 1.0 {
+        if stable && !shouldUseGridLayout && animLayoutProgress >= 1.0 {
             let cur = effectiveRowCount(for: info.displays)
             if animRowMorphProgress >= 1.0 && cur != previousEffectiveRowCount {
                 startRowMorph(fromCount: previousEffectiveRowCount, fromStacked: previousEffectiveRowCount > 1)
@@ -519,78 +509,38 @@ final class Indicator {
         }
 
         // Clear old state
-        let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
-        if isImageStyle {
-            if button.image == nil || !button.title.isEmpty {
-                button.title = ""
-                button.attributedTitle = NSAttributedString()
-            }
-        } else if button.image != nil {
-            button.image = nil
+        if button.image == nil || !button.title.isEmpty {
+            button.title = ""
+            button.attributedTitle = NSAttributedString()
         }
 
         applyStatusItemLength(info: info)
 
         // Render + animation triggers
-        switch settings.displayStyle {
-        case .pill:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { tryStartFocusChange(info: info) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            // The space animation timer writes button.image directly using captured info.
-            // A competing write from refresh() using current info causes per-frame conflicts
-            // (active display index differs between captured vs current). Let the animation
-            // timer own rendering; it already reads animFocus* from self for the focus overlay.
-            if animSpacePillDisplay < 0 {
-                button.image = renderer.makePillFrame(indicator: self, info: info, isDots: false)
-            }
-
-        case .numbers:
-            if stable { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: false)
-
-        case .boldNumber:
-            if stable, !numberFadeActive { tryStartSpaceChange(info: info, isDots: false) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            if !numberFadeActive {
-                button.attributedTitle = renderer.makeNumbersAttributedString(indicator: self, info: info, bold: true)
-            }
-
-        case .dots:
-            if stable { tryStartSpaceChange(info: info, isDots: true) }
-            if stable { tryStartFocusChange(info: info) }
-            if stable { previousSpaces = info.displays.map { $0.current } }
-            if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
-            if animSpacePillDisplay < 0 {
-                button.image = renderer.makePillFrame(indicator: self, info: info, isDots: true)
-            }
+        if stable { tryStartSpaceChange(info: info) }
+        if stable { tryStartFocusChange(info: info) }
+        if stable { previousSpaces = info.displays.map { $0.current } }
+        if stable { previousActiveDisplayIndex = info.activeDisplayIndex }
+        // The space animation timer writes button.image directly using captured info.
+        // A competing write from refresh() using current info causes per-frame conflicts
+        // (active display index differs between captured vs current). Let the animation
+        // timer own rendering; it already reads animFocus* from self for the focus overlay.
+        if animSpacePillDisplay < 0 {
+            button.image = renderer.makePillFrame(indicator: self, info: info)
         }
 
     }
 
     // MARK: - Animation triggers
 
-    private func tryStartSpaceChange(info: SpaceInfo, isDots: Bool) {
+    private func tryStartSpaceChange(info: SpaceInfo) {
         guard previousSpaces.count == info.displays.count else { return }
         for i in 0..<info.displays.count {
             let prev = previousSpaces[i]
             let cur = info.displays[i].current
             if prev != cur && prev >= 1 && prev <= info.displays[i].total {
                 previousSpaces = info.displays.map { $0.current }
-                switch settings.displayStyle {
-                case .pill:
-                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: false)
-                case .dots:
-                    startPillAnimation(info: info, displayIndex: i, from: prev, to: cur, isDots: true)
-                case .numbers:
-                    startTextAnimation(displayIndex: i, oldActive: prev, newActive: cur)
-                case .boldNumber:
-                    startNumberFade(displayIndex: i, oldActive: prev, newActive: cur)
-                }
+                startPillAnimation(info: info, displayIndex: i, from: prev, to: cur)
                 return
             }
         }
@@ -609,46 +559,33 @@ final class Indicator {
         // Don't resize during an active pill animation — the timer writes
         // button.image directly and an async length change would race.
         guard animSpacePillDisplay < 0 else { return }
-        let isImageStyle = settings.displayStyle == .pill || settings.displayStyle == .dots
         var naturalW: CGFloat
         if animLayoutProgress < 1.0 {
             naturalW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
         } else if shouldUseGridLayout {
-            let dims = gridDimensions(for: currentGridLayout, isDots: settings.displayStyle == .dots)
+            let dims = gridDimensions(for: currentGridLayout)
             naturalW = renderer.gnomePillFixedWidth(
-                for: info.displays, isDots: settings.displayStyle == .dots,
+                for: info.displays,
                 stackIndicators: stackIndicators,
                 gridRows: currentGridLayout,
                 gridDotD: dims.dotD, gridPillW: dims.pillW, gridSp: dims.sp
             )
         } else {
-            naturalW = renderer.targetWidth(for: info.displays, style: settings.displayStyle, stackIndicators: stackIndicators)
+            naturalW = renderer.targetWidth(for: info.displays, stackIndicators: stackIndicators)
         }
 
-        let finalLen = isImageStyle ? max(24, naturalW) : naturalW
-
-        if isImageStyle {
-            let pad: CGFloat = 4
-            let lenToSet = finalLen + pad * 2
-            if abs(lenToSet - lastSetLength) > 0.1 {
-                lastSetLength = lenToSet
-                DispatchQueue.main.async { [weak self] in self?.statusItem.length = lenToSet }
-            }
-        } else if animLayoutProgress < 1.0 {
-            if abs(finalLen - lastSetLength) > 0.5 {
-                lastSetLength = finalLen
-                DispatchQueue.main.async { [weak self] in self?.statusItem.length = finalLen }
-            }
-        } else if lastSetLength != -1 {
-            lastSetLength = -1
-            DispatchQueue.main.async { [weak self] in self?.statusItem.length = NSStatusItem.variableLength }
+        let finalLen = max(24, naturalW)
+        let pad: CGFloat = 4
+        let lenToSet = finalLen + pad * 2
+        if abs(lenToSet - lastSetLength) > 0.1 {
+            lastSetLength = lenToSet
+            DispatchQueue.main.async { [weak self] in self?.statusItem.length = lenToSet }
         }
     }
 
     // MARK: - Animations
 
-    private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int, isDots: Bool) {
-        guard settings.animationStyle != .none else { refresh(); return }
+    private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int) {
         animSpacePillTimer?.invalidate()
         spaceWatcher.cancelChaseReads()
 
@@ -658,100 +595,111 @@ final class Indicator {
         animSpacePillNewActive = newSpace
         animSpacePillCaptured = info
         animSpacePillCapturedGrid = currentGridLayout
-        animSpacePillIsDots = isDots
 
-        let style = settings.animationStyle
         let distance = abs(newSpace - oldSpace)
-        let duration: TimeInterval = style == .solid ? 0.18 : (style == .jelly ? (0.5 + Double(distance) * 0.15) : 0.32)
-        let useSpring = style == .jelly
-        let useSolid = style == .solid
-        let startTime = CACurrentMediaTime()
+        let duration: TimeInterval = 0.4
+        let interval: TimeInterval = 1.0 / 60.0
 
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+        // Closure that maps a raw 0...1 progress to a fully rendered, live
+        // frame. Used both for pre-render (with the focus snapshot baked in)
+        // and for the live fallback path when focus changes mid-animation.
+        let renderFrame: (CGFloat, Int) -> NSImage? = { [weak self] raw, focusIdx in
+            guard let self, let cap = self.animSpacePillCaptured else { return nil }
+            let p = Easing.inOutQuart(raw)
+            let liveIdx = max(0, min(focusIdx, cap.displays.count - 1))
+            let effectiveInfo = liveIdx == cap.activeDisplayIndex ? cap : SpaceInfo(
+                displays: cap.displays, activeDisplayIndex: liveIdx, mainDisplayIndex: cap.mainDisplayIndex
+            )
+            return self.renderer.makePillFrame(
+                indicator: self, info: effectiveInfo,
+                animatingDisplay: displayIndex,
+                spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
+                spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
+            )
+        }
+
+        // Pre-rasterize all frames using the focus state at start.
+        let frameCount = max(1, Int(ceil(duration / interval)))
+        let snapshotFocus = previousActiveDisplayIndex
+        var frames: [NSImage] = []
+        frames.reserveCapacity(frameCount)
+        for i in 0..<frameCount {
+            let raw = CGFloat(i + 1) / CGFloat(frameCount)
+            if let img = renderFrame(min(1.0, raw), snapshotFocus) {
+                frames.append(rasterize(img))
+            }
+        }
+        preRenderedPillFrames = frames.isEmpty ? nil : frames
+        preRenderedPillFocusIdx = snapshotFocus
+
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            let now = CACurrentMediaTime()
-            let raw = min(1.0, CGFloat((now - startTime) / duration))
-            self.animSpacePillProgress = raw
+            self.animSpacePillProgress += CGFloat(interval / duration)
 
-            if raw >= 1.0 {
+            if self.animSpacePillProgress >= 1.0 {
                 t.invalidate()
                 self.animSpacePillTimer = nil
                 self.animSpacePillDisplay = -1
+                self.preRenderedPillFrames = nil
+                self.preRenderedPillFocusIdx = -1
                 self.refresh()
-                self.statusItem.button?.display()
                 return
             }
 
-            let p = useSpring ? Easing.spring(raw) : (useSolid ? Easing.outQuart(raw) : Easing.outCubic(raw))
-            if let cap = self.animSpacePillCaptured {
-                let liveIdx = max(0, min(self.previousActiveDisplayIndex, cap.displays.count - 1))
-                let effectiveInfo = liveIdx == cap.activeDisplayIndex ? cap : SpaceInfo(
-                    displays: cap.displays, activeDisplayIndex: liveIdx, mainDisplayIndex: cap.mainDisplayIndex
-                )
-                self.statusItem.button?.image = self.renderer.makePillFrame(
-                    indicator: self, info: effectiveInfo, isDots: isDots,
-                    animatingDisplay: displayIndex,
-                    spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
-                    spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
-                )
+            let raw = self.animSpacePillProgress
+
+            // Live focus — SpaceWatcher keeps currentInfo fresh even while
+            // the animation guard suppresses refresh() in its onChange path.
+            let liveFocus = self.spaceWatcher.currentInfo.activeDisplayIndex
+
+            // Pre-rendered fast path: focus hasn't changed since start.
+            //
+            // Index math: pre-render produced frames at raw = 1/N, 2/N, …, N/N
+            // (stored at array[0…N-1]). At tick i, progress ≈ i/N, so the
+            // frame to show sits at array[i-1] = array[Int(progress*N)-1].
+            // The earlier formulation (Int(progress*N)) silently skipped
+            // frame 0 — fatal for `solid` (frame 0 = 31% motion) and
+            // noticeable on `jelly` (frame 0 = 16% motion).
+            if let cache = self.preRenderedPillFrames,
+               self.preRenderedPillFocusIdx == liveFocus {
+                let raw_idx = Int(raw * CGFloat(cache.count)) - 1
+                let idx = min(cache.count - 1, max(0, raw_idx))
+                self.statusItem.button?.image = cache[idx]
+                return
             }
-            self.statusItem.button?.display()
+
+            // Focus changed: drop the cache and render live for the remainder.
+            self.preRenderedPillFrames = nil
+            if let img = renderFrame(raw, liveFocus) {
+                self.statusItem.button?.image = img
+            }
         }
         RunLoop.current.add(timer, forMode: .common)
         animSpacePillTimer = timer
     }
 
-    private func startNumberFade(displayIndex: Int, oldActive: Int, newActive: Int) {
-        guard settings.animationStyle != .none else {
-            refresh(); return
-        }
-        guard let button = statusItem.button else { return }
-
-        // Freeze the old number during fade-out
-        button.attributedTitle = button.attributedTitle
-        numberFadeActive = true
-
-        let duration = settings.animationStyle == .solid ? 0.08 : 0.18
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = duration
-            button.animator().alphaValue = 0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            guard let self else { return }
-            self.numberFadeActive = false
-            self.refresh()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = duration
-                self.statusItem.button?.animator().alphaValue = 1
-            }
-        }
-    }
-
-    private func startTextAnimation(displayIndex: Int, oldActive: Int, newActive: Int) {
-        animTextTimer?.invalidate()
-        guard settings.animationStyle != .none else {
-            animTextOldActive = -1; animTextNewActive = -1; animTextProgress = 1.0; animTextDisplay = -1
-            refresh(); return
-        }
-        animTextDisplay = displayIndex
-        animTextOldActive = oldActive
-        animTextNewActive = newActive
-        animTextProgress = 0
-        let distance = abs(newActive - oldActive)
-        let base = settings.animationStyle == .solid
-            ? (settings.displayStyle == .dots ? 0.075 : 0.08)
-            : (settings.displayStyle == .dots ? 0.4 : 0.16)
-        let duration = (settings.displayStyle == .dots && settings.animationStyle == .solid)
-            ? (0.075 + Double(distance) * 0.025) : (base + Double(distance) * base)
-        animTextTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.animTextProgress += CGFloat(0.016 / duration)
-            if self.animTextProgress >= 1.0 {
-                self.animTextProgress = 1.0; t.invalidate()
-                self.animTextOldActive = -1; self.animTextNewActive = -1; self.animTextDisplay = -1
-            }
-            self.refresh()
-        }
+    /// Force `image`'s deferred drawing closure to run *now* into a bitmap
+    /// representation, then return an NSImage that wraps that bitmap. AppKit
+    /// can then blit it directly without re-invoking any draw closure.
+    private func rasterize(_ image: NSImage) -> NSImage {
+        let size = image.size
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let pixW = max(1, Int(ceil(size.width * scale)))
+        let pixH = max(1, Int(ceil(size.height * scale)))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixW, pixelsHigh: pixH,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32
+        ) else { return image }
+        rep.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        let out = NSImage(size: size)
+        out.addRepresentation(rep)
+        return out
     }
 
     private func startLayoutMorph(from old: [SpaceInfo.DisplayInfo], to new: [SpaceInfo.DisplayInfo]) {
@@ -759,9 +707,9 @@ final class Indicator {
         if animLayoutProgress < 1.0 {
             animLayoutMorphOldW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
         } else {
-            animLayoutMorphOldW = renderer.targetWidth(for: old, style: settings.displayStyle, stackIndicators: stackIndicators)
+            animLayoutMorphOldW = renderer.targetWidth(for: old, stackIndicators: stackIndicators)
         }
-        animLayoutMorphNewW = renderer.targetWidth(for: new, style: settings.displayStyle, stackIndicators: stackIndicators)
+        animLayoutMorphNewW = renderer.targetWidth(for: new, stackIndicators: stackIndicators)
         previousLayoutDisplays = old
         animLayoutProgress = 0
         animLayoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
@@ -838,11 +786,9 @@ final class Indicator {
         return rows
     }
 
-    func gridDimensions(for rows: [GridRow], isDots: Bool) -> GridDims {
+    func gridDimensions(for rows: [GridRow]) -> GridDims {
         let imgH = statusItem.button?.bounds.height ?? 22
-        let dotD: CGFloat, pillW: CGFloat, pillH: CGFloat, sp: CGFloat, rowH: CGFloat, gap: CGFloat = 1
-        if isDots { dotD = 6; pillW = 6; pillH = 6; sp = 6; rowH = 8 }
-        else      { dotD = 4; pillW = 18; pillH = 4; sp = 4; rowH = 8 }
+        let dotD: CGFloat = 4, pillW: CGFloat = 18, pillH: CGFloat = 4, sp: CGFloat = 4, rowH: CGFloat = 8, gap: CGFloat = 1
         let neededH = CGFloat(rows.count) * rowH + CGFloat(rows.count - 1) * gap
         if neededH > imgH {
             let scale = (imgH - CGFloat(rows.count - 1) * gap) / (CGFloat(rows.count) * rowH)

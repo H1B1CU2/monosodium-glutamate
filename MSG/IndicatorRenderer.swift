@@ -18,28 +18,13 @@ final class IndicatorRenderer {
 
     // MARK: - Width helpers
 
-    func targetWidth(for displays: [SpaceInfo.DisplayInfo], style: DisplayStyle, stackIndicators: Bool, gridRows: [GridRow] = []) -> CGFloat {
+    func targetWidth(for displays: [SpaceInfo.DisplayInfo], stackIndicators: Bool, gridRows: [GridRow] = []) -> CGFloat {
         guard !displays.isEmpty else { return 26 }
-        switch style {
-        case .pill:
-            return gnomePillFixedWidth(for: displays, isDots: false, stackIndicators: stackIndicators, gridRows: gridRows)
-        case .numbers:
-            var w: CGFloat = 0
-            for (idx, d) in displays.enumerated() {
-                if idx > 0 { w += 16 }
-                w += CGFloat(max(1, d.total)) * 14
-            }
-            return max(26, w)
-        case .boldNumber:
-            return max(26, CGFloat(displays.count) * 14 + CGFloat(max(0, displays.count - 1)) * 16)
-        case .dots:
-            return gnomePillFixedWidth(for: displays, isDots: true, stackIndicators: stackIndicators, gridRows: gridRows)
-        }
+        return gnomePillFixedWidth(for: displays, stackIndicators: stackIndicators, gridRows: gridRows)
     }
 
     func gnomePillFixedWidth(
         for displays: [SpaceInfo.DisplayInfo],
-        isDots: Bool,
         stackIndicators: Bool,
         gridRows: [GridRow] = [],
         gridDotD: CGFloat = 6, gridPillW: CGFloat = 26, gridSp: CGFloat = 6
@@ -62,9 +47,9 @@ final class IndicatorRenderer {
         }
 
         let useCompact = stackIndicators && displays.count > 1
-        let dotD: CGFloat = isDots ? (useCompact ? 6 : 8) : (useCompact ? 4 : 6)
-        let pillW: CGFloat = isDots ? dotD : (useCompact ? 18 : 26)
-        let sp: CGFloat = isDots ? (useCompact ? 6 : 8) : (useCompact ? 4 : 6)
+        let dotD: CGFloat = useCompact ? 4 : 6
+        let pillW: CGFloat = useCompact ? 18 : 26
+        let sp: CGFloat = useCompact ? 4 : 6
         if stackIndicators || displays.count <= 1 {
             var maxW: CGFloat = 0
             for d in displays {
@@ -88,7 +73,6 @@ final class IndicatorRenderer {
     func makePillFrame(
         indicator: Indicator,
         info: SpaceInfo,
-        isDots: Bool,
         animatingDisplay: Int = -1,
         spacePillOldActive: Int = 0,
         spacePillNewActive: Int = 0,
@@ -119,10 +103,10 @@ final class IndicatorRenderer {
         let _spacePillNew    = animatingDisplay >= 0 ? spacePillNewActive : indicator.animSpacePillNewActive
         let _spacePillProg   = animatingDisplay >= 0 ? spacePillProgress  : indicator.animSpacePillProgress
 
-        let textProgress = indicator.animTextProgress
-        let textDisplay = indicator.animTextDisplay
-        let textOld = indicator.animTextOldActive
-        let textNew = indicator.animTextNewActive
+        let textProgress: CGFloat = 1.0
+        let textDisplay: Int = -1
+        let textOld: Int = -1
+        let textNew: Int = -1
 
         let focusOld = indicator.animFocusOldDisplay
         let focusNew = indicator.animFocusNewDisplay
@@ -132,26 +116,26 @@ final class IndicatorRenderer {
         let rowMorphFromCount   = indicator.animRowMorphFromCount
 
         // Grid dims
-        let gd = useGrid ? indicator.gridDimensions(for: gridRows, isDots: isDots)
+        let gd = useGrid ? indicator.gridDimensions(for: gridRows)
                          : GridDims(dotD: 6, pillW: 26, pillH: 8, sp: 6, rowH: 20, gap: 1)
         let gridDotD = gd.dotD, gridPillW = gd.pillW, gridPillH = gd.pillH
         let gridSp = gd.sp, gridRowH = gd.rowH, gridGap = gd.gap
 
         // Target/old sizing
         let useCompact = stackIndicators && displays.count > 1
-        let dotD_t: CGFloat = isDots ? (useCompact ? 6 : 8) : (useCompact ? 4 : 6)
-        let pillW_t: CGFloat = isDots ? dotD_t : (useCompact ? 18 : 26)
-        let pillH_t: CGFloat = isDots ? dotD_t : (useCompact ? 4 : 8)
-        let sp_t: CGFloat = isDots ? (useCompact ? 6 : 8) : (useCompact ? 4 : 6)
-        let rowH_t: CGFloat = isDots ? (useCompact ? 8 : 12) : (useCompact ? 8 : 20)
+        let dotD_t: CGFloat = useCompact ? 4 : 6
+        let pillW_t: CGFloat = useCompact ? 18 : 26
+        let pillH_t: CGFloat = useCompact ? 4 : 8
+        let sp_t: CGFloat = useCompact ? 4 : 6
+        let rowH_t: CGFloat = useCompact ? 8 : 20
         let gap_t: CGFloat = 1
 
         let oldUseCompact = stackIndicators && oldDisplays.count > 1
-        let dotD_o: CGFloat = isDots ? (oldUseCompact ? 6 : 8) : (oldUseCompact ? 4 : 6)
-        let pillW_o: CGFloat = isDots ? dotD_o : (oldUseCompact ? 18 : 26)
-        let pillH_o: CGFloat = isDots ? dotD_o : (oldUseCompact ? 4 : 8)
-        let sp_o: CGFloat = isDots ? (oldUseCompact ? 6 : 8) : (oldUseCompact ? 4 : 6)
-        let rowH_o: CGFloat = isDots ? (oldUseCompact ? 8 : 12) : (oldUseCompact ? 8 : 20)
+        let dotD_o: CGFloat = oldUseCompact ? 4 : 6
+        let pillW_o: CGFloat = oldUseCompact ? 18 : 26
+        let pillH_o: CGFloat = oldUseCompact ? 4 : 8
+        let sp_o: CGFloat = oldUseCompact ? 4 : 6
+        let rowH_o: CGFloat = oldUseCompact ? 8 : 20
         let gap_o: CGFloat = 1
 
         var dotD  = dotD_o  + (dotD_t  - dotD_o)  * t
@@ -164,17 +148,17 @@ final class IndicatorRenderer {
         if isRowMorphing && !isMorphing {
             let fromCompact = rowMorphFromStacked && rowMorphFromCount > 1
             let toCompact = stackIndicators && displays.count > 1
-            let f_dotD: CGFloat = isDots ? (fromCompact ? 6 : 8) : (fromCompact ? 4 : 6)
-            let f_pillW: CGFloat = isDots ? f_dotD : (fromCompact ? 18 : 26)
-            let f_pillH: CGFloat = isDots ? f_dotD : (fromCompact ? 4 : 8)
-            let f_sp: CGFloat = isDots ? (fromCompact ? 6 : 8) : (fromCompact ? 4 : 6)
-            let f_rowH: CGFloat = isDots ? (fromCompact ? 8 : 12) : (fromCompact ? 8 : 20)
+            let f_dotD: CGFloat = fromCompact ? 4 : 6
+            let f_pillW: CGFloat = fromCompact ? 18 : 26
+            let f_pillH: CGFloat = fromCompact ? 4 : 8
+            let f_sp: CGFloat = fromCompact ? 4 : 6
+            let f_rowH: CGFloat = fromCompact ? 8 : 20
             let f_gap: CGFloat = 1
-            let g_dotD: CGFloat = isDots ? (toCompact ? 6 : 8) : (toCompact ? 4 : 6)
-            let g_pillW: CGFloat = isDots ? g_dotD : (toCompact ? 18 : 26)
-            let g_pillH: CGFloat = isDots ? g_dotD : (toCompact ? 4 : 8)
-            let g_sp: CGFloat = isDots ? (toCompact ? 6 : 8) : (toCompact ? 4 : 6)
-            let g_rowH: CGFloat = isDots ? (toCompact ? 8 : 12) : (toCompact ? 8 : 20)
+            let g_dotD: CGFloat = toCompact ? 4 : 6
+            let g_pillW: CGFloat = toCompact ? 18 : 26
+            let g_pillH: CGFloat = toCompact ? 4 : 8
+            let g_sp: CGFloat = toCompact ? 4 : 6
+            let g_rowH: CGFloat = toCompact ? 8 : 20
             let g_gap: CGFloat = 1
             dotD  = f_dotD  + (g_dotD  - f_dotD)  * rmT
             pillW = f_pillW + (g_pillW - f_pillW) * rmT
@@ -186,16 +170,16 @@ final class IndicatorRenderer {
 
         var naturalW: CGFloat
         if useGrid {
-            naturalW = gnomePillFixedWidth(for: displays, isDots: isDots, stackIndicators: stackIndicators, gridRows: gridRows, gridDotD: gridDotD, gridPillW: gridPillW, gridSp: gridSp)
+            naturalW = gnomePillFixedWidth(for: displays, stackIndicators: stackIndicators, gridRows: gridRows, gridDotD: gridDotD, gridPillW: gridPillW, gridSp: gridSp)
         } else if isMorphing {
             naturalW = indicator.animLayoutMorphOldW + (indicator.animLayoutMorphNewW - indicator.animLayoutMorphOldW) * t
         } else {
-            naturalW = targetWidth(for: displays, style: isDots ? .dots : .pill, stackIndicators: stackIndicators)
+            naturalW = targetWidth(for: displays, stackIndicators: stackIndicators)
         }
         if isRowMorphing && !isMorphing {
             let fromDisplays = rowMorphFromCount > displays.count ? oldDisplays : displays
-            let fromW = gnomePillFixedWidth(for: fromDisplays, isDots: isDots, stackIndicators: stackIndicators)
-            let toW = targetWidth(for: displays, style: isDots ? .dots : .pill, stackIndicators: stackIndicators)
+            let fromW = gnomePillFixedWidth(for: fromDisplays, stackIndicators: stackIndicators)
+            let toW = targetWidth(for: displays, stackIndicators: stackIndicators)
             naturalW = fromW + (toW - fromW) * rmT
         }
 
@@ -216,7 +200,7 @@ final class IndicatorRenderer {
                     displays: displaysToDraw, activeDisplayIndex: activeDisplayIndex,
                     gridRows: gridRows, naturalW: naturalW, fixedW: fixedW, imgH: imgH, pad: pad,
                     gridDotD: gridDotD, gridPillW: gridPillW, gridPillH: gridPillH,
-                    gridSp: gridSp, gridRowH: gridRowH, gridGap: gridGap, isDots: isDots,
+                    gridSp: gridSp, gridRowH: gridRowH, gridGap: gridGap,
                     spacePillActive: _spacePillActive, spacePillOld: _spacePillOld,
                     spacePillNew: _spacePillNew, spacePillProgress: _spacePillProg,
                     focusOld: focusOld, focusNew: focusNew, focusProgress: focusProgress,
@@ -290,10 +274,10 @@ final class IndicatorRenderer {
                     let count = Int(ceil(countFloat))
                     let morphActiveIdx = CGFloat(oldDisplay.current) + (CGFloat(display.current) - CGFloat(oldDisplay.current)) * t
 
-                    let isTextAnim = isDots && textProgress < 1.0 && dIdx == textDisplay
+                    let isTextAnim = textProgress < 1.0 && dIdx == textDisplay
                     let currentPillIdx: CGFloat
                     if isTextAnim {
-                        let p = self.settings.animationStyle == .solid ? textProgress : Easing.outQuart(textProgress)
+                        let p = Easing.outQuart(textProgress)
                         currentPillIdx = CGFloat(textOld) + CGFloat(textNew - textOld) * p
                     } else if isAnim {
                         currentPillIdx = CGFloat(_spacePillOld) + CGFloat(_spacePillNew - _spacePillOld) * _spacePillProg
@@ -328,12 +312,6 @@ final class IndicatorRenderer {
                     func colorForSpace(_ i: Int) -> NSColor {
                         let iF = CGFloat(i)
                         let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
-                        if isDots {
-                            let dist = abs(iF - clampedPillIdx)
-                            let blend = max(0, 1.0 - dist)
-                            let c = dim.blended(withFraction: blend, of: bright) ?? dim
-                            return c.withAlphaComponent(c.alphaComponent * rowAlpha * dotAlpha)
-                        }
                         let pL = floor(clampedPillIdx), pH = ceil(clampedPillIdx), frac = clampedPillIdx - pL
                         let alpha: CGFloat
                         if pL == pH { alpha = iF == pL ? 1.0 : 0.0 }
@@ -388,7 +366,7 @@ final class IndicatorRenderer {
         displays: [SpaceInfo.DisplayInfo], activeDisplayIndex: Int,
         gridRows: [GridRow], naturalW: CGFloat, fixedW: CGFloat, imgH: CGFloat, pad: CGFloat,
         gridDotD: CGFloat, gridPillW: CGFloat, gridPillH: CGFloat,
-        gridSp: CGFloat, gridRowH: CGFloat, gridGap: CGFloat, isDots: Bool,
+        gridSp: CGFloat, gridRowH: CGFloat, gridGap: CGFloat,
         spacePillActive: Int, spacePillOld: Int, spacePillNew: Int, spacePillProgress: CGFloat,
         focusOld: Int, focusNew: Int, focusProgress: CGFloat,
         textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
@@ -449,8 +427,8 @@ final class IndicatorRenderer {
                 let count = display.total
                 let countFloat = CGFloat(count)
                 let clampedPillIdx: CGFloat
-                if textProgress < 1.0 && isDots && dIdx == textDisplay {
-                    let p = settings.animationStyle == .solid ? textProgress : Easing.outQuart(textProgress)
+                if textProgress < 1.0 && dIdx == textDisplay {
+                    let p = Easing.outQuart(textProgress)
                     clampedPillIdx = CGFloat(textOld) + CGFloat(textNew - textOld) * p
                 } else if isAnimDisplay {
                     clampedPillIdx = CGFloat(spacePillOld) + CGFloat(spacePillNew - spacePillOld) * spacePillProgress
@@ -481,12 +459,6 @@ final class IndicatorRenderer {
                 func gc(_ i: Int) -> NSColor {
                     let iF = CGFloat(i)
                     let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
-                    if isDots {
-                        let dist = abs(iF - clamped)
-                        let weight = max(0, 1.0 - dist) * (dist <= 1 ? 1.0 : 0.25)
-                        let base = dim.blended(withFraction: weight, of: bright) ?? dim
-                        return base.withAlphaComponent(dotAlpha)
-                    }
                     let pL = floor(clamped), pH = ceil(clamped), frac = clamped - pL
                     let alpha: CGFloat
                     if pL == pH { alpha = iF == pL ? 1.0 : 0.0 }
@@ -610,7 +582,7 @@ final class IndicatorRenderer {
         }
     }
 
-    // MARK: - Numbers / Bold
+    // MARK: - Colors
 
     /// Adapts text/pill color to the menu bar's actual translucency
     /// background. labelColor stays white on a light translucent menu bar
@@ -633,70 +605,4 @@ final class IndicatorRenderer {
         }
     }
 
-    func makeNumbersAttributedString(indicator: Indicator, info: SpaceInfo, bold: Bool) -> NSAttributedString {
-        let textColor = menuBarTextColor
-        let dimColor = menuBarDimColor
-        let result = NSMutableAttributedString()
-        let separator = NSAttributedString(string: " | ", attributes: [
-            .foregroundColor: dimColor,
-            .font: NSFont.systemFont(ofSize: 13, weight: .light)
-        ])
-
-        for (idx, display) in info.displays.enumerated() {
-            if idx > 0 { result.append(separator) }
-            let isActive = settings.focusDetectionMode == .off || idx == info.activeDisplayIndex
-            if bold {
-                result.append(makeBoldNumber(display, displayIdx: idx, isActive: isActive,
-                                             textProgress: indicator.animTextProgress,
-                                             textDisplay: indicator.animTextDisplay,
-                                             textOld: indicator.animTextOldActive,
-                                             textNew: indicator.animTextNewActive,
-                                             textColor: textColor))
-            } else {
-                result.append(makeNumbers(display, displayIdx: idx, isActive: isActive,
-                                          textProgress: indicator.animTextProgress,
-                                          textDisplay: indicator.animTextDisplay,
-                                          textOld: indicator.animTextOldActive,
-                                          textNew: indicator.animTextNewActive,
-                                          textColor: textColor, dimColor: dimColor))
-            }
-        }
-        return result
-    }
-
-    private func makeNumbers(
-        _ d: SpaceInfo.DisplayInfo, displayIdx: Int, isActive: Bool,
-        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
-        textColor: NSColor, dimColor: NSColor
-    ) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        let nf = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        let bf = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
-
-        let isAnimDisplay = textProgress < 1.0 && displayIdx == textDisplay
-        let currentPos: CGFloat = isAnimDisplay
-            ? (CGFloat(textOld) + CGFloat(textNew - textOld) * Easing.outQuart(textProgress))
-            : CGFloat(d.current)
-
-        for i in 1...max(1, d.total) {
-            if i > 1 { result.append(NSAttributedString(string: " ", attributes: [.font: nf, .foregroundColor: dimColor])) }
-            let iF = CGFloat(i)
-            let dist = abs(iF - currentPos)
-            let blend = max(0, 1.0 - dist)
-            let color = dimColor.blended(withFraction: blend, of: textColor) ?? dimColor
-            let font: NSFont = (isAnimDisplay && dist < 0.5) || (!isAnimDisplay && i == d.current) ? bf : nf
-            result.append(NSAttributedString(string: "\(i)", attributes: [.font: font, .foregroundColor: color]))
-        }
-        return result
-    }
-
-    private func makeBoldNumber(
-        _ d: SpaceInfo.DisplayInfo, displayIdx: Int, isActive: Bool,
-        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
-        textColor: NSColor
-    ) -> NSAttributedString {
-        return NSAttributedString(string: "\(d.current)",
-                                  attributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
-                                               .foregroundColor: textColor])
-    }
 }

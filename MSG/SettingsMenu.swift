@@ -46,42 +46,17 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         addSpaceItem()
 
-        let styleMenu = NSMenu()
-        for style in DisplayStyle.allCases {
-            let item = NSMenuItem(title: style.rawValue, action: #selector(selectStyle(_:)), keyEquivalent: "")
-            item.representedObject = style
+        let stackMenu = NSMenu()
+        for mode in StackMode.allCases {
+            let item = NSMenuItem(title: mode.rawValue, action: #selector(selStack(_:)), keyEquivalent: "")
+            item.representedObject = mode
             item.target = self
-            item.state = (style == settings.displayStyle) ? .on : .off
-            if style == .pill && AppSettings.shared.effectiveDisplayCount > 1 && settings.displayStyle == .pill {
-                let stackSub = NSMenu()
-                for mode in StackMode.allCases {
-                    let sItem = NSMenuItem(title: mode.rawValue, action: #selector(selStack(_:)), keyEquivalent: "")
-                    sItem.representedObject = mode
-                    sItem.target = self
-                    sItem.state = (mode == settings.stackMode) ? .on : .off
-                    stackSub.addItem(sItem)
-                }
-                item.submenu = stackSub
-            }
-            styleMenu.addItem(item)
+            item.state = (mode == settings.stackMode) ? .on : .off
+            stackMenu.addItem(item)
         }
-        let styleItem = NSMenuItem(title: "  Indicator Style", action: nil, keyEquivalent: "")
-        styleItem.submenu = styleMenu
-        menu.addItem(styleItem)
-
-        let animMenu = NSMenu()
-        let hideJelly = settings.displayStyle == .numbers || settings.displayStyle == .boldNumber || settings.displayStyle == .dots
-        for style in AnimationStyle.allCases {
-            guard !(hideJelly && style == .jelly) else { continue }
-            let item = NSMenuItem(title: style.rawValue, action: #selector(selAnim(_:)), keyEquivalent: "")
-            item.representedObject = style
-            item.target = self
-            item.state = (style == settings.animationStyle) ? .on : .off
-            animMenu.addItem(item)
-        }
-        let animItem = NSMenuItem(title: "  Animation", action: nil, keyEquivalent: "")
-        animItem.submenu = animMenu
-        menu.addItem(animItem)
+        let stackItem = NSMenuItem(title: "  Stack Mode", action: nil, keyEquivalent: "")
+        stackItem.submenu = stackMenu
+        menu.addItem(stackItem)
 
         let detectionMenu = NSMenu()
         for mode in FocusDetectionMode.allCases {
@@ -403,12 +378,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     @objc private func openSettingsAction() { onOpenSettings?() }
 
-    @objc func selectStyle(_ sender: NSMenuItem) {
-        if let s = sender.representedObject as? DisplayStyle { settings.displayStyle = s }
-    }
-    @objc func selAnim(_ sender: NSMenuItem) {
-        if let s = sender.representedObject as? AnimationStyle { settings.animationStyle = s }
-    }
     @objc func selStack(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? StackMode { settings.stackMode = s }
     }
