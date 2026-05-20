@@ -77,11 +77,13 @@ final class IndicatorRenderer {
         spacePillOldActive: Int = 0,
         spacePillNewActive: Int = 0,
         spacePillProgress: CGFloat = 1.0,
-        overrideGridRows: [GridRow]? = nil
+        overrideGridRows: [GridRow]? = nil,
+        activeDisplayOverride: Int? = nil,
+        renderFocusOnly: Bool = false
     ) -> NSImage {
 
         let displays = info.displays
-        let activeDisplayIndex = info.activeDisplayIndex
+        let activeDisplayIndex = activeDisplayOverride ?? info.activeDisplayIndex
         let imgH = statusButtonHeight
         let brightColor = menuBarTextColor
         let dimColor = menuBarDimColor
@@ -205,7 +207,8 @@ final class IndicatorRenderer {
                     spacePillNew: _spacePillNew, spacePillProgress: _spacePillProg,
                     focusOld: focusOld, focusNew: focusNew, focusProgress: focusProgress,
                     textProgress: textProgress, textDisplay: textDisplay,
-                    textOld: textOld, textNew: textNew
+                    textOld: textOld, textNew: textNew,
+                    renderFocusOnly: renderFocusOnly
                 )
             } else {
                 for (dIdx, display) in displaysToDraw.enumerated() {
@@ -267,6 +270,7 @@ final class IndicatorRenderer {
                         bright = isActive ? brightColor : dimColor
                         dim = dimColor
                     }
+                    if renderFocusOnly && !isActive { continue }
                     let isAnim = dIdx == _spacePillActive
 
                     let oldDisplay = (dIdx < oldDisplays.count) ? oldDisplays[dIdx] : display
@@ -369,7 +373,8 @@ final class IndicatorRenderer {
         gridSp: CGFloat, gridRowH: CGFloat, gridGap: CGFloat,
         spacePillActive: Int, spacePillOld: Int, spacePillNew: Int, spacePillProgress: CGFloat,
         focusOld: Int, focusNew: Int, focusProgress: CGFloat,
-        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int
+        textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
+        renderFocusOnly: Bool = false
     ) {
         let brightColor = menuBarTextColor
         let dimColor = menuBarDimColor
@@ -422,6 +427,7 @@ final class IndicatorRenderer {
                     bright = isActiveDisplay ? brightColor : dimColor
                     dim = dimColor
                 }
+                if renderFocusOnly && !isActiveDisplay { continue }
                 let isAnimDisplay = dIdx == spacePillActive
 
                 let count = display.total

@@ -64,12 +64,10 @@ final class Indicator {
     private var animSpacePillCaptured: SpaceInfo?
     private var animSpacePillCapturedGrid: [GridRow] = []
     private var animSpacePillTimer: Timer?
-    /// Frames pre-rasterized at animation start. Nil once focus changes
-    /// mid-animation (the timer falls back to live rendering for the rest).
+    /// Frames pre-rasterized at animation start. Focus is not baked in —
+    /// a live focus overlay is composited on top each frame so focus changes
+    /// mid-animation never invalidate the cache.
     private var preRenderedPillFrames: [NSImage]?
-    /// `previousActiveDisplayIndex` captured at pre-render time. If this
-    /// diverges from the live value, the pre-rendered cache is stale.
-    private var preRenderedPillFocusIdx: Int = -1
 
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
@@ -302,7 +300,6 @@ final class Indicator {
         animSpacePillOldActive = 0; animSpacePillNewActive = 0
         animSpacePillCaptured = nil
         preRenderedPillFrames = nil
-        preRenderedPillFocusIdx = -1
 
         animLayoutTimer?.invalidate(); animLayoutTimer = nil
         animLayoutProgress = 1.0
@@ -596,41 +593,35 @@ final class Indicator {
         animSpacePillCaptured = info
         animSpacePillCapturedGrid = currentGridLayout
 
-        let distance = abs(newSpace - oldSpace)
         let duration: TimeInterval = 0.4
         let interval: TimeInterval = 1.0 / 60.0
 
-        // Closure that maps a raw 0...1 progress to a fully rendered, live
-        // frame. Used both for pre-render (with the focus snapshot baked in)
-        // and for the live fallback path when focus changes mid-animation.
-        let renderFrame: (CGFloat, Int) -> NSImage? = { [weak self] raw, focusIdx in
+        // Closure that renders a single frame with all displays dim (no focus).
+        // Focus is applied separately as a live overlay each tick.
+        let renderDimFrame: (CGFloat) -> NSImage? = { [weak self] raw in
             guard let self, let cap = self.animSpacePillCaptured else { return nil }
             let p = Easing.inOutQuart(raw)
-            let liveIdx = max(0, min(focusIdx, cap.displays.count - 1))
-            let effectiveInfo = liveIdx == cap.activeDisplayIndex ? cap : SpaceInfo(
-                displays: cap.displays, activeDisplayIndex: liveIdx, mainDisplayIndex: cap.mainDisplayIndex
-            )
             return self.renderer.makePillFrame(
-                indicator: self, info: effectiveInfo,
+                indicator: self, info: cap,
                 animatingDisplay: displayIndex,
                 spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
-                spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid
+                spacePillProgress: p, overrideGridRows: self.animSpacePillCapturedGrid,
+                activeDisplayOverride: -1
             )
         }
 
-        // Pre-rasterize all frames using the focus state at start.
+        // Pre-rasterize all-dim frames. Focus is not baked in, so the cache
+        // stays valid regardless of focus changes mid-animation.
         let frameCount = max(1, Int(ceil(duration / interval)))
-        let snapshotFocus = previousActiveDisplayIndex
         var frames: [NSImage] = []
         frames.reserveCapacity(frameCount)
         for i in 0..<frameCount {
             let raw = CGFloat(i + 1) / CGFloat(frameCount)
-            if let img = renderFrame(min(1.0, raw), snapshotFocus) {
+            if let img = renderDimFrame(min(1.0, raw)) {
                 frames.append(rasterize(img))
             }
         }
         preRenderedPillFrames = frames.isEmpty ? nil : frames
-        preRenderedPillFocusIdx = snapshotFocus
 
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
@@ -641,38 +632,59 @@ final class Indicator {
                 self.animSpacePillTimer = nil
                 self.animSpacePillDisplay = -1
                 self.preRenderedPillFrames = nil
-                self.preRenderedPillFocusIdx = -1
                 self.refresh()
                 return
             }
 
             let raw = self.animSpacePillProgress
+            let eased = Easing.inOutQuart(raw)
 
             // Live focus — SpaceWatcher keeps currentInfo fresh even while
             // the animation guard suppresses refresh() in its onChange path.
             let liveFocus = self.spaceWatcher.currentInfo.activeDisplayIndex
 
-            // Pre-rendered fast path: focus hasn't changed since start.
-            //
-            // Index math: pre-render produced frames at raw = 1/N, 2/N, …, N/N
-            // (stored at array[0…N-1]). At tick i, progress ≈ i/N, so the
-            // frame to show sits at array[i-1] = array[Int(progress*N)-1].
-            // The earlier formulation (Int(progress*N)) silently skipped
-            // frame 0 — fatal for `solid` (frame 0 = 31% motion) and
-            // noticeable on `jelly` (frame 0 = 16% motion).
-            if let cache = self.preRenderedPillFrames,
-               self.preRenderedPillFocusIdx == liveFocus {
+            // Keep snapshot in sync so tryStartFocusChange doesn't see a
+            // stale value when the space-change animation ends.
+            if liveFocus != self.previousActiveDisplayIndex {
+                self.previousActiveDisplayIndex = liveFocus
+            }
+
+            // Serve pre-rendered dim frame (or render live if cache was cleared).
+            let dimFrame: NSImage
+            if let cache = self.preRenderedPillFrames {
                 let raw_idx = Int(raw * CGFloat(cache.count)) - 1
                 let idx = min(cache.count - 1, max(0, raw_idx))
-                self.statusItem.button?.image = cache[idx]
+                dimFrame = cache[idx]
+            } else if let img = renderDimFrame(raw) {
+                dimFrame = img
+            } else {
                 return
             }
 
-            // Focus changed: drop the cache and render live for the remainder.
-            self.preRenderedPillFrames = nil
-            if let img = renderFrame(raw, liveFocus) {
-                self.statusItem.button?.image = img
+            // Render focus overlay using captured info + live focus state.
+            guard let cap = self.animSpacePillCaptured else { return }
+            let focusInfo = SpaceInfo(
+                displays: cap.displays, activeDisplayIndex: liveFocus,
+                mainDisplayIndex: cap.mainDisplayIndex
+            )
+            let focusOverlay = self.renderer.makePillFrame(
+                indicator: self, info: focusInfo,
+                animatingDisplay: displayIndex,
+                spacePillOldActive: oldSpace, spacePillNewActive: newSpace,
+                spacePillProgress: eased,
+                overrideGridRows: self.animSpacePillCapturedGrid,
+                renderFocusOnly: true
+            )
+
+            // Composite: dim base + bright focus overlay.
+            let size = dimFrame.size
+            let final = NSImage(size: size, flipped: false) { _ in
+                dimFrame.draw(in: NSRect(origin: .zero, size: size))
+                focusOverlay.draw(in: NSRect(origin: .zero, size: size),
+                                  from: .zero, operation: .sourceOver, fraction: 1)
+                return true
             }
+            self.statusItem.button?.image = final
         }
         RunLoop.current.add(timer, forMode: .common)
         animSpacePillTimer = timer

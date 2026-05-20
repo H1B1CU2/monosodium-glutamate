@@ -966,7 +966,6 @@ struct AnimatedPillDotsRow: View {
     private func fractionalActive(at date: Date) -> CGFloat {
         if fromActive == toActive { return CGFloat(toActive) }
         let elapsed = date.timeIntervalSince(transitionStart)
-        let distance = max(1, abs(toActive - fromActive))
         let duration: Double = 0.5
         let raw = max(0, min(1, CGFloat(elapsed / duration)))
         let eased = applyEasing(raw)
