@@ -158,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let mcPollQueue = DispatchQueue(label: "msg.mcpoll", qos: .userInitiated)
 
     private func startMCPoll() {
-        guard mcPollTimer == nil else { return }
+        guard settings.cornersEnabled, mcPollTimer == nil else { return }
         mcPollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.mcPollQueue.async {
@@ -185,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildCornerWindows() {
         for win in cornerWindows { win.orderOut(nil) }
         cornerWindows.removeAll()
+        guard settings.cornersEnabled else { return }
         for screen in NSScreen.screens {
             let win = CornerWindow(screen: screen, settings: settings)
             win.setFrame(screen.frame, display: false)
@@ -195,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func redrawCornerWindows() {
+        guard settings.cornersEnabled else { return }
         for win in cornerWindows {
             win.updateFrame()
             win.orderFrontRegardless()

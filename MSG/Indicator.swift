@@ -393,6 +393,15 @@ final class Indicator {
     // MARK: - Refresh
 
     func refresh() {
+        let spacerOn = settings.spacerEnabled
+        let musicOn = settings.musicEnabled
+
+        guard spacerOn || musicOn else {
+            statusItem.isVisible = false
+            return
+        }
+        statusItem.isVisible = true
+
         let info = spaceWatcher.currentInfo
         guard let button = statusItem.button else { return }
 
@@ -403,7 +412,7 @@ final class Indicator {
             musicLingerActive = true
         }
 
-        let showMusic = settings.musicDisplayMode == .dynamic
+        let showMusic = musicOn && settings.musicDisplayMode == .dynamic
             && (musicMonitor.isPlaying || musicLingerActive)
             && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
 
@@ -467,6 +476,8 @@ final class Indicator {
             statusItem.length = NSStatusItem.variableLength
             return
         }
+
+        guard spacerOn else { return }
 
         let stable = systemState.isStable
 

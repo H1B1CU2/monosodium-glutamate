@@ -111,6 +111,9 @@ final class SettingsViewModel: ObservableObject {
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
+    var spacerEnabled: Bool     { get { s.spacerEnabled }  set { s.spacerEnabled = newValue;  objectWillChange.send() } }
+    var cornersEnabled: Bool    { get { s.cornersEnabled } set { s.cornersEnabled = newValue; objectWillChange.send() } }
+    var musicEnabled: Bool      { get { s.musicEnabled }   set { s.musicEnabled = newValue;   objectWillChange.send() } }
     var autoUpdate: Bool                   { get { s.autoUpdate }           set { s.autoUpdate = newValue;           objectWillChange.send() } }
     var updateChannel: String              { get { s.updateChannel }        set { s.updateChannel = newValue;        objectWillChange.send() } }
     var fakeDisplays: [FakeDisplay]          { get { s.fakeDisplays }         set { s.fakeDisplays = newValue;         objectWillChange.send() } }
@@ -1981,6 +1984,12 @@ struct GeneralPane: View {
                 }
                 Toggle("Show in Dock",
                        isOn: Binding(get: { vm.dockIcon }, set: { vm.dockIcon = $0 }))
+            }
+
+            Section("Features") {
+                Toggle("Space indicator", isOn: Binding(get: { vm.spacerEnabled }, set: { vm.spacerEnabled = $0 }))
+                Toggle("Corner masks", isOn: Binding(get: { vm.cornersEnabled }, set: { vm.cornersEnabled = $0 }))
+                Toggle("Music display", isOn: Binding(get: { vm.musicEnabled }, set: { vm.musicEnabled = $0 }))
             }
 
             Section("Permissions") {

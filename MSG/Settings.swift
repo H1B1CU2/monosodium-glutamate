@@ -98,6 +98,9 @@ final class AppSettings {
         static let musicDisplayMode          = "musicDisplayMode"
         static let musicLingerDuration      = "musicLingerDuration"
         static let musicSource               = "musicSource"
+        static let spacerEnabled            = "spacerEnabled"
+        static let cornersEnabled           = "cornersEnabled"
+        static let musicEnabled             = "musicEnabled"
         static let menuBarVisible           = "menuBarVisible"
         static let dockIcon                 = "dockIcon"
         static let autoUpdate               = "autoUpdate"
@@ -200,6 +203,9 @@ final class AppSettings {
     var musicDisplayMode: MusicDisplayMode { didSet { save(); onChange?(.indicator) } }
     var musicLingerDuration: TimeInterval { didSet { save() } }
     var musicSource: MusicSource { didSet { save(); onChange?(.indicator) } }
+    var spacerEnabled: Bool   { didSet { save(); onChange?(.indicator) } }
+    var cornersEnabled: Bool  { didSet { save(); onChange?(.structural) } }
+    var musicEnabled: Bool    { didSet { save(); onChange?(.indicator) } }
     var menuBarVisible: Bool { didSet { save(); onChange?(.structural) } }
     var dockIcon: Bool       { didSet { save(); onChange?(.structural) } }
     var autoUpdate: Bool     { didSet { save() } }
@@ -232,6 +238,9 @@ final class AppSettings {
             Key.musicDisplayMode:       MusicDisplayMode.dynamic.rawValue,
             Key.musicLingerDuration:    TimeInterval(15),
             Key.musicSource:            MusicSource.nowPlaying.rawValue,
+            Key.spacerEnabled:          true,
+            Key.cornersEnabled:         true,
+            Key.musicEnabled:           true,
             Key.menuBarVisible:         true,
             Key.dockIcon:               false,
             Key.autoUpdate:             true,
@@ -259,6 +268,9 @@ final class AppSettings {
         musicDisplayMode     = MusicDisplayMode(rawValue: d.string(forKey: Key.musicDisplayMode) ?? "") ?? .dynamic
         musicLingerDuration  = d.double(forKey: Key.musicLingerDuration)
         musicSource          = MusicSource(rawValue: d.string(forKey: Key.musicSource) ?? "") ?? .nowPlaying
+        spacerEnabled        = d.object(forKey: Key.spacerEnabled) as? Bool ?? true
+        cornersEnabled       = d.object(forKey: Key.cornersEnabled) as? Bool ?? true
+        musicEnabled         = d.object(forKey: Key.musicEnabled) as? Bool ?? true
         menuBarVisible       = d.object(forKey: Key.menuBarVisible) as? Bool ?? true
         dockIcon             = d.bool(forKey: Key.dockIcon)
         autoUpdate           = d.object(forKey: Key.autoUpdate) as? Bool ?? true
@@ -291,6 +303,9 @@ final class AppSettings {
         d.set(musicDisplayMode.rawValue,    forKey: Key.musicDisplayMode)
         d.set(musicLingerDuration,          forKey: Key.musicLingerDuration)
         d.set(musicSource.rawValue,         forKey: Key.musicSource)
+        d.set(spacerEnabled,                forKey: Key.spacerEnabled)
+        d.set(cornersEnabled,               forKey: Key.cornersEnabled)
+        d.set(musicEnabled,                 forKey: Key.musicEnabled)
         d.set(menuBarVisible,               forKey: Key.menuBarVisible)
         d.set(dockIcon,                     forKey: Key.dockIcon)
         d.set(autoUpdate,                   forKey: Key.autoUpdate)
