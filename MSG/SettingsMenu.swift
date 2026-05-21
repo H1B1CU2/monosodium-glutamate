@@ -58,6 +58,18 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         stackItem.submenu = stackMenu
         menu.addItem(stackItem)
 
+        let animMenu = NSMenu()
+        for style in AnimationStyle.allCases {
+            let item = NSMenuItem(title: style.rawValue, action: #selector(selAnim(_:)), keyEquivalent: "")
+            item.representedObject = style
+            item.target = self
+            item.state = (style == settings.animationStyle) ? .on : .off
+            animMenu.addItem(item)
+        }
+        let animItem = NSMenuItem(title: "  Animation", action: nil, keyEquivalent: "")
+        animItem.submenu = animMenu
+        menu.addItem(animItem)
+
         let detectionMenu = NSMenu()
         for mode in FocusDetectionMode.allCases {
             let item = NSMenuItem(title: mode.rawValue, action: #selector(selDetection(_:)), keyEquivalent: "")
@@ -380,6 +392,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
     @objc func selStack(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? StackMode { settings.stackMode = s }
+    }
+    @objc func selAnim(_ sender: NSMenuItem) {
+        if let s = sender.representedObject as? AnimationStyle { settings.animationStyle = s }
     }
     @objc func selDetection(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? FocusDetectionMode { settings.focusDetectionMode = s }

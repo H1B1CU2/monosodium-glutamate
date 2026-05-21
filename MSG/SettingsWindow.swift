@@ -97,6 +97,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var stackMode: StackMode               { get { s.stackMode }            set { s.stackMode = newValue;            objectWillChange.send() } }
+    var animationStyle: AnimationStyle     { get { s.animationStyle }       set { s.animationStyle = newValue;       objectWillChange.send() } }
     var focusDetectionMode: FocusDetectionMode { get { s.focusDetectionMode } set { s.focusDetectionMode = newValue; objectWillChange.send() } }
     var displayOrderMode: DisplayOrderMode { get { s.displayOrderMode }     set { s.displayOrderMode = newValue;     objectWillChange.send() } }
     var displayOrder: [Int]                { get { s.displayOrder }         set { s.displayOrder = newValue;         objectWillChange.send() } }
@@ -1077,6 +1078,9 @@ struct SpacerPane: View {
             }
 
             Section("Indicator") {
+                Picker("Animation", selection: Binding(get: { vm.animationStyle }, set: { vm.animationStyle = $0 })) {
+                    ForEach(AnimationStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
                 if stackVisible {
                     Picker("Stack Mode", selection: Binding(get: { vm.stackMode }, set: { vm.stackMode = $0 })) {
                         ForEach(StackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }

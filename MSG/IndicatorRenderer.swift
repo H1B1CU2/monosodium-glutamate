@@ -79,7 +79,8 @@ final class IndicatorRenderer {
         spacePillProgress: CGFloat = 1.0,
         overrideGridRows: [GridRow]? = nil,
         activeDisplayOverride: Int? = nil,
-        renderFocusOnly: Bool = false
+        renderFocusOnly: Bool = false,
+        animationStyle: AnimationStyle = .liquid
     ) -> NSImage {
 
         let displays = info.displays
@@ -104,6 +105,12 @@ final class IndicatorRenderer {
         let _spacePillOld    = animatingDisplay >= 0 ? spacePillOldActive : indicator.animSpacePillOldActive
         let _spacePillNew    = animatingDisplay >= 0 ? spacePillNewActive : indicator.animSpacePillNewActive
         let _spacePillProg   = animatingDisplay >= 0 ? spacePillProgress  : indicator.animSpacePillProgress
+
+        // Liquid stretch: active pill widens during slide, peaking at midpoint
+        let isLiquid = animationStyle == .liquid
+        let pillHasAnim = _spacePillActive >= 0
+        let pillStretchBase: CGFloat = (pillHasAnim && isLiquid) ? sin(_spacePillProg * .pi) * 4 : 0
+        let pillDir: CGFloat = _spacePillNew > _spacePillOld ? 1 : -1
 
         let textProgress: CGFloat = 1.0
         let textDisplay: Int = -1
@@ -208,7 +215,8 @@ final class IndicatorRenderer {
                     focusOld: focusOld, focusNew: focusNew, focusProgress: focusProgress,
                     textProgress: textProgress, textDisplay: textDisplay,
                     textOld: textOld, textNew: textNew,
-                    renderFocusOnly: renderFocusOnly
+                    renderFocusOnly: renderFocusOnly,
+                    animationStyle: animationStyle
                 )
             } else {
                 for (dIdx, display) in displaysToDraw.enumerated() {
@@ -299,9 +307,10 @@ final class IndicatorRenderer {
                         let frac = clampedPillIdx - pL
                         let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
                         func adj(_ w: CGFloat) -> CGFloat { w * dotAlpha }
-                        if pL == pH { return iF == pL ? (pillW + rowStretch) : adj(dotD) }
-                        if iF == pL { return dotD + (pillW + rowStretch - dotD) * (1.0 - frac) }
-                        if iF == pH { return dotD + (pillW + rowStretch - dotD) * frac }
+                        let stretch = isAnim ? pillStretchBase : 0
+                        if pL == pH { return iF == pL ? (pillW + rowStretch + stretch) : adj(dotD) }
+                        if iF == pL { return dotD + (pillW + rowStretch - dotD + stretch) * (1.0 - frac) }
+                        if iF == pH { return dotD + (pillW + rowStretch - dotD + stretch) * frac }
                         return adj(dotD)
                     }
 
@@ -344,6 +353,9 @@ final class IndicatorRenderer {
                             NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                         }
                     }
+                    // Directional stretch offset: smear toward destination
+                    let stretchShift = isAnim ? pillStretchBase * pillDir * 0.35 : 0
+                    x += stretchShift
 
                     for i in 1...count {
                         let w = widthForSpace(i)
@@ -374,10 +386,15 @@ final class IndicatorRenderer {
         spacePillActive: Int, spacePillOld: Int, spacePillNew: Int, spacePillProgress: CGFloat,
         focusOld: Int, focusNew: Int, focusProgress: CGFloat,
         textProgress: CGFloat, textDisplay: Int, textOld: Int, textNew: Int,
-        renderFocusOnly: Bool = false
+        renderFocusOnly: Bool = false,
+        animationStyle: AnimationStyle = .liquid
     ) {
         let brightColor = menuBarTextColor
         let dimColor = menuBarDimColor
+        let isLiquid = animationStyle == .liquid
+        let pillHasAnim = spacePillActive >= 0
+        let pillStretchBase: CGFloat = (pillHasAnim && isLiquid) ? sin(spacePillProgress * .pi) * 4 : 0
+        let pillDir: CGFloat = spacePillNew > spacePillOld ? 1 : -1
         let totalRows = gridRows.count
         let totalGridH = CGFloat(totalRows) * gridRowH + CGFloat(max(0, totalRows - 1)) * gridGap
         let gridBaseY = (imgH - totalGridH) / 2
@@ -450,9 +467,10 @@ final class IndicatorRenderer {
                     let frac = clamped - pL
                     let dotAlpha: CGFloat = (iF > floor(countFloat)) ? (countFloat - floor(countFloat)) : 1.0
                     func adj(_ w: CGFloat) -> CGFloat { w * dotAlpha }
-                    if pL == pH { return iF == pL ? (gridPillW + rowStretchLocal) : adj(gridDotD) }
-                    if iF == pL { return gridDotD + (gridPillW + rowStretchLocal - gridDotD) * (1.0 - frac) }
-                    if iF == pH { return gridDotD + (gridPillW + rowStretchLocal - gridDotD) * frac }
+                    let stretch = isAnimDisplay ? pillStretchBase : 0
+                    if pL == pH { return iF == pL ? (gridPillW + rowStretchLocal + stretch) : adj(gridDotD) }
+                    if iF == pL { return gridDotD + (gridPillW + rowStretchLocal - gridDotD + stretch) * (1.0 - frac) }
+                    if iF == pH { return gridDotD + (gridPillW + rowStretchLocal - gridDotD + stretch) * frac }
                     return adj(gridDotD)
                 }
                 func gh(_ i: Int) -> CGFloat {
@@ -475,7 +493,8 @@ final class IndicatorRenderer {
                     return color.withAlphaComponent(color.alphaComponent * dotAlpha)
                 }
 
-                var px = x
+                let stretchShift = isAnimDisplay ? pillStretchBase * pillDir * 0.35 : 0
+                var px = x + stretchShift
                 for i in 1...count {
                     let w = gw(i)
                     let h = gh(i)

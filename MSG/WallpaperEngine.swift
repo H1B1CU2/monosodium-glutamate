@@ -255,10 +255,24 @@ final class WallpaperEngine {
     /// persists across all Spaces without re-rendering.
     private func reapplyToAllSpaces() {
         guard !externalChangePending else { return }
+        // setWallpaper calls NSWorkspace.setDesktopImageURL (IPC with the
+        // WindowServer) and, on failure, blocks the calling thread inside
+        // NSAppleScript. This used to run on main and freeze it for
+        // 100–250ms right inside the space-change notification window,
+        // visibly stuttering the pill animation. Snapshot screen→URL
+        // pairs on the caller's thread (main is safe for NSScreen) and
+        // hand the slow work off to the utility queue.
+        var jobs: [(NSScreen, URL)] = []
         for screen in NSScreen.screens {
             guard let uuid = Self.screenUUID(screen),
                   let url = lastBakedURLs[uuid] else { continue }
-            Self.setWallpaper(url: url, for: screen)
+            jobs.append((screen, url))
+        }
+        guard !jobs.isEmpty else { return }
+        queue.async {
+            for (screen, url) in jobs {
+                Self.setWallpaper(url: url, for: screen)
+            }
         }
     }
 

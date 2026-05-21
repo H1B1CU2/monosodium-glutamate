@@ -8,6 +8,11 @@ enum StackMode: String, CaseIterable {
     case dynamic = "Dynamic"
 }
 
+enum AnimationStyle: String, CaseIterable {
+    case liquid = "Liquid"
+    case solid  = "Solid"
+}
+
 enum DisplayOrderMode: String, CaseIterable {
     case physicalDetection = "Physical Display Detection"
     case prioritizeMain    = "Prioritize Main Display"
@@ -76,6 +81,7 @@ final class AppSettings {
         static let mirrorMainDisplay        = "mirrorMainDisplay"
         static let externalMonitorCorners   = "externalMonitorCorners"
         static let stackMode                = "stackMode"
+        static let animationStyle           = "animationStyle"
         static let displayOrderMode         = "displayOrderMode"
         static let focusDetectionMode       = "focusDetectionMode"
         static let displayOrder             = "displayOrder"
@@ -170,6 +176,7 @@ final class AppSettings {
 
     // MARK: Indicator
     var stackMode: StackMode            { didSet { save(); onChange?(.indicator) } }
+    var animationStyle: AnimationStyle  { didSet { save() } }
     var displayOrderMode: DisplayOrderMode { didSet { save(); onChange?(.indicator) } }
     var focusDetectionMode: FocusDetectionMode { didSet { save(); onChange?(.indicator) } }
     var displayOrder: [Int]             { didSet { save(); onChange?(.indicator) } }
@@ -203,6 +210,7 @@ final class AppSettings {
             Key.mirrorMainDisplay:      false,
             Key.externalMonitorCorners: false,
             Key.stackMode:              StackMode.stack.rawValue,
+            Key.animationStyle:         AnimationStyle.liquid.rawValue,
             Key.displayOrderMode:       DisplayOrderMode.prioritizeMain.rawValue,
             Key.focusDetectionMode:     FocusDetectionMode.click.rawValue,
             Key.displayOrder:           [Int](),
@@ -231,6 +239,7 @@ final class AppSettings {
         externalMonitorCorners   = d.bool(forKey: Key.externalMonitorCorners)
 
         stackMode         = StackMode(rawValue: d.string(forKey: Key.stackMode) ?? "") ?? .stack
+        animationStyle    = AnimationStyle(rawValue: d.string(forKey: Key.animationStyle) ?? "") ?? .liquid
         displayOrderMode  = DisplayOrderMode(rawValue: d.string(forKey: Key.displayOrderMode) ?? "") ?? .prioritizeMain
         focusDetectionMode = FocusDetectionMode(rawValue: d.string(forKey: Key.focusDetectionMode) ?? "") ?? .click
         displayOrder      = (d.array(forKey: Key.displayOrder) as? [Int]) ?? []
@@ -264,6 +273,7 @@ final class AppSettings {
         d.set(mirrorMainDisplay,            forKey: Key.mirrorMainDisplay)
         d.set(externalMonitorCorners,       forKey: Key.externalMonitorCorners)
         d.set(stackMode.rawValue,           forKey: Key.stackMode)
+        d.set(animationStyle.rawValue,      forKey: Key.animationStyle)
         d.set(displayOrderMode.rawValue,    forKey: Key.displayOrderMode)
         d.set(focusDetectionMode.rawValue,  forKey: Key.focusDetectionMode)
         d.set(displayOrder,                 forKey: Key.displayOrder)
