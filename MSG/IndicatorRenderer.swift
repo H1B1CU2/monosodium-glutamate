@@ -86,8 +86,15 @@ final class IndicatorRenderer {
         let displays = info.displays
         let activeDisplayIndex = activeDisplayOverride ?? info.activeDisplayIndex
         let imgH = statusButtonHeight
-        let brightColor = menuBarTextColor
-        let dimColor = menuBarDimColor
+        let baseColor = menuBarTextColor
+        let bf = settings.brightFocusAlpha
+        let df = settings.dimFocusAlpha
+        let bn = settings.brightNonFocusAlpha
+        let dn = settings.dimNonFocusAlpha
+        let brightFocusColor = baseColor.withAlphaComponent(bf)
+        let dimFocusColor = baseColor.withAlphaComponent(df)
+        let brightNonFocusColor = baseColor.withAlphaComponent(bn)
+        let dimNonFocusColor = baseColor.withAlphaComponent(dn)
 
         let stackIndicators = indicator.stackIndicators
 
@@ -265,18 +272,18 @@ final class IndicatorRenderer {
 
                     if dIdx == focusOld && focusProgress < 1.0 {
                         let ft = Easing.outQuart(focusProgress)
-                        bright = brightColor.blended(withFraction: ft, of: dimColor) ?? brightColor
-                        dim = dimColor
+                        bright = brightFocusColor.blended(withFraction: ft, of: brightNonFocusColor) ?? brightFocusColor
+                        dim = dimFocusColor.blended(withFraction: ft, of: dimNonFocusColor) ?? dimFocusColor
                         isActive = true
                     } else if dIdx == focusNew && focusProgress < 1.0 {
                         let ft = Easing.outQuart(focusProgress)
-                        bright = dimColor.blended(withFraction: ft, of: brightColor) ?? brightColor
-                        dim = dimColor
+                        bright = brightNonFocusColor.blended(withFraction: ft, of: brightFocusColor) ?? brightNonFocusColor
+                        dim = dimNonFocusColor.blended(withFraction: ft, of: dimFocusColor) ?? dimNonFocusColor
                         isActive = true
                     } else {
                         isActive = self.settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                        bright = isActive ? brightColor : dimColor
-                        dim = dimColor
+                        bright = isActive ? brightFocusColor : brightNonFocusColor
+                        dim = isActive ? dimFocusColor : dimNonFocusColor
                     }
                     if renderFocusOnly && !isActive { continue }
                     let isAnim = dIdx == _spacePillActive
@@ -349,7 +356,7 @@ final class IndicatorRenderer {
                         if dIdx > 0 {
                             let sepX = x - 10
                             let sepRect = NSRect(x: sepX, y: (imgH - 8) / 2, width: 1.5, height: 8)
-                            dimColor.withAlphaComponent(rowAlpha).set()
+                            dimFocusColor.withAlphaComponent(rowAlpha).set()
                             NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                         }
                     }
@@ -389,8 +396,15 @@ final class IndicatorRenderer {
         renderFocusOnly: Bool = false,
         animationStyle: AnimationStyle = .liquid
     ) {
-        let brightColor = menuBarTextColor
-        let dimColor = menuBarDimColor
+        let baseColor = menuBarTextColor
+        let bf = settings.brightFocusAlpha
+        let df = settings.dimFocusAlpha
+        let bn = settings.brightNonFocusAlpha
+        let dn = settings.dimNonFocusAlpha
+        let brightFocusColor = baseColor.withAlphaComponent(bf)
+        let dimFocusColor = baseColor.withAlphaComponent(df)
+        let brightNonFocusColor = baseColor.withAlphaComponent(bn)
+        let dimNonFocusColor = baseColor.withAlphaComponent(dn)
         let isLiquid = animationStyle == .liquid
         let pillHasAnim = spacePillActive >= 0
         let pillStretchBase: CGFloat = (pillHasAnim && isLiquid) ? sin(spacePillProgress * .pi) * 4 : 0
@@ -422,7 +436,7 @@ final class IndicatorRenderer {
                 if relIdx > 0 {
                     let sepRect = NSRect(x: x - 10, y: rowY + (gridRowH - 8) / 2, width: 1.5, height: 8)
                     let sp = NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75)
-                    dimColor.setFill()
+                    dimFocusColor.setFill()
                     sp.fill()
                 }
 
@@ -431,18 +445,18 @@ final class IndicatorRenderer {
                 let dim: NSColor
                 if dIdx == focusOld && focusProgress < 1.0 {
                     let ft = Easing.outQuart(focusProgress)
-                    bright = brightColor.blended(withFraction: ft, of: dimColor) ?? brightColor
-                    dim = dimColor
+                    bright = brightFocusColor.blended(withFraction: ft, of: brightNonFocusColor) ?? brightFocusColor
+                    dim = dimFocusColor.blended(withFraction: ft, of: dimNonFocusColor) ?? dimFocusColor
                     isActiveDisplay = true
                 } else if dIdx == focusNew && focusProgress < 1.0 {
                     let ft = Easing.outQuart(focusProgress)
-                    bright = dimColor.blended(withFraction: ft, of: brightColor) ?? brightColor
-                    dim = dimColor
+                    bright = brightNonFocusColor.blended(withFraction: ft, of: brightFocusColor) ?? brightNonFocusColor
+                    dim = dimNonFocusColor.blended(withFraction: ft, of: dimFocusColor) ?? dimNonFocusColor
                     isActiveDisplay = true
                 } else {
                     isActiveDisplay = settings.focusDetectionMode == .off || dIdx == activeDisplayIndex
-                    bright = isActiveDisplay ? brightColor : dimColor
-                    dim = dimColor
+                    bright = isActiveDisplay ? brightFocusColor : brightNonFocusColor
+                    dim = isActiveDisplay ? dimFocusColor : dimNonFocusColor
                 }
                 if renderFocusOnly && !isActiveDisplay { continue }
                 let isAnimDisplay = dIdx == spacePillActive

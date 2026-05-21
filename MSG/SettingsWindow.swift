@@ -110,6 +110,10 @@ final class SettingsViewModel: ObservableObject {
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
+    var brightFocusAlpha: CGFloat          { get { s.brightFocusAlpha }     set { s.brightFocusAlpha = newValue;     objectWillChange.send() } }
+    var dimFocusAlpha: CGFloat             { get { s.dimFocusAlpha }        set { s.dimFocusAlpha = newValue;        objectWillChange.send() } }
+    var brightNonFocusAlpha: CGFloat       { get { s.brightNonFocusAlpha }  set { s.brightNonFocusAlpha = newValue;  objectWillChange.send() } }
+    var dimNonFocusAlpha: CGFloat          { get { s.dimNonFocusAlpha }     set { s.dimNonFocusAlpha = newValue;     objectWillChange.send() } }
     var spacerEnabled: Bool     { get { s.spacerEnabled }  set { s.spacerEnabled = newValue;  objectWillChange.send() } }
     var cornersEnabled: Bool    { get { s.cornersEnabled } set { s.cornersEnabled = newValue; objectWillChange.send() } }
     var musicEnabled: Bool      { get { s.musicEnabled }   set { s.musicEnabled = newValue;   objectWillChange.send() } }
@@ -1684,6 +1688,10 @@ struct ArrangeDisplaysView: View {
 @available(macOS 14.0, *)
 struct DeveloperPane: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var lastHapticBF: Int = -1
+    @State private var lastHapticDF: Int = -1
+    @State private var lastHapticBN: Int = -1
+    @State private var lastHapticDN: Int = -1
 
     var body: some View {
         PaneContainer(section: .developer) {
@@ -1739,6 +1747,29 @@ struct DeveloperPane: View {
             }
 
             Section {
+                opacitySlider(label: "Bright Focus",
+                              value: Binding(get: { Double(vm.brightFocusAlpha) },
+                                             set: { vm.brightFocusAlpha = CGFloat($0) }),
+                              haptic: $lastHapticBF)
+                opacitySlider(label: "Dim Focus",
+                              value: Binding(get: { Double(vm.dimFocusAlpha) },
+                                             set: { vm.dimFocusAlpha = CGFloat($0) }),
+                              haptic: $lastHapticDF)
+                opacitySlider(label: "Bright Non-Focus",
+                              value: Binding(get: { Double(vm.brightNonFocusAlpha) },
+                                             set: { vm.brightNonFocusAlpha = CGFloat($0) }),
+                              haptic: $lastHapticBN)
+                opacitySlider(label: "Dim Non-Focus",
+                              value: Binding(get: { Double(vm.dimNonFocusAlpha) },
+                                             set: { vm.dimNonFocusAlpha = CGFloat($0) }),
+                              haptic: $lastHapticDN)
+            } header: {
+                Text("Indicator Opacity")
+            } footer: {
+                Text("Fine-tune per-state opacities of the space indicator. Values are alpha multipliers.")
+            }
+
+            Section {
                 ArrangeDisplaysView(vm: vm)
                     .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
                     .listRowBackground(Color.clear)
@@ -1747,6 +1778,26 @@ struct DeveloperPane: View {
             } footer: {
                 Text("Drag virtual displays to position them. They snap to the edges of real displays.")
             }
+        }
+    }
+
+    private func opacitySlider(label: String, value: Binding<Double>, haptic: Binding<Int>) -> some View {
+        HStack {
+            Text(label)
+                .frame(width: 110, alignment: .leading)
+            Slider(value: value, in: 0.05...1.0, step: 0.05)
+                .onChange(of: value.wrappedValue) { newVal in
+                    let i = Int(round(newVal * 100))
+                    if i != haptic.wrappedValue {
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                        haptic.wrappedValue = i
+                    }
+                }
+            Text("\(Int(round(value.wrappedValue * 100)))%")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .trailing)
         }
     }
 }

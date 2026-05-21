@@ -745,7 +745,7 @@ final class Indicator {
         let startTime = CACurrentMediaTime()
         animFocusTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
             guard let self else { return }
-            self.animFocusProgress = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / 0.267))
+            self.animFocusProgress = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / 0.5))
             if self.animFocusProgress >= 1.0 { self.animFocusProgress = 1.0; t.invalidate()
                 self.animFocusOldDisplay = -1; self.animFocusNewDisplay = -1 }
             self.refresh()

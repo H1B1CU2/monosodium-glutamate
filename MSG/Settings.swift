@@ -96,6 +96,10 @@ final class AppSettings {
         static let autoUpdate               = "autoUpdate"
         static let updateChannel            = "updateChannel"
         static let fakeDisplays             = "fakeDisplays"
+        static let brightFocusAlpha         = "brightFocusAlpha"
+        static let dimFocusAlpha            = "dimFocusAlpha"
+        static let brightNonFocusAlpha      = "brightNonFocusAlpha"
+        static let dimNonFocusAlpha         = "dimNonFocusAlpha"
     }
 
     static let shared = AppSettings()
@@ -191,6 +195,10 @@ final class AppSettings {
     var autoUpdate: Bool     { didSet { save() } }
     var updateChannel: String { didSet { save() } }
     var fakeDisplays: [FakeDisplay] { didSet { save(); onChange?(.structural) } }
+    var brightFocusAlpha: CGFloat    { didSet { save(); onChange?(.indicator) } }
+    var dimFocusAlpha: CGFloat       { didSet { save(); onChange?(.indicator) } }
+    var brightNonFocusAlpha: CGFloat { didSet { save(); onChange?(.indicator) } }
+    var dimNonFocusAlpha: CGFloat    { didSet { save(); onChange?(.indicator) } }
 
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
@@ -225,6 +233,10 @@ final class AppSettings {
             Key.autoUpdate:             true,
             Key.updateChannel:          "stable",
             Key.fakeDisplays:            Data(),
+            Key.brightFocusAlpha:        CGFloat(1.0),
+            Key.dimFocusAlpha:           CGFloat(0.55),
+            Key.brightNonFocusAlpha:     CGFloat(0.55),
+            Key.dimNonFocusAlpha:        CGFloat(0.55),
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -253,6 +265,10 @@ final class AppSettings {
         dockIcon             = d.bool(forKey: Key.dockIcon)
         autoUpdate           = d.object(forKey: Key.autoUpdate) as? Bool ?? true
         updateChannel        = d.string(forKey: Key.updateChannel) ?? "stable"
+        brightFocusAlpha     = CGFloat(d.float(forKey: Key.brightFocusAlpha))
+        dimFocusAlpha        = CGFloat(d.float(forKey: Key.dimFocusAlpha))
+        brightNonFocusAlpha  = CGFloat(d.float(forKey: Key.brightNonFocusAlpha))
+        dimNonFocusAlpha     = CGFloat(d.float(forKey: Key.dimNonFocusAlpha))
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
             fakeDisplays = decoded
@@ -287,6 +303,10 @@ final class AppSettings {
         d.set(dockIcon,                     forKey: Key.dockIcon)
         d.set(autoUpdate,                   forKey: Key.autoUpdate)
         d.set(updateChannel,                forKey: Key.updateChannel)
+        d.set(Float(brightFocusAlpha),      forKey: Key.brightFocusAlpha)
+        d.set(Float(dimFocusAlpha),         forKey: Key.dimFocusAlpha)
+        d.set(Float(brightNonFocusAlpha),   forKey: Key.brightNonFocusAlpha)
+        d.set(Float(dimNonFocusAlpha),      forKey: Key.dimNonFocusAlpha)
         if let data = try? JSONEncoder().encode(fakeDisplays) { d.set(data, forKey: Key.fakeDisplays) }
     }
 }
