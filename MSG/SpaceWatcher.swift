@@ -58,6 +58,11 @@ final class SpaceWatcher {
         didSet { if oldValue != currentFocusedUUID { updateInfo() } }
     }
 
+    /// Set by Indicator when SystemState detects MC entry/exit.
+    /// When true, the activeSpaceDidChangeNotification handler skips
+    /// CGSCopyManagedDisplaySpaces calls that would contend with WindowServer.
+    var isInMissionControl = false
+
     private var spaceObs: NSObjectProtocol?
     private var screenObs: NSObjectProtocol?
 
@@ -68,19 +73,22 @@ final class SpaceWatcher {
         spaceObs = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.updateInfo()
-            // Chase reads: CGS may update external displays later than built-in.
-            // Two quick follow-up reads catch lagging display state.
-            self?.chaseWork?.cancel()
+            guard let self else { return }
+            // During Mission Control, CGS data is transient and WindowServer is
+            // under heavy load — skip the read to avoid main-thread stutter.
+            guard !self.isInMissionControl else { return }
+            self.updateInfo()
+            self.chaseWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
-                self?.chaseWork = nil
-                self?.updateInfo()
-                // Second chase at 50ms
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    self?.updateInfo()
+                guard let self, !self.isInMissionControl else { return }
+                self.chaseWork = nil
+                self.updateInfo()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    guard let self, !self.isInMissionControl else { return }
+                    self.updateInfo()
                 }
             }
-            self?.chaseWork = work
+            self.chaseWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.016, execute: work)
         }
 

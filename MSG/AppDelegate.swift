@@ -12,8 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Corner windows
 
     private var cornerWindows: [CornerWindow] = []
-    private var wasInMC = false
-    private var mcPollTimer: Timer?
 
     // MARK: - Focus detection
 
@@ -67,8 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.showSettingsMenu()
         }
 
+        indicator.onMCStateChanged = { [weak self] in
+            guard let self else { return }
+            self.applyCornerWindowMCState(self.indicator.isMissionControl)
+        }
+
         rebuildCornerWindows()
-        startMCPoll()
 
         // Screen changes
         NotificationCenter.default.addObserver(
@@ -82,11 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Space / fullscreen transitions: re-assert corner window ordering and
         // redraw so NSMenu.menuBarVisible() is re-evaluated for the new state.
+        // Skip during MC — corner windows aren't visible and orderFrontRegardless
+        // would contend with WindowServer during the MC animation.
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.redrawCornerWindows()
+            guard let self, !self.indicator.isMissionControl else { return }
+            self.redrawCornerWindows()
         }
 
         // CGDisplay callback for arrangement changes
@@ -153,31 +158,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.statusItem.menu = nil
     }
 
-    // MARK: - Mission Control poll
+    // MARK: - Mission Control
 
-    private let mcPollQueue = DispatchQueue(label: "msg.mcpoll", qos: .userInitiated)
-
-    private func startMCPoll() {
-        guard settings.cornersEnabled, mcPollTimer == nil else { return }
-        mcPollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.mcPollQueue.async {
-                let inMC = MissionControlDetector.isActive()
-                DispatchQueue.main.async {
-                    guard inMC != self.wasInMC else { return }
-                    self.wasInMC = inMC
-                    for win in self.cornerWindows {
-                        let uuid = win.displayUUID ?? "_default"
-                        let underBar = win.targetScreen.isBuiltin
-                            ? self.settings.topCornersUnderMenuBar
-                            : self.settings.extTopCornersUnderMenuBar(for: uuid)
-                        win.setSkipTop(inMC && underBar)
-                    }
-                }
-            }
+    private func applyCornerWindowMCState(_ inMC: Bool) {
+        for win in cornerWindows {
+            let uuid = win.displayUUID ?? "_default"
+            let underBar = win.targetScreen.isBuiltin
+                ? settings.topCornersUnderMenuBar
+                : settings.extTopCornersUnderMenuBar(for: uuid)
+            win.setSkipTop(inMC && underBar)
         }
-        mcPollTimer?.tolerance = 0.05
-        if let t = mcPollTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     // MARK: - Corner windows

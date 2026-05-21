@@ -143,8 +143,16 @@ final class Indicator {
         }
         musicMonitor.start()
 
-        systemState.didStabilize = { [weak self] in self?.resyncSnapshotAfterStabilize() }
+        systemState.didStabilize = { [weak self] in
+            self?.spaceWatcher.isInMissionControl = false
+            WallpaperEngine.shared.isMissionControlActive = false
+            self?.spaceWatcher.updateInfo()
+            self?.resyncSnapshotAfterStabilize()
+        }
         systemState.didEnterUnstable = { [weak self] in
+            self?.spaceWatcher.isInMissionControl = true
+            WallpaperEngine.shared.isMissionControlActive = true
+            self?.spaceWatcher.cancelChaseReads()
             self?.killAllAnimations()
             self?.onMCEnter?()
         }
@@ -327,6 +335,8 @@ final class Indicator {
     }
 
     // MARK: - Public hooks
+
+    var isMissionControl: Bool { systemState.isMissionControl }
 
     func applySettings() {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
@@ -591,7 +601,10 @@ final class Indicator {
         animSpacePillCapturedGrid = currentGridLayout
 
         let style = settings.animationStyle
-        let duration: TimeInterval = style == .liquid ? 0.55 : 0.4
+        let distance = abs(newSpace - oldSpace)
+        let base: TimeInterval = style == .liquid ? 0.75 : 0.30
+        let k = 0.5
+        let duration: TimeInterval = base * (1.0 + Double(distance - 1) * k)
         let interval: TimeInterval = 1.0 / 60.0
         let useSpring = style == .liquid
         let startTime = CACurrentMediaTime()

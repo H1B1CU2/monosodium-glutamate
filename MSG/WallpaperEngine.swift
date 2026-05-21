@@ -43,6 +43,10 @@ final class WallpaperEngine {
     /// Survives settings-pane navigation so auto-apply stays suppressed until resolved.
     private(set) var externalChangePending: Bool = false
 
+    /// Set by Indicator when SystemState detects MC entry/exit.
+    /// Suppresses the polling IPC check so we don't contend with WindowServer during MC animations.
+    var isMissionControlActive = false
+
     // MARK: - Init
 
     private init(settings: AppSettings) { self.settings = settings }
@@ -62,11 +66,20 @@ final class WallpaperEngine {
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.reapplyToAllSpaces()
-            // Chase reads: the macOS transition animation may complete slightly after
-            // the notification fires, so re-apply a couple of times to close the gap.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05)  { self?.reapplyToAllSpaces() }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15)  { self?.reapplyToAllSpaces() }
+            guard let self else { return }
+            // During Mission Control the desktop is the blurred MC background
+            // — calling setDesktopImageURL forces WindowServer to re-render it,
+            // causing a visible hitch in the MC animation.
+            guard !self.isMissionControlActive else { return }
+            self.reapplyToAllSpaces()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05)  { [weak self] in
+                guard let self, !self.isMissionControlActive else { return }
+                self.reapplyToAllSpaces()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15)  { [weak self] in
+                guard let self, !self.isMissionControlActive else { return }
+                self.reapplyToAllSpaces()
+            }
         }
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -255,6 +268,11 @@ final class WallpaperEngine {
     /// persists across all Spaces without re-rendering.
     private func reapplyToAllSpaces() {
         guard !externalChangePending else { return }
+        // During Mission Control the desktop is the blurred MC background
+        // — setDesktopImageURL would force WindowServer to re-render it,
+        // causing a visible hitch. A single CGWindowList query is far cheaper
+        // than triggering a system wallpaper reload mid-animation.
+        guard !isMissionControlActive, !MissionControlDetector.isActive() else { return }
         // setWallpaper calls NSWorkspace.setDesktopImageURL (IPC with the
         // WindowServer) and, on failure, blocks the calling thread inside
         // NSAppleScript. This used to run on main and freeze it for
@@ -286,7 +304,7 @@ final class WallpaperEngine {
     }
 
     private func checkForExternalChange() {
-        guard !externalChangePending else { return }  // already flagged, wait for user to resolve
+        guard !externalChangePending, !isMissionControlActive else { return }
         for screen in NSScreen.screens {
             guard let uuid = Self.screenUUID(screen),
                   let state = screens[uuid] else { continue }
