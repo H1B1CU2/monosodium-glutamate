@@ -180,8 +180,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 // MARK: - Color helper
 
 extension Color {
-    static let appAccent = Color(red: 0/255, green: 89/255, blue: 209/255)
-
     init(hex: UInt32) {
         self.init(
             red:   Double((hex >> 16) & 0xff) / 255,
@@ -319,6 +317,32 @@ struct PaneContainer<Content: View>: View {
     }
 }
 
+// MARK: - Sidebar row
+
+
+@available(macOS 14.0, *)
+private struct SidebarRowView: View {
+    let section: SettingsSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label { Text(section.title) } icon: { GradientIcon(section: section) }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    isSelected ? Color.accentColor : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+                .contentShape(Rectangle())
+                .padding(.horizontal, 8)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Root window
 
 @available(macOS 14.0, *)
@@ -328,12 +352,17 @@ struct SettingsWindow: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                Section { sidebarRow(.general) }
-                Section { sidebarRow(.corner); sidebarRow(.spacer); sidebarRow(.music); sidebarRow(.developer) }
+            ScrollView {
+                VStack(spacing: 2) {
+                    sidebarRow(.general)
+                    Color.clear.frame(height: 8)
+                    sidebarRow(.corner)
+                    sidebarRow(.spacer)
+                    sidebarRow(.music)
+                    sidebarRow(.developer)
+                }
+                .padding(.top, 8)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
             .frame(minWidth: 220, idealWidth: 240, maxWidth: 260)
         } detail: {
             pane(for: selection)
@@ -341,15 +370,11 @@ struct SettingsWindow: View {
         }
         .frame(minWidth: 720, minHeight: 560)
         .preferredColorScheme(.dark)
+        .tint(.accentColor)
     }
 
     private func sidebarRow(_ s: SettingsSection) -> some View {
-        Label {
-            Text(s.title)
-        } icon: {
-            GradientIcon(section: s)
-        }
-        .tag(s)
+        SidebarRowView(section: s, isSelected: selection == s) { selection = s }
     }
 
     @ViewBuilder
@@ -418,9 +443,9 @@ struct TrackpadPreview: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
             ForEach([-4, 6], id: \.self) { dy in
                 Circle()
-                    .fill(Color.appAccent)
+                    .fill(Color.accentColor)
                     .frame(width: 9, height: 9)
-                    .shadow(color: Color.appAccent.opacity(0.3), radius: 4)
+                    .shadow(color: Color.accentColor.opacity(0.3), radius: 4)
                     .offset(x: fingerX, y: CGFloat(dy))
             }
         }
@@ -1655,7 +1680,7 @@ struct ArrangeDisplaysView: View {
                     .fill(tile.isReal ? Color(hex: 0x2c2c2e) : Color(hex: 0x2d1a00))
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(
-                        isDragging ? Color.blue :
+                        isDragging ? Color.accentColor :
                         tile.isReal ? Color.white.opacity(0.2) : Color.orange.opacity(0.55),
                         lineWidth: isDragging ? 2 : 1.5
                     )
@@ -1677,7 +1702,7 @@ struct ArrangeDisplaysView: View {
                 }
             }
             .frame(width: tile.w, height: tile.h)
-            .shadow(color: isDragging ? Color.blue.opacity(0.4) : .clear, radius: 12, y: 4)
+            .shadow(color: isDragging ? Color.accentColor.opacity(0.4) : .clear, radius: 12, y: 4)
         }
         .contentShape(Rectangle())
     }
