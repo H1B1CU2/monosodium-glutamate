@@ -8,6 +8,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = AppSettings.shared
     private var indicator: Indicator!
     private var settingsMenu: SettingsMenu!
+    private var musicMonitor: MusicMonitor!
+    private var _trayPanel: AnyObject?   // TrayPanel on macOS 14+
+
+    @available(macOS 14.0, *)
+    private var trayPanel: TrayPanel {
+        if let p = _trayPanel as? TrayPanel { return p }
+        let state = TrayState(settings: settings, musicMonitor: musicMonitor)
+        let p = TrayPanel(state: state)
+        _trayPanel = p
+        return p
+    }
 
     // MARK: - Corner windows
 
@@ -27,10 +38,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         requestAccessibilityIfNeeded()
 
+        musicMonitor = MusicMonitor(settings: settings)
+        musicMonitor.start()
+
         indicator = Indicator(settings: settings)
         indicator.start()
 
         WallpaperEngine.shared.start()
+
+        if #available(macOS 14.0, *), settings.trayEnabled {
+            trayPanel.registerHotkey()
+            trayPanel.state.prepare()
+        }
+
+        NotificationCenter.default.addObserver(forName: .trayEnabledChanged, object: nil, queue: .main) { [weak self] _ in
+            guard #available(macOS 14.0, *), let self else { return }
+            if self.settings.trayEnabled {
+                self.trayPanel.registerHotkey()
+                self.trayPanel.state.prepare()
+            } else {
+                self.trayPanel.unregisterHotkey()
+            }
+        }
 
         // Main menu with Cmd+, → Settings
         let mainMenu = NSMenu()

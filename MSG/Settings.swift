@@ -100,6 +100,9 @@ final class AppSettings {
         static let dimFocusAlpha            = "dimFocusAlpha"
         static let brightNonFocusAlpha      = "brightNonFocusAlpha"
         static let dimNonFocusAlpha         = "dimNonFocusAlpha"
+        static let trayEnabled              = "trayEnabled"
+        static let trayDockSync             = "trayDockSync"
+        static let trayShowNowPlaying       = "trayShowNowPlaying"
     }
 
     static let shared = AppSettings()
@@ -199,6 +202,9 @@ final class AppSettings {
     var dimFocusAlpha: CGFloat       { didSet { save(); onChange?(.indicator) } }
     var brightNonFocusAlpha: CGFloat { didSet { save(); onChange?(.indicator) } }
     var dimNonFocusAlpha: CGFloat    { didSet { save(); onChange?(.indicator) } }
+    var trayEnabled: Bool            { didSet { save(); onChange?(.structural) } }
+    var trayDockSync: Bool           { didSet { save() } }
+    var trayShowNowPlaying: Bool     { didSet { save() } }
 
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
@@ -237,6 +243,9 @@ final class AppSettings {
             Key.dimFocusAlpha:           CGFloat(0.55),
             Key.brightNonFocusAlpha:     CGFloat(0.55),
             Key.dimNonFocusAlpha:        CGFloat(0.55),
+            Key.trayEnabled:             true,
+            Key.trayDockSync:            true,
+            Key.trayShowNowPlaying:      true,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -269,6 +278,9 @@ final class AppSettings {
         dimFocusAlpha        = CGFloat(d.float(forKey: Key.dimFocusAlpha))
         brightNonFocusAlpha  = CGFloat(d.float(forKey: Key.brightNonFocusAlpha))
         dimNonFocusAlpha     = CGFloat(d.float(forKey: Key.dimNonFocusAlpha))
+        trayEnabled          = d.bool(forKey: Key.trayEnabled)
+        trayDockSync         = d.object(forKey: Key.trayDockSync) as? Bool ?? true
+        trayShowNowPlaying   = d.object(forKey: Key.trayShowNowPlaying) as? Bool ?? true
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
             fakeDisplays = decoded
@@ -307,6 +319,9 @@ final class AppSettings {
         d.set(Float(dimFocusAlpha),         forKey: Key.dimFocusAlpha)
         d.set(Float(brightNonFocusAlpha),   forKey: Key.brightNonFocusAlpha)
         d.set(Float(dimNonFocusAlpha),      forKey: Key.dimNonFocusAlpha)
+        d.set(trayEnabled,                  forKey: Key.trayEnabled)
+        d.set(trayDockSync,                 forKey: Key.trayDockSync)
+        d.set(trayShowNowPlaying,           forKey: Key.trayShowNowPlaying)
         if let data = try? JSONEncoder().encode(fakeDisplays) { d.set(data, forKey: Key.fakeDisplays) }
     }
 }

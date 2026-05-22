@@ -120,33 +120,38 @@ final class SettingsViewModel: ObservableObject {
     var autoUpdate: Bool                   { get { s.autoUpdate }           set { s.autoUpdate = newValue;           objectWillChange.send() } }
     var updateChannel: String              { get { s.updateChannel }        set { s.updateChannel = newValue;        objectWillChange.send() } }
     var fakeDisplays: [FakeDisplay]          { get { s.fakeDisplays }         set { s.fakeDisplays = newValue;         objectWillChange.send() } }
+    var trayEnabled: Bool                    { get { s.trayEnabled }          set { s.trayEnabled = newValue;          objectWillChange.send() } }
+    var trayDockSync: Bool                   { get { s.trayDockSync }         set { s.trayDockSync = newValue;         objectWillChange.send() } }
+    var trayShowNowPlaying: Bool             { get { s.trayShowNowPlaying }   set { s.trayShowNowPlaying = newValue;   objectWillChange.send() } }
 }
 
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, spacer, corner, music, developer
+    case general, about, spacer, corner, music, tray, developer
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .about:   return "About"
-        case .spacer:  return "Spacer"
-        case .corner:  return "Cornermization"
-        case .music:      return "Music Display"
-        case .developer:  return "Developer"
+        case .general:   return "General"
+        case .about:     return "About"
+        case .spacer:    return "Spacer"
+        case .corner:    return "Cornermization"
+        case .music:     return "Music Display"
+        case .tray:      return "Tray"
+        case .developer: return "Developer"
         }
     }
 
     var icon: String {
         switch self {
-        case .general: return "gearshape.fill"
-        case .about:   return "info.circle.fill"
-        case .spacer:  return "rectangle.split.3x1.fill"
-        case .corner:  return "viewfinder"
-        case .music:      return "music.note"
-        case .developer:  return "hammer.fill"
+        case .general:   return "gearshape.fill"
+        case .about:     return "info.circle.fill"
+        case .spacer:    return "rectangle.split.3x1.fill"
+        case .corner:    return "viewfinder"
+        case .music:     return "music.note"
+        case .tray:      return "pad.header"
+        case .developer: return "hammer.fill"
         }
     }
 
@@ -156,23 +161,25 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var iconTint: Color {
         switch self {
-        case .general: return Color(hex: 0xa0a0a6)
-        case .about:   return Color(hex: 0xff5a3c)
-        case .spacer:  return Color(hex: 0x117cfc)
-        case .corner:  return Color(hex: 0x5e5ce6)
-        case .music:      return Color(hex: 0xff2d55)
-        case .developer:  return Color(hex: 0x30d158)
+        case .general:   return Color(hex: 0xa0a0a6)
+        case .about:     return Color(hex: 0xff5a3c)
+        case .spacer:    return Color(hex: 0x117cfc)
+        case .corner:    return Color(hex: 0x5e5ce6)
+        case .music:     return Color(hex: 0xff2d55)
+        case .tray:      return Color(hex: 0xff9500)
+        case .developer: return Color(hex: 0x30d158)
         }
     }
 
     var description: String {
         switch self {
-        case .general: return "Launch, permissions, and app behavior"
-        case .about:   return "Version info and acknowledgements"
-        case .spacer:  return "Menu bar Deskspace indicator for Mission Control spaces"
-        case .corner:  return "Paint black corner masks to match each display's curvature"
-        case .music:      return "Menu bar music label with trackpad gesture control"
-        case .developer:  return "Debug tools for development and testing"
+        case .general:   return "Launch, permissions, and app behavior"
+        case .about:     return "Version info and acknowledgements"
+        case .spacer:    return "Menu bar Deskspace indicator for Mission Control spaces"
+        case .corner:    return "Paint black corner masks to match each display's curvature"
+        case .music:     return "Menu bar music label with trackpad gesture control"
+        case .tray:      return "Floating ⌘⇥ app switcher HUD with pinned apps and Now Playing"
+        case .developer: return "Debug tools for development and testing"
         }
     }
 }
@@ -359,6 +366,7 @@ struct SettingsWindow: View {
                     sidebarRow(.corner)
                     sidebarRow(.spacer)
                     sidebarRow(.music)
+                    sidebarRow(.tray)
                     sidebarRow(.developer)
                 }
                 .padding(.top, 8)
@@ -380,12 +388,13 @@ struct SettingsWindow: View {
     @ViewBuilder
     private func pane(for s: SettingsSection) -> some View {
         switch s {
-        case .general: GeneralPane(vm: vm)
-        case .spacer:  SpacerPane(vm: vm)
-        case .corner:  CornermizationPane(vm: vm)
-        case .music:   MusicPane(vm: vm)
+        case .general:   GeneralPane(vm: vm)
+        case .spacer:    SpacerPane(vm: vm)
+        case .corner:    CornermizationPane(vm: vm)
+        case .music:     MusicPane(vm: vm)
+        case .tray:      TrayPane(vm: vm)
         case .developer: DeveloperPane(vm: vm)
-        case .about:   GeneralPane(vm: vm)
+        case .about:     GeneralPane(vm: vm)
         }
     }
 }
@@ -1928,6 +1937,10 @@ struct GeneralPane: View {
                 Toggle("Space indicator", isOn: Binding(get: { vm.spacerEnabled }, set: { vm.spacerEnabled = $0 }))
                 Toggle("Corner masks", isOn: Binding(get: { vm.cornersEnabled }, set: { vm.cornersEnabled = $0 }))
                 Toggle("Music display", isOn: Binding(get: { vm.musicEnabled }, set: { vm.musicEnabled = $0 }))
+                Toggle("Tray app switcher", isOn: Binding(get: { vm.trayEnabled }, set: {
+                    vm.trayEnabled = $0
+                    NotificationCenter.default.post(name: .trayEnabledChanged, object: nil)
+                }))
             }
 
             Section("Permissions") {

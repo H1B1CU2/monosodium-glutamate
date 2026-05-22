@@ -33,6 +33,10 @@ swiftc \
     MusicPopover.swift \
     SettingsWindow.swift \
     WallpaperEngine.swift \
+    TrayState.swift \
+    TrayPanel.swift \
+    TrayHUDView.swift \
+    TrayPane.swift \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos13.0 \

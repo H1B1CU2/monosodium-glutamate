@@ -33,6 +33,7 @@ final class MusicMonitor {
     private(set) var currentArtist: String?
     private(set) var volume: Int = 50
     private(set) var currentSource: String?
+    private(set) var albumArt: NSImage?
 
     var onChange: (() -> Void)?
 
@@ -123,6 +124,7 @@ final class MusicMonitor {
                     self.tryBonusMR()
                 }
                 self.volume = Self.readSystemVolume()
+                self.fetchAlbumArt()
                 if wasPlaying != self.isPlaying || self.isPlaying {
                     self.onChange?()
                 }
@@ -228,9 +230,32 @@ final class MusicMonitor {
                     self.isPlaying = false
                 }
 
+                self.fetchAlbumArt()
                 if wasPlaying != self.isPlaying || self.isPlaying {
                     self.onChange?()
                 }
+            }
+        }
+    }
+
+    private func fetchAlbumArt() {
+        guard let mrInfo = MRNowPlayingInfo else { return }
+        mrInfo(.main) { [weak self] info in
+            guard let self, let dict = info as? [String: Any] else { return }
+            // Try the known key name; also scan for any large Data blob that decodes as an image
+            let candidate: NSImage? = {
+                if let data = dict["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data,
+                   let img = NSImage(data: data) { return img }
+                for (_, val) in dict {
+                    if let data = val as? Data, data.count > 1000,
+                       let img = NSImage(data: data) { return img }
+                }
+                return nil
+            }()
+            guard let image = candidate else { return }
+            DispatchQueue.main.async {
+                self.albumArt = image
+                self.onChange?()   // notify after art is set, not before
             }
         }
     }
