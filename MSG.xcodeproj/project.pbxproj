@@ -26,6 +26,11 @@
 		BB000012 /* TrayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000112 /* TrayPanel.swift */; };
 		BB000013 /* TrayHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000113 /* TrayHUDView.swift */; };
 		BB000014 /* TrayPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000114 /* TrayPane.swift */; };
+		BB000015 /* Displaplacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000115 /* Displaplacer.swift */; };
+		BB000016 /* Shared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000116 /* Shared.swift */; };
+		BB000017 /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000117 /* SettingsPanes.swift */; };
+		BB000018 /* SettingsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000118 /* SettingsPreviews.swift */; };
+		BB000019 /* MediaRemoteAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000119 /* MediaRemoteAdapter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -51,6 +56,12 @@
 		BB000112 /* TrayPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayPanel.swift; sourceTree = "<group>"; };
 		BB000113 /* TrayHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayHUDView.swift; sourceTree = "<group>"; };
 		BB000114 /* TrayPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayPane.swift; sourceTree = "<group>"; };
+		BB000115 /* Displaplacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Displaplacer.swift; sourceTree = "<group>"; };
+		BB000116 /* Shared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared.swift; sourceTree = "<group>"; };
+		BB000117 /* SettingsPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPanes.swift; sourceTree = "<group>"; };
+		BB000118 /* SettingsPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPreviews.swift; sourceTree = "<group>"; };
+		BB000119 /* MediaRemoteAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRemoteAdapter.swift; sourceTree = "<group>"; };
+		BB00011A /* MediaRemoteHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaRemoteHelper.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -64,27 +75,89 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		189478582FADD198007A7799 /* MSG */ = {
+		BBA00001 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				BB000109 /* main.swift */,
+				BB000107 /* AppDelegate.swift */,
 				BB000101 /* Settings.swift */,
-				BB000102 /* SystemState.swift */,
-				BB000103 /* SpaceWatcher.swift */,
+				BB000116 /* Shared.swift */,
+			);
+			name = Core;
+			sourceTree = "<group>";
+		};
+		BBA00002 /* Spacer */ = {
+			isa = PBXGroup;
+			children = (
 				BB000104 /* Indicator.swift */,
 				BB000105 /* IndicatorRenderer.swift */,
-				BB000106 /* CornerWindow.swift */,
-				BB000107 /* AppDelegate.swift */,
-				BB000108 /* SettingsMenu.swift */,
-				BB000109 /* main.swift */,
-				BB00010A /* MusicMonitor.swift */,
-				BB00010C /* MusicPopover.swift */,
-				BB00010D /* SettingsWindow.swift */,
-				BB00010E /* WallpaperEngine.swift */,
+				BB000103 /* SpaceWatcher.swift */,
+				BB000102 /* SystemState.swift */,
 				BB00010F /* MissionControlDetector.swift */,
+			);
+			name = Spacer;
+			sourceTree = "<group>";
+		};
+		BBA00003 /* Cornermization */ = {
+			isa = PBXGroup;
+			children = (
+				BB000106 /* CornerWindow.swift */,
+				BB00010E /* WallpaperEngine.swift */,
+			);
+			name = Cornermization;
+			sourceTree = "<group>";
+		};
+		BBA00004 /* Music */ = {
+			isa = PBXGroup;
+			children = (
+				BB00010A /* MusicMonitor.swift */,
+				BB000119 /* MediaRemoteAdapter.swift */,
+				BB00011A /* MediaRemoteHelper.m */,
+				BB00010C /* MusicPopover.swift */,
+			);
+			name = Music;
+			sourceTree = "<group>";
+		};
+		BBA00005 /* Tray */ = {
+			isa = PBXGroup;
+			children = (
 				BB000111 /* TrayState.swift */,
 				BB000112 /* TrayPanel.swift */,
 				BB000113 /* TrayHUDView.swift */,
 				BB000114 /* TrayPane.swift */,
+			);
+			name = Tray;
+			sourceTree = "<group>";
+		};
+		BBA00006 /* Displaplacer */ = {
+			isa = PBXGroup;
+			children = (
+				BB000115 /* Displaplacer.swift */,
+			);
+			name = Displaplacer;
+			sourceTree = "<group>";
+		};
+		BBA00007 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				BB00010D /* SettingsWindow.swift */,
+				BB000117 /* SettingsPanes.swift */,
+				BB000118 /* SettingsPreviews.swift */,
+				BB000108 /* SettingsMenu.swift */,
+			);
+			name = Settings;
+			sourceTree = "<group>";
+		};
+		189478582FADD198007A7799 /* MSG */ = {
+			isa = PBXGroup;
+			children = (
+				BBA00001 /* Core */,
+				BBA00002 /* Spacer */,
+				BBA00003 /* Cornermization */,
+				BBA00004 /* Music */,
+				BBA00005 /* Tray */,
+				BBA00006 /* Displaplacer */,
+				BBA00007 /* Settings */,
 				BB00010B /* MSG.entitlements */,
 				189478512FADD198007A7799 /* Info.plist */,
 				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
@@ -118,6 +191,7 @@
 				18BF1F2A2FABA7B4004E29FE /* Sources */,
 				18BF1F2B2FABA7B4004E29FE /* Frameworks */,
 				18BF1F2C2FABA7B4004E29FE /* Resources */,
+				BB000020 /* Compile MediaRemote Helper */,
 			);
 			buildRules = (
 			);
@@ -176,6 +250,25 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		BB000020 /* Compile MediaRemote Helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/MSG/MediaRemoteHelper.m",
+			);
+			name = "Compile MediaRemote Helper";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libMSGMediaRemote.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nmkdir -p \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nxcrun clang -dynamiclib \"$SRCROOT/MSG/MediaRemoteHelper.m\" -o \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/libMSGMediaRemote.dylib\" -framework Foundation -fobjc-arc -O2\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		18BF1F2A2FABA7B4004E29FE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -199,6 +292,11 @@
 				BB000012 /* TrayPanel.swift in Sources */,
 				BB000013 /* TrayHUDView.swift in Sources */,
 				BB000014 /* TrayPane.swift in Sources */,
+				BB000015 /* Displaplacer.swift in Sources */,
+				BB000016 /* Shared.swift in Sources */,
+				BB000017 /* SettingsPanes.swift in Sources */,
+				BB000018 /* SettingsPreviews.swift in Sources */,
+				BB000019 /* MediaRemoteAdapter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -336,6 +434,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MSG/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -380,6 +479,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MSG/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";

@@ -34,12 +34,7 @@ enum MusicSource: String, CaseIterable {
     case nowPlaying = "System Now Playing"
     case appleMusic = "Apple Music"
 
-    var isAvailable: Bool {
-        switch self {
-        case .nowPlaying: return false
-        case .appleMusic: return true
-        }
-    }
+    var isAvailable: Bool { true }
 
     var displayLabel: String {
         isAvailable ? rawValue : "\(rawValue) (unavailable)"
@@ -103,6 +98,8 @@ final class AppSettings {
         static let trayEnabled              = "trayEnabled"
         static let trayDockSync             = "trayDockSync"
         static let trayShowNowPlaying       = "trayShowNowPlaying"
+        static let displaplacerPresets      = "displaplacerPresets"
+        static let displaplacerEnabled      = "displaplacerEnabled"
     }
 
     static let shared = AppSettings()
@@ -205,6 +202,8 @@ final class AppSettings {
     var trayEnabled: Bool            { didSet { save(); onChange?(.structural) } }
     var trayDockSync: Bool           { didSet { save() } }
     var trayShowNowPlaying: Bool     { didSet { save() } }
+    var displaplacerEnabled: Bool { didSet { save(); onChange?(.structural) } }
+    var displaplacerPresets: [DisplaplacerPreset] { didSet { save() } }
 
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
@@ -246,6 +245,8 @@ final class AppSettings {
             Key.trayEnabled:             true,
             Key.trayDockSync:            true,
             Key.trayShowNowPlaying:      true,
+            Key.displaplacerEnabled:     true,
+            Key.displaplacerPresets:     Data(),
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -281,6 +282,11 @@ final class AppSettings {
         trayEnabled          = d.bool(forKey: Key.trayEnabled)
         trayDockSync         = d.object(forKey: Key.trayDockSync) as? Bool ?? true
         trayShowNowPlaying   = d.object(forKey: Key.trayShowNowPlaying) as? Bool ?? true
+        if let data = d.data(forKey: Key.displaplacerPresets),
+           let decoded = try? JSONDecoder().decode([DisplaplacerPreset].self, from: data) {
+            displaplacerPresets = decoded
+        } else { displaplacerPresets = [] }
+        displaplacerEnabled  = d.object(forKey: Key.displaplacerEnabled) as? Bool ?? true
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
             fakeDisplays = decoded
@@ -322,6 +328,8 @@ final class AppSettings {
         d.set(trayEnabled,                  forKey: Key.trayEnabled)
         d.set(trayDockSync,                 forKey: Key.trayDockSync)
         d.set(trayShowNowPlaying,           forKey: Key.trayShowNowPlaying)
+        d.set(displaplacerEnabled,          forKey: Key.displaplacerEnabled)
+        if let data = try? JSONEncoder().encode(displaplacerPresets) { d.set(data, forKey: Key.displaplacerPresets) }
         if let data = try? JSONEncoder().encode(fakeDisplays) { d.set(data, forKey: Key.fakeDisplays) }
     }
 }

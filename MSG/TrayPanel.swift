@@ -53,12 +53,29 @@ final class TrayPanel {
                     return Unmanaged.passRetained(event)
                 }
 
+                // ⎋ while HUD visible → instant dismiss, no activation
+                if type == .keyDown,
+                   event.getIntegerValueField(.keyboardEventKeycode) == 53,
+                   panel.state.isVisible {
+                    DispatchQueue.main.async { panel.hide(activate: false) }
+                    return nil
+                }
+
                 // ⌘ released while HUD is visible → activate + dismiss
                 if type == .flagsChanged,
                    !event.flags.contains(.maskCommand),
                    panel.state.isVisible {
                     DispatchQueue.main.async { panel.hide(activate: true) }
                     return Unmanaged.passRetained(event)
+                }
+
+                // ⇧ press while ⌘ held + HUD visible → navigate backward
+                if type == .flagsChanged,
+                   event.flags.contains(.maskCommand),
+                   event.flags.contains(.maskShift),
+                   panel.state.isVisible {
+                    DispatchQueue.main.async { panel.state.selectPrev() }
+                    return nil
                 }
 
                 guard type == .keyDown,
@@ -68,11 +85,12 @@ final class TrayPanel {
                 }
 
                 // ⌘⇥ while visible → cycle; first press → show
+                let goBack = event.flags.contains(.maskShift)
                 DispatchQueue.main.async {
                     if panel.state.isVisible {
-                        event.flags.contains(.maskShift) ? panel.state.selectPrev() : panel.state.selectNext()
+                        goBack ? panel.state.selectPrev() : panel.state.selectNext()
                     } else {
-                        panel.show()
+                        panel.show(goBack: goBack)
                     }
                 }
                 return nil  // suppress system switcher
@@ -96,17 +114,24 @@ final class TrayPanel {
     }
 
     private func startHealthTimer() {
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        healthTimer?.invalidate()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self, let tap = self.eventTap else { return }
             if !CGEvent.tapIsEnabled(tap: tap) {
-                NSLog("Tray: tap was disabled, re-enabling")
+                NSLog("Tray: tap disabled — attempting re-enable")
                 CGEvent.tapEnable(tap: tap, enable: true)
+                // If still dead after re-enable, tear down and recreate the whole tap.
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    NSLog("Tray: re-enable failed — recreating tap")
+                    self.tearDownTap()
+                    self.createTap()
+                }
             }
         }
+        if let t = healthTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
-    func unregisterHotkey() {
-        healthTimer?.invalidate(); healthTimer = nil
+    private func tearDownTap() {
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false); eventTap = nil }
         if let src = tapSource {
             CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes)
@@ -116,9 +141,14 @@ final class TrayPanel {
         tapUserInfo = nil
     }
 
+    func unregisterHotkey() {
+        healthTimer?.invalidate(); healthTimer = nil
+        tearDownTap()
+    }
+
     // MARK: - Show / Hide
 
-    func show() {
+    func show(goBack: Bool = false) {
         // Already visible — ⌘⇥ cycles to the next app instead of reopening
         if state.isVisible {
             state.selectNext()
@@ -127,7 +157,7 @@ final class TrayPanel {
 
         state.refresh()
         state.resetSearch()
-        state.defaultSelection()
+        state.defaultSelection(goBack: goBack)
 
         if panel == nil { buildPanel() }
         guard let p = panel else { return }
@@ -175,9 +205,7 @@ final class TrayPanel {
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 22
-        effect.layer?.masksToBounds = true
+        effect.maskImage = NSImage.mask(withCornerRadius: 22)
         effect.autoresizingMask = [.width, .height]
         effect.addSubview(h.view)
 
@@ -248,6 +276,8 @@ final class TrayPanel {
         let cols = max(1, Int((940 - 280 - 40) / 98))
         let activeRows = state.filteredActive.isEmpty ? 0
             : max(1, Int(ceil(Double(state.filteredActive.count) / Double(cols))))
+        let hiddenRows = state.filteredHidden.isEmpty ? 0
+            : max(1, Int(ceil(Double(state.filteredHidden.count) / Double(cols))))
         let pinnedRows = state.filteredPinned.isEmpty ? 0
             : max(1, Int(ceil(Double(state.filteredPinned.count) / Double(cols))))
 
@@ -263,11 +293,14 @@ final class TrayPanel {
         }
 
         var h = topPad + searchH + gap + headerH + gap + sectionH(activeRows)
+        if hiddenRows > 0 {
+            h += dividerH + gap + sectionH(hiddenRows)
+        }
         if pinnedRows > 0 {
             h += dividerH + gap + sectionH(pinnedRows)
         }
         h += bottomPad
-        return min(max(h, 280), 700)
+        return min(max(h, 440), 700)
     }
 }
 
@@ -277,32 +310,19 @@ private final class KeyPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-// MARK: - Thumbnail cache
+// MARK: - Resizable mask image
 
-struct TrayThumbs {
-    private struct Entry {
-        let image: NSImage
-        let expires: Date
-    }
-    private var cache: [CGWindowID: Entry] = [:]
-    private let ttl: TimeInterval = 5
-
-    mutating func thumbnail(for windowID: CGWindowID) -> NSImage? {
-        if let e = cache[windowID], e.expires > Date() { return e.image }
-        // CGWindowListCreateImage deprecated macOS 14+; ScreenCaptureKit required in future.
-        return nil
-    }
-
-    mutating func windowList(for pid: pid_t) -> [(id: CGWindowID, name: String)] {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return [] }
-        return list.compactMap { info -> (CGWindowID, String)? in
-            guard let wPid = info[kCGWindowOwnerPID as String] as? pid_t, wPid == pid,
-                  let wID = info[kCGWindowNumber as String] as? CGWindowID,
-                  let layer = info[kCGWindowLayer as String] as? Int, layer == 0
-            else { return nil }
-            let name = info[kCGWindowName as String] as? String ?? ""
-            return (wID, name)
+fileprivate extension NSImage {
+    static func mask(withCornerRadius radius: CGFloat) -> NSImage {
+        let edgeLength = 2.0 * radius + 1.0
+        let maskImage = NSImage(size: NSSize(width: edgeLength, height: edgeLength), flipped: false) { rect in
+            let bezierPath = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+            NSColor.black.set()
+            bezierPath.fill()
+            return true
         }
+        maskImage.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        maskImage.resizingMode = .stretch
+        return maskImage
     }
 }

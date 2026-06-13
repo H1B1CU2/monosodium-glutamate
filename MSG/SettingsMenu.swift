@@ -96,6 +96,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(orderItem)
         displayOrderItem = orderItem
 
+        addSpaceItem()
+
         // ── Music Display ──────────
         menu.addItem(.separator())
         addSpaceItem()
@@ -134,7 +136,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         // ── Cornermization ──────────
         addHeaderItem("Cornermization", to: menu)
 
-        let model = modelName()
+        let model = MacModel.name
         let builtIn = NSScreen.screens.first
         let externals = builtIn != nil ? NSScreen.screens.filter { $0 != builtIn } : []
 
@@ -160,10 +162,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         if !externals.isEmpty {
             let mirroring = settings.mirrorMainDisplay
             for ext in externals {
-                guard let uuid = screenUUID(ext) else { continue }
+                guard let uuid = ext.uuid else { continue }
                 let name = ext.localizedName
-                let pos = builtIn.map { displayPosition(for: ext, relativeTo: $0) } ?? ""
-                addHeaderItem("\(name) (\(pos))", to: menu, indent: true)
+                addHeaderItem(name, to: menu, indent: true)
                 extHeaderItems.append(menu.items.last!)
 
                 let extTopPosMenu = createExtPositionMenu(uuid: uuid)
@@ -187,6 +188,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         updateExternalMonitorVisibility(animated: false)
         updateAllVisibilities(animated: false)
+
+        // ── Displaplacer ────────────
+        addDisplaplacerSection()
 
         // ── Quit ────────────────────
         menu.addItem(.separator())
@@ -218,7 +222,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             animateItemVisibility(item, visible: hasExternals && !hiddenByMirror, animated: animated)
         }
         for item in extHeaderItems {
-            animateItemVisibility(item, visible: hasExternals, animated: animated)
+            // Hide per-monitor name headers when mirroring — their corner toggles
+            // are hidden too, so the section collapses to just "Apply to all display".
+            animateItemVisibility(item, visible: hasExternals && !mirroring, animated: animated)
         }
         focusDetectionItem?.isHidden = !hasExternals
         displayOrderItem?.isHidden = !hasExternals
@@ -283,36 +289,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         menu.addItem(item)
     }
 
-    private static let cachedModelName: String = {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-        process.arguments = ["SPHardwareDataType"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            if let output = String(data: data, encoding: .utf8),
-               let line = output.components(separatedBy: "\n").first(where: { $0.contains("Model Name") }),
-               let name = line.split(separator: ":").last {
-                return name.trimmingCharacters(in: .whitespaces)
-            }
-        } catch {}
-        return "Mac"
-    }()
-
-    private func modelName() -> String {
-        Self.cachedModelName
-    }
-
-    private func screenUUID(_ screen: NSScreen) -> String? {
-        guard let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-              let u = CGDisplayCreateUUIDFromDisplayID(dID),
-              let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
-        return s
-    }
-
     private func createExtPositionMenu(uuid: String) -> NSMenu {
         let underBar = settings.extTopCornersUnderMenuBar(for: uuid)
         let sub = NSMenu()
@@ -345,16 +321,6 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc private func extPosBelowUUID(_ sender: NSMenuItem) {
         guard let uuid = sender.representedObject as? String else { return }
         settings.setExtTopCornersUnderMenuBar(true, for: uuid)
-    }
-
-    private func displayPosition(for screen: NSScreen, relativeTo builtIn: NSScreen) -> String {
-        let e = screen.frame, m = builtIn.frame
-        var h = "", v = ""
-        if e.maxX <= m.minX { h = "Left" } else if e.minX >= m.maxX { h = "Right" }
-        if e.minY >= m.maxY { v = "Above" } else if e.maxY <= m.minY { v = "Below" }
-        if h.isEmpty && v.isEmpty { return "Overlapping" }
-        if h.isEmpty { return v }; if v.isEmpty { return h }
-        return "\(v) & \(h)"
     }
 
     // MARK: - Visibility helpers
@@ -413,6 +379,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         settings.mirrorMainDisplay = (sender.state == .on)
         let mirroring = sender.state == .on
         updateExtTogglesVisibility(animated: true)
+        for item in extHeaderItems {
+            animateItemVisibility(item, visible: !mirroring, animated: true)
+        }
         for item in externalSectionItems where item != mirrorToggleItem && !extHeaderItems.contains(item) {
             let isToggle = extToggleItems.contains(item)
             if !isToggle {
@@ -451,4 +420,77 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
                            .foregroundColor: NSColor.secondaryLabelColor])
     }
     @objc func quitApp() { (NSApp.delegate as? AppDelegate)?.requestQuit() }
+
+    // MARK: - Displaplacer
+
+    private func addDisplaplacerSection() {
+        guard settings.displaplacerEnabled else { return }
+        let externals = DisplaplacerEngine.externalDisplays()
+        // No external monitor → hide the whole section (separator, header, presets, toggles).
+        guard !externals.isEmpty else { return }
+
+        menu.addItem(.separator())
+        addHeaderItem("Displaplacer", to: menu)
+
+        addSpaceItem()
+        addHeaderItem("Presets", to: menu, indent: true)
+        let presets = settings.displaplacerPresets
+        if presets.isEmpty {
+            let empty = NSMenuItem(title: "  No presets saved", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            empty.indentationLevel = 1
+            menu.addItem(empty)
+        } else {
+            let currentLayout = DisplaplacerEngine.captureCurrentLayout()
+            for preset in presets {
+                let item = NSMenuItem(title: "  \(preset.name)", action: #selector(applyPreset(_:)), keyEquivalent: "")
+                item.representedObject = preset.id.uuidString
+                item.target = self
+                item.indentationLevel = 1
+                let isActive = preset.layouts.count == currentLayout.count && preset.layouts.allSatisfy { layout in
+                    currentLayout.contains(layout)
+                }
+                item.state = isActive ? .on : .off
+                menu.addItem(item)
+            }
+        }
+
+        addSpaceItem()
+        addHeaderItem("Connected Monitors", to: menu, indent: true)
+        // Count ALL active displays (incl. built-in) so the last external can
+        // still be ejected while the built-in remains.
+        let totalActive = DisplaplacerEngine.allOnlineDisplays().filter { $0.enabled }.count
+        let builtIn = NSScreen.screens.first
+        for display in externals {
+            // Show the monitor's arrangement position (e.g. "Right") for connected
+            // displays; ejected ones have no NSScreen so they show just the name.
+            var title = "  \(display.name)"
+            if display.enabled, let builtIn = builtIn,
+               let screen = NSScreen.screens.first(where: { $0.uuid == display.uuid }) {
+                title += " (\(displayPosition(for: screen, relativeTo: builtIn)))"
+            }
+            let item = NSMenuItem(title: title, action: #selector(toggleDisplay(_:)), keyEquivalent: "")
+            item.representedObject = display.uuid
+            item.target = self
+            item.state = display.enabled ? .on : .off
+            item.isEnabled = display.enabled ? totalActive > 1 : true
+            item.indentationLevel = 1
+            menu.addItem(item)
+        }
+        addSpaceItem()
+    }
+
+    @objc private func applyPreset(_ sender: NSMenuItem) {
+        guard let idString = sender.representedObject as? String,
+              let uuid = UUID(uuidString: idString),
+              let preset = settings.displaplacerPresets.first(where: { $0.id == uuid }) else { return }
+        DisplaplacerEngine.apply(preset)
+    }
+
+    @objc private func toggleDisplay(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        let isEnabled = sender.state == .on
+        DisplaplacerEngine.setEnabled(uuid, enabled: !isEnabled)
+    }
+
 }

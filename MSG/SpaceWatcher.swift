@@ -151,15 +151,10 @@ final class SpaceWatcher {
         var uuidToMidX: [String: CGFloat] = [:]
         var primaryUUID: String? = nil
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-               dID != 0,
-               let uuidUnmanaged = CGDisplayCreateUUIDFromDisplayID(dID) {
-                let uuid = uuidUnmanaged.takeRetainedValue()
-                if let uuidString = CFUUIDCreateString(nil, uuid) as String? {
-                    uuidToX[uuidString] = screen.frame.origin.x
-                    uuidToMidX[uuidString] = screen.frame.midX
-                    if idx == 0 { primaryUUID = uuidString }
-                }
+            if let uuidString = screen.uuid {
+                uuidToX[uuidString] = screen.frame.origin.x
+                uuidToMidX[uuidString] = screen.frame.midX
+                if idx == 0 { primaryUUID = uuidString }
             }
         }
 
@@ -218,11 +213,7 @@ final class SpaceWatcher {
         if !customOrder.isEmpty {
             var indexToUUID: [Int: String] = [:]
             for (idx, screen) in NSScreen.screens.enumerated() {
-                if let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-                   let uuidUnmanaged = CGDisplayCreateUUIDFromDisplayID(dID),
-                   let uuidString = CFUUIDCreateString(nil, uuidUnmanaged.takeRetainedValue()) as String? {
-                    indexToUUID[idx] = uuidString
-                }
+                if let uuidString = screen.uuid { indexToUUID[idx] = uuidString }
             }
             let orderedUUIDs: [String] = customOrder.compactMap { indexToUUID[$0] }
             if !orderedUUIDs.isEmpty {

@@ -26,12 +26,16 @@ final class WallpaperEngine {
     private var spaceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var bakeItem: DispatchWorkItem?
+    private var settingsSyncItem: DispatchWorkItem?
     private var lastBakedURLs: [String: URL] = [:]
+    /// Per-display fingerprint of what was last baked (baseline + geometry +
+    /// corner settings). Lets sync() skip redundant re-bakes.
+    private var bakedSignature: [String: String] = [:]
 
     var isFetched: Bool { !screens.isEmpty }
 
     func baselineImage(for screen: NSScreen) -> NSImage? {
-        guard let uuid = Self.screenUUID(screen),
+        guard let uuid = screen.uuid,
               let url = screens[uuid]?.baselineURL else { return nil }
         guard let cg = Self.loadImage(url: url) else { return nil }
         return NSImage(cgImage: cg, size: .zero)
@@ -47,6 +51,12 @@ final class WallpaperEngine {
     /// Suppresses the polling IPC check so we don't contend with WindowServer during MC animations.
     var isMissionControlActive = false
 
+    /// True while the Cornermization pane is open. Suppresses automatic
+    /// resolution of external wallpaper changes (the pane shows a confirmation
+    /// card instead) and automatic re-bakes from settings changes (the pane
+    /// has its own Apply flow).
+    var isEditing = false
+
     // MARK: - Init
 
     private init(settings: AppSettings) { self.settings = settings }
@@ -55,11 +65,12 @@ final class WallpaperEngine {
 
     func start() {
         loadPersistedBaselines()
-        if screens.isEmpty {
-            recoverBrokenDesktopIfNeeded()
-            fetch()
-        }
-        bake()
+        recoverBrokenDesktopIfNeeded()
+        // Capture baselines for any display that doesn't have one — covers
+        // first launch, and displays whose persisted baseline was discarded
+        // as stale (wallpaper changed while MSG wasn't running).
+        fetchMissingDisplays()
+        sync()
         beginPolling()
 
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -101,21 +112,47 @@ final class WallpaperEngine {
             screenObserver = nil
         }
         bakeItem?.cancel(); bakeItem = nil
+        settingsSyncItem?.cancel(); settingsSyncItem = nil
     }
 
+    /// Puts the original wallpaper back on every display (including the Dock-DB
+    /// rows of disconnected displays) and deletes the baked PNGs. Everything runs
+    /// synchronously: this is called on the way out of the process, so async
+    /// propagation would be killed mid-flight and leave Spaces pointing at
+    /// deleted files.
     func restore() {
         stop()
         for (uuid, state) in screens {
-            if let screen = NSScreen.screens.first(where: { Self.screenUUID($0) == uuid }) {
-                Self.setWallpaper(url: state.baselineURL, for: screen)
+            if let screen = NSScreen.screens.first(where: { $0.uuid == uuid }) {
+                do {
+                    try NSWorkspace.shared.setDesktopImageURL(state.baselineURL, for: screen, options: [:])
+                } catch {
+                    if screen == NSScreen.screens.first {
+                        let src = "tell application \"System Events\" to set picture of desktop 1 to \"\(state.baselineURL.path)\""
+                        _ = NSAppleScript(source: src)?.executeAndReturnError(nil)
+                    }
+                }
             }
+            Self.propagateToAllSpacesInDB(url: state.baselineURL, displayUUID: uuid)
         }
-        let dir = Self.wallpaperDir()
-        for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
-            try? FileManager.default.removeItem(at: f)
+        // On legacy macOS the Dock-DB propagation above pointed every Space back
+        // at the baseline, so the baked PNGs can go. On macOS 14+ that DB no
+        // longer exists and Spaces we aren't currently showing may still
+        // reference the baked files — deleting them would leave those Spaces
+        // with a missing wallpaper, and there is no post-exit way to fix it.
+        // Keep the files and baselines.json; the launch reconciliation handles
+        // every resulting state.
+        let dockDB = NSHomeDirectory() + "/Library/Application Support/Dock/desktoppicture.db"
+        if FileManager.default.fileExists(atPath: dockDB) {
+            let dir = Self.wallpaperDir()
+            for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+                try? FileManager.default.removeItem(at: f)
+            }
+            clearPersistedBaselines()
         }
-        clearPersistedBaselines()
         screens.removeAll()
+        lastBakedURLs.removeAll()
+        bakedSignature.removeAll()
     }
 
     // MARK: - Editing mode
@@ -125,71 +162,128 @@ final class WallpaperEngine {
     /// the current corner settings as a live preview.
     func showBaseline() {
         for (uuid, state) in screens {
-            if let screen = NSScreen.screens.first(where: { Self.screenUUID($0) == uuid }) {
+            if let screen = NSScreen.screens.first(where: { $0.uuid == uuid }) {
                 Self.setWallpaper(url: state.baselineURL, for: screen)
             }
         }
     }
 
-    /// Re-applies the last baked PNG to all screens (undoes showBaseline).
-    /// Call when leaving the Cornermization pane without pending changes.
-    func restoreBakedWallpaper() {
+    // MARK: - Sync
+
+    /// Reconciles the desktop with the current settings. Per display:
+    /// corners enabled → bake (unless the correct bake is already showing);
+    /// corners disabled → put the clean baseline back if our baked PNG is up.
+    /// Idempotent and state-driven, so it's safe to call from any situation:
+    /// launch, settings change, pane close, screen change, external change.
+    func sync() {
         guard !externalChangePending else { return }
+        var staleDisplays: Set<String> = []
         for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen),
-                  let url = lastBakedURLs[uuid] else { continue }
-            Self.setWallpaper(url: url, for: screen)
+            guard let uuid = screen.uuid,
+                  let state = screens[uuid] else { continue }
+            let current = Self.wallpaperURL(for: screen)
+            let showsBake = current.map(Self.isMSGFile) ?? false
+            if bottomCornersWanted(for: screen, uuid: uuid) {
+                if !showsBake || bakedSignature[uuid] != signature(for: screen, uuid: uuid, state: state) {
+                    staleDisplays.insert(uuid)
+                }
+            } else if showsBake {
+                Self.setWallpaper(url: state.baselineURL, for: screen)
+                lastBakedURLs[uuid] = nil
+                bakedSignature[uuid] = nil
+            }
         }
+        if !staleDisplays.isEmpty { bake(displays: staleDisplays) }
+    }
+
+    /// Debounced sync for settings changes (menu toggles fire one change per
+    /// click; the pane suppresses this entirely via isEditing and bakes through
+    /// its own Apply flow).
+    func settingsChanged() {
+        settingsSyncItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.isEditing else { return }
+            self.sync()
+        }
+        settingsSyncItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
+    }
+
+    private func bottomCornersWanted(for screen: NSScreen, uuid: String) -> Bool {
+        guard settings.cornersEnabled else { return false }
+        return screen.isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
+    }
+
+    private func signature(for screen: NSScreen, uuid: String, state: ScreenState) -> String {
+        let radius = screen.isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        return [
+            state.baselineURL.path,
+            String(state.placement.rawValue),
+            String(describing: radius),
+            String(describing: screen.frame.size),
+            String(describing: screen.backingScaleFactor),
+        ].joined(separator: "|")
     }
 
     // MARK: - Screen change
 
-    /// Fetches baseline for any newly connected display and re-bakes.
+    /// Fetches baseline for any newly connected display and reconciles.
     private func handleScreenChange() {
-        var changed = false
-        for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen) else { continue }
-            if screens[uuid] != nil { continue }
-            guard let url = Self.wallpaperURL(for: screen),
-                  !Self.isMSGFile(url: url) else { continue }
-            screens[uuid] = ScreenState(baselineURL: url, placement: Self.readPlacement(for: screen))
-            changed = true
-        }
-        if changed { persistBaselines(); bake() }
+        fetchMissingDisplays()
+        sync()
     }
 
     // MARK: - Fetch
 
     /// Captures the current desktop wallpaper as the baking baseline.
-    /// Only call when corner radius is 0 (to avoid capturing an already-cornered image).
+    /// Merges per display: a display whose desktop currently shows an MSG-baked
+    /// PNG can't be captured and keeps its existing baseline instead of being
+    /// dropped from monitoring.
     func fetch() {
-        var captured: [String: ScreenState] = [:]
-
+        var changed = false
         for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen) else { continue }
+            guard let uuid = screen.uuid else { continue }
             guard let url = Self.wallpaperURL(for: screen),
                   FileManager.default.fileExists(atPath: url.path),
                   !Self.isMSGFile(url: url) else { continue }
             let placement = Self.readPlacement(for: screen)
-            captured[uuid] = ScreenState(baselineURL: url, placement: placement)
+            screens[uuid] = ScreenState(baselineURL: url, placement: placement)
+            changed = true
         }
 
-        guard !captured.isEmpty else { return }
+        guard changed else { return }
         externalChangePending = false  // user acknowledged the change by re-snapshotting
-        screens = captured
         persistBaselines()
     }
 
-    /// When the desktop URL points to a non-existent file (e.g. a stale MSG-baked PNG
-    /// left over from a crash), the engine can't capture a baseline. Reset to a system
-    /// thumbnail so fetch() has a valid file to work with.
+    /// Captures a baseline only for displays that don't have one yet.
+    /// Unlike fetch(), never overwrites an existing baseline.
+    private func fetchMissingDisplays() {
+        var changed = false
+        for screen in NSScreen.screens {
+            guard let uuid = screen.uuid, screens[uuid] == nil else { continue }
+            guard let url = Self.wallpaperURL(for: screen),
+                  FileManager.default.fileExists(atPath: url.path),
+                  !Self.isMSGFile(url: url) else { continue }
+            screens[uuid] = ScreenState(baselineURL: url, placement: Self.readPlacement(for: screen))
+            changed = true
+        }
+        if changed { persistBaselines() }
+    }
+
+    /// When a display has no usable baseline and its desktop URL is either a
+    /// non-existent file or a leftover MSG-baked PNG (crash, deleted baseline),
+    /// the engine has nothing clean to capture. Reset to a system picture so
+    /// fetchMissingDisplays() has a valid file to work with.
     private func recoverBrokenDesktopIfNeeded() {
         let thumbDir = URL(fileURLWithPath: "/System/Library/Desktop Pictures/.thumbnails")
         let solidDir = URL(fileURLWithPath: "/System/Library/Desktop Pictures/Solid Colors")
 
         for screen in NSScreen.screens {
-            guard let url = Self.wallpaperURL(for: screen),
-                  !FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard let uuid = screen.uuid, let url = Self.wallpaperURL(for: screen) else { continue }
+            let missing = !FileManager.default.fileExists(atPath: url.path)
+            let orphanedBake = screens[uuid] == nil && Self.isMSGFile(url: url)
+            guard missing || orphanedBake else { continue }
 
             if let files = try? FileManager.default.contentsOfDirectory(
                 at: thumbDir, includingPropertiesForKeys: [.isRegularFileKey]
@@ -206,60 +300,80 @@ final class WallpaperEngine {
 
     // MARK: - Bake
 
-    /// Applies corner masks to the cached baseline wallpapers and sets them as the desktop.
-    func bake() {
+    private struct BakeJob {
+        let screen: NSScreen
+        let uuid: String
+        let sourceURL: URL
+        let placement: Placement
+        let radius: CGFloat
+        let signature: String
+        let toggle: Bool
+    }
+
+    /// Applies corner masks to the cached baseline wallpapers and sets them as
+    /// the desktop. Only bakes displays whose bottom corners are enabled —
+    /// restricted further to `displays` when given, so reconciling one display
+    /// doesn't churn the others. Jobs are snapshotted on the main thread so the
+    /// render queue never touches shared state.
+    func bake(displays: Set<String>? = nil) {
         guard !externalChangePending else { return }
+
+        var jobs: [BakeJob] = []
+        for screen in NSScreen.screens {
+            guard let uuid = screen.uuid,
+                  displays?.contains(uuid) ?? true,
+                  var state = screens[uuid],
+                  bottomCornersWanted(for: screen, uuid: uuid) else { continue }
+            state.toggle.toggle()
+            screens[uuid] = state
+            let radius = screen.isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+            jobs.append(BakeJob(
+                screen: screen, uuid: uuid,
+                sourceURL: state.baselineURL, placement: state.placement,
+                radius: radius,
+                signature: signature(for: screen, uuid: uuid, state: state),
+                toggle: state.toggle
+            ))
+        }
+        guard !jobs.isEmpty else { return }
+
         bakeItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.performBake()
+            self?.performBake(jobs)
         }
         bakeItem = item
         queue.async(execute: item)
     }
 
-    private func performBake() {
-        var jobs: [(NSScreen, String, URL, Placement)] = []
-
-        for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen),
-                  let state = screens[uuid] else { continue }
-            jobs.append((screen, uuid, state.baselineURL, state.placement))
-        }
-
-        guard !jobs.isEmpty else { return }
-
-        for (screen, uuid, sourceURL, placement) in jobs {
+    private func performBake(_ jobs: [BakeJob]) {
+        for job in jobs {
             guard !(bakeItem?.isCancelled ?? true) else { return }
-            guard let cg = Self.loadImage(url: sourceURL) else { continue }
-            guard let ctx = Self.createContext(for: screen) else { continue }
+            guard let cg = Self.loadImage(url: job.sourceURL) else { continue }
+            guard let ctx = Self.createContext(for: job.screen) else { continue }
 
             let w = CGFloat(ctx.width)
             let h = CGFloat(ctx.height)
             let drawRect = Self.wallpaperDrawRect(
                 imageSize: CGSize(width: cg.width, height: cg.height),
                 screenPixelSize: CGSize(width: w, height: h),
-                placement: placement
+                placement: job.placement
             )
             ctx.draw(cg, in: drawRect)
 
-            let isBuiltin = screen.isBuiltin
-            let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
-            if bottomEnabled {
-                let radius = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
-                let r = radius * screen.backingScaleFactor
-                ctx.setFillColor(CGColor.black)
-                Self.fillCorner(ctx: ctx, x: 0,          y: 0, r: r, dx:  1, dy:  1)
-                Self.fillCorner(ctx: ctx, x: CGFloat(w), y: 0, r: r, dx: -1, dy:  1)
-            }
+            let r = job.radius * job.screen.backingScaleFactor
+            ctx.setFillColor(CGColor.black)
+            Self.fillCorner(ctx: ctx, x: 0,          y: 0, r: r, dx:  1, dy:  1)
+            Self.fillCorner(ctx: ctx, x: CGFloat(w), y: 0, r: r, dx: -1, dy:  1)
 
             guard let out = ctx.makeImage() else { continue }
-            let (outURL, _) = Self.exportPNG(image: out, uuid: uuid, toggle: &screens[uuid]!.toggle)
+            let (outURL, _) = Self.exportPNG(image: out, uuid: job.uuid, toggle: job.toggle)
             guard let outURL else { continue }
 
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.screens[uuid]?.baselineURL == sourceURL else { return }
-                Self.setWallpaper(url: outURL, for: screen)
-                self.lastBakedURLs[uuid] = outURL
+                guard let self, self.screens[job.uuid]?.baselineURL == job.sourceURL else { return }
+                Self.setWallpaper(url: outURL, for: job.screen)
+                self.lastBakedURLs[job.uuid] = outURL
+                self.bakedSignature[job.uuid] = job.signature
             }
         }
     }
@@ -282,7 +396,7 @@ final class WallpaperEngine {
         // hand the slow work off to the utility queue.
         var jobs: [(NSScreen, URL)] = []
         for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen),
+            guard let uuid = screen.uuid,
                   let url = lastBakedURLs[uuid] else { continue }
             jobs.append((screen, url))
         }
@@ -304,18 +418,38 @@ final class WallpaperEngine {
     }
 
     private func checkForExternalChange() {
-        guard !externalChangePending, !isMissionControlActive else { return }
+        guard !isMissionControlActive else { return }
+
+        // A pending change left over from the pane (closed without resolving,
+        // or detected while it was open) gets adopted as soon as editing ends.
+        if externalChangePending {
+            if !isEditing { adoptExternalWallpaper() }
+            return
+        }
+
         for screen in NSScreen.screens {
-            guard let uuid = Self.screenUUID(screen),
+            guard let uuid = screen.uuid,
                   let state = screens[uuid] else { continue }
             guard let cur = Self.wallpaperURL(for: screen) else { continue }
 
             if !Self.isMSGFile(url: cur), cur != state.baselineURL {
                 externalChangePending = true
-                onExternalChange?()
+                if isEditing {
+                    // Pane is open: show the confirmation card, let the user decide.
+                    onExternalChange?()
+                } else {
+                    // Nobody is editing: the new wallpaper is the new baseline.
+                    adoptExternalWallpaper()
+                }
                 return
             }
         }
+    }
+
+    /// Re-snapshots the externally changed wallpaper and re-applies corners to it.
+    private func adoptExternalWallpaper() {
+        fetch()   // clears externalChangePending
+        sync()
     }
 
     // MARK: - Persistence
@@ -357,7 +491,7 @@ final class WallpaperEngine {
             // MSG wasn't running). Discard it so we fall through to fetch().
             var stale = false
             for screen in NSScreen.screens {
-                if Self.screenUUID(screen) == entry.uuid,
+                if screen.uuid == entry.uuid,
                    let curURL = Self.wallpaperURL(for: screen),
                    !Self.isMSGFile(url: curURL),
                    curURL.path != entry.path {
@@ -382,6 +516,10 @@ final class WallpaperEngine {
 
     static func wallpaperURL(for screen: NSScreen) -> URL? {
         if let url = NSWorkspace.shared.desktopImageURL(for: screen) { return url }
+        // The AppleScript fallback can only address "desktop 1" (the primary
+        // display) — never use it for other screens or we'd read the wrong
+        // display's wallpaper.
+        guard screen == NSScreen.screens.first else { return nil }
         let src = "tell application \"System Events\" to get picture of desktop 1"
         if let r = NSAppleScript(source: src)?.executeAndReturnError(nil).stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -395,12 +533,15 @@ final class WallpaperEngine {
         do {
             try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
         } catch {
+            // "desktop 1" is the primary display; for any other screen the
+            // fallback would overwrite the primary's wallpaper — skip instead.
+            guard screen == NSScreen.screens.first else { return }
             let src = "tell application \"System Events\" to set picture of desktop 1 to \"\(url.path)\""
             _ = NSAppleScript(source: src)?.executeAndReturnError(nil)
         }
         // Best-effort: propagate to all spaces in the Dock DB so other spaces pick up
         // the baked wallpaper without needing the user to visit them first.
-        if let uuid = screenUUID(screen) {
+        if let uuid = screen.uuid {
             DispatchQueue.global(qos: .background).async {
                 propagateToAllSpacesInDB(url: url, displayUUID: uuid)
             }
@@ -435,7 +576,7 @@ final class WallpaperEngine {
     // MARK: - Placement
 
     static func readPlacement(for screen: NSScreen) -> Placement {
-        guard let uuid = screenUUID(screen) else { return .fill }
+        guard let uuid = screen.uuid else { return .fill }
         let db = NSHomeDirectory() + "/Library/Application Support/Dock/desktoppicture.db"
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
@@ -495,10 +636,11 @@ final class WallpaperEngine {
 
     static let signature = "MSG-Wallpaper-Signature-v1"
 
-    static func exportPNG(image: CGImage, uuid: String, toggle: inout Bool) -> (URL?, URL?) {
+    /// `toggle` selects the a/b output filename; the caller advances it before
+    /// baking so the desktop never has its current file rewritten in place.
+    static func exportPNG(image: CGImage, uuid: String, toggle: Bool) -> (URL?, URL?) {
         let dir = wallpaperDir()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        toggle.toggle()
         let outURL = dir.appendingPathComponent("\(uuid)_\(toggle ? "a" : "b").png")
         let altURL = dir.appendingPathComponent("\(uuid)_\(toggle ? "b" : "a").png")
         guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, "public.png" as CFString, 1, nil)
@@ -545,10 +687,4 @@ final class WallpaperEngine {
             .first!.appendingPathComponent("MSG/Wallpapers")
     }
 
-    static func screenUUID(_ screen: NSScreen) -> String? {
-        guard let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-              let u = CGDisplayCreateUUIDFromDisplayID(dID),
-              let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
-        return s
-    }
 }

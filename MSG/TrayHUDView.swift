@@ -34,6 +34,14 @@ struct TrayHUDView: View {
             searchField
             rowHeader("Active", count: "\(state.filteredActive.count) apps")
             activeTiles
+            if !state.filteredHidden.isEmpty {
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(height: 1)
+                    .padding(.vertical, 2)
+                rowHeader("Hidden", count: "\(state.filteredHidden.count) apps")
+                hiddenTiles
+            }
             Rectangle()
                 .fill(Color(nsColor: .separatorColor))
                 .frame(height: 1)
@@ -111,6 +119,21 @@ struct TrayHUDView: View {
         }
     }
 
+    private var hiddenTiles: some View {
+        let apps = state.filteredHidden
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 14)],
+                         alignment: .leading, spacing: 10) {
+            ForEach(0..<apps.count, id: \.self) { i in
+                TrayTileView(app: apps[i],
+                             selected: state.selection == .hidden(i),
+                             size: 72,
+                             showName: false,
+                             onHover: { self.state.selection = .hidden(i) },
+                             onActivate: { self.state.activateSelection() })
+            }
+        }
+    }
+
     // MARK: Now Playing card
 
     private var nowPlayingCard: some View {
@@ -169,11 +192,13 @@ struct TrayHUDView: View {
                 Text("· \(state.previewImages.count) window\(state.previewImages.count == 1 ? "" : "s")")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
 
-                WindowPreviewGrid(
-                    images: state.previewImages,
-                    fallback: app.icon,
-                    onTap: { state.activateWindowPreview(at: $0) }
-                )
+                ScrollView(.vertical, showsIndicators: false) {
+                    WindowPreviewGrid(
+                        images: state.previewImages,
+                        fallback: app.icon,
+                        onTap: { state.activateWindowPreview(at: $0) }
+                    )
+                }
             } else {
                 Spacer()
                 Text("Nothing to show")
@@ -289,6 +314,8 @@ private struct WindowPreviewGrid: View {
     let fallback: NSImage?
     let onTap: (Int) -> Void
 
+    @State private var hoveredIndex: Int? = nil
+
     // column frame(280) minus padding(20)×2
     private let cw: CGFloat = 240
     private let gap: CGFloat = 4
@@ -302,7 +329,7 @@ private struct WindowPreviewGrid: View {
             placeholder
         } else {
             VStack(alignment: .leading, spacing: gap) {
-                thumb(images[0], index: 0, w: cw, maxH: 200, radius: 7)
+                thumb(images[0], index: 0, w: cw, radius: 7)
 
                 let rest = Array(images.dropFirst().prefix(4))
                 if !rest.isEmpty {
@@ -319,28 +346,30 @@ private struct WindowPreviewGrid: View {
                 let i0 = row * 2
                 let i1 = i0 + 1
                 let tw: CGFloat = i1 < imgs.count ? (cw - gap) / 2 : cw
-                thumb(imgs[i0], index: i0 + 1, w: tw, maxH: 110, radius: 5)
+                thumb(imgs[i0], index: i0 + 1, w: tw, radius: 5)
                 if i1 < imgs.count {
-                    thumb(imgs[i1], index: i1 + 1, w: tw, maxH: 110, radius: 5)
+                    thumb(imgs[i1], index: i1 + 1, w: tw, radius: 5)
                 }
             }
         }
     }
 
-    // Always fills `w` exactly. If natural height exceeds maxH, crops top/bottom (.fill).
-    // For landscape windows (the common case) naturalH ≤ maxH so no cropping occurs.
-    private func thumb(_ img: NSImage, index: Int, w: CGFloat, maxH: CGFloat, radius: CGFloat) -> some View {
-        let naturalH = w / ar(img)
-        let h = min(naturalH, maxH)
-        let mode: ContentMode = naturalH > maxH ? .fill : .fit
+    // Always fits the image perfectly to its natural aspect ratio at width w.
+    private func thumb(_ img: NSImage, index: Int, w: CGFloat, radius: CGFloat) -> some View {
+        let h = w / ar(img)
+        let isHovered = hoveredIndex == index
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return Image(nsImage: img)
             .resizable()
-            .aspectRatio(contentMode: mode)
+            .aspectRatio(contentMode: .fit)
             .frame(width: w, height: h)
             .clipShape(shape)
             .background(shape.fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+            .overlay(shape.strokeBorder(
+                isHovered ? Color.white.opacity(0.75) : Color(nsColor: .separatorColor),
+                lineWidth: 1
+            ))
+            .onHover { hovering in hoveredIndex = hovering ? index : nil }
             .onTapGesture { onTap(index) }
     }
 

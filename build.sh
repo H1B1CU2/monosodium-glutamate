@@ -29,7 +29,9 @@ swiftc \
     AppDelegate.swift \
     MissionControlDetector.swift \
     SettingsMenu.swift \
+    Displaplacer.swift \
     MusicMonitor.swift \
+    MediaRemoteAdapter.swift \
     MusicPopover.swift \
     SettingsWindow.swift \
     WallpaperEngine.swift \
@@ -37,6 +39,9 @@ swiftc \
     TrayPanel.swift \
     TrayHUDView.swift \
     TrayPane.swift \
+    Shared.swift \
+    SettingsPanes.swift \
+    SettingsPreviews.swift \
     -o "$MACOS/$APP_NAME" \
     -sdk "$(xcrun --show-sdk-path)" \
     -target arm64-apple-macos13.0 \
@@ -49,6 +54,11 @@ swiftc \
     -F/System/Library/PrivateFrameworks \
     -framework MediaRemote \
     -O
+
+echo "▸ Building MediaRemote helper dylib..."
+clang -dynamiclib MediaRemoteHelper.m \
+    -o "$RESOURCES/libMSGMediaRemote.dylib" \
+    -framework Foundation -fobjc-arc -O2
 
 echo "▸ Copying Info.plist..."
 cp Info.plist "$CONTENTS/Info.plist"

@@ -447,19 +447,6 @@ private final class TouchPad: NSView {
         icon.layer?.setAffineTransform(CGAffineTransform(translationX: opticalX(for: name), y: 0))
     }
 
-    private func showHint(_ name: String, progress: CGFloat) {
-        guard let icon = iconView else { return }
-        feedbackTimer?.invalidate()
-        icon.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-
-        let direction = accumX > 0 ? CGFloat(1) : CGFloat(-1)
-        lastHorizontalDirection = direction
-
-        let slideOffset: CGFloat = 120 * (1 - progress) * -direction + opticalX(for: name)
-        icon.alphaValue = progress * 0.40
-        icon.layer?.setAffineTransform(CGAffineTransform(translationX: slideOffset, y: 0))
-    }
-
     private func flashIcon(_ name: String) {
         guard let icon = iconView else { return }
         feedbackTimer?.invalidate()

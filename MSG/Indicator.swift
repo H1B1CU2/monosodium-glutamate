@@ -23,7 +23,6 @@ final class Indicator {
 
     var onStatusBarClicked: (() -> Void)?
     var onMCStateChanged: (() -> Void)?
-    var onMCEnter: (() -> Void)?
 
     /// When > now, music display suppressed (space change cooldown)
     private var musicSuppressUntil: TimeInterval = 0
@@ -75,7 +74,6 @@ final class Indicator {
     var animRowMorphFromStacked: Bool = false
     var animRowMorphFromCount: Int = 1
     private var animRowMorphTimer: Timer?
-    private var animRowMorphPending: DispatchWorkItem?
 
     var animFocusProgress: CGFloat = 1.0
     var animFocusOldDisplay: Int = -1
@@ -94,12 +92,12 @@ final class Indicator {
 
     // MARK: Init
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, musicMonitor: MusicMonitor) {
         self.settings = settings
         self.systemState = SystemState()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.spaceWatcher = SpaceWatcher()
-        self.musicMonitor = MusicMonitor(settings: settings)
+        self.musicMonitor = musicMonitor
         self.renderer = IndicatorRenderer(settings: settings, statusItem: statusItem)
         self.musicPopover = MusicPopover(monitor: musicMonitor)
     }
@@ -137,11 +135,10 @@ final class Indicator {
         }
         spaceWatcher.start()
 
-        musicMonitor.onChange = { [weak self] in
-            guard let self else { return }
-            self.refresh()
+        // MusicMonitor is owned and started by AppDelegate; just observe it.
+        musicMonitor.addObserver { [weak self] in
+            self?.refresh()
         }
-        musicMonitor.start()
 
         systemState.didStabilize = { [weak self] in
             self?.spaceWatcher.isInMissionControl = false
@@ -154,7 +151,6 @@ final class Indicator {
             WallpaperEngine.shared.isMissionControlActive = true
             self?.spaceWatcher.cancelChaseReads()
             self?.killAllAnimations()
-            self?.onMCEnter?()
         }
         systemState.onChange = { [weak self] in self?.onMCStateChanged?() }
         systemState.start()
@@ -216,17 +212,10 @@ final class Indicator {
     private func startLingerMorph() {
         guard musicLingerMorphTimer == nil else { return }
         musicLingerMorphProgress = 0
-        let morphStartTime = CACurrentMediaTime()
-        musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.musicLingerMorphProgress = min(1.0, CGFloat((CACurrentMediaTime() - morphStartTime) / 0.267))
-            if self.musicLingerMorphProgress >= 1.0 {
-                self.musicLingerMorphProgress = 1.0
-                t.invalidate(); self.musicLingerMorphTimer = nil
-            }
-            self.refresh()
-        }
-        if let t = musicLingerMorphTimer { RunLoop.current.add(t, forMode: .common) }
+        musicLingerMorphTimer = runProgressTimer(interval: 0.016, duration: 0.267, commonModes: true, onTick: { me, p in
+            me.musicLingerMorphProgress = p
+            me.refresh()
+        }, onDone: { me in me.musicLingerMorphTimer = nil })
     }
 
     private func startReverseMorph() {
@@ -310,7 +299,6 @@ final class Indicator {
         animLayoutProgress = 1.0
 
         animRowMorphTimer?.invalidate(); animRowMorphTimer = nil
-        animRowMorphPending?.cancel(); animRowMorphPending = nil
         animRowMorphProgress = 1.0
 
         animFocusTimer?.invalidate(); animFocusTimer = nil
@@ -355,8 +343,6 @@ final class Indicator {
         stopVisualizer()
         refresh()
     }
-
-    func setFocusedUUID(_ uuid: String?) { spaceWatcher.currentFocusedUUID = uuid }
 
     // MARK: - Computed
 
@@ -589,6 +575,27 @@ final class Indicator {
 
     // MARK: - Animations
 
+    /// Drives a forward 0→1 progress animation on a main-thread Timer (the
+    /// established design — see CLAUDE.md, deliberately not CVDisplayLink).
+    /// `onTick` receives clamped progress every frame; `onDone` runs once at 1.
+    private func runProgressTimer(
+        interval: TimeInterval = 1.0 / 60.0,
+        duration: TimeInterval,
+        commonModes: Bool = false,
+        onTick: @escaping (Indicator, CGFloat) -> Void,
+        onDone: @escaping (Indicator) -> Void = { _ in }
+    ) -> Timer {
+        let start = CACurrentMediaTime()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let p = min(1.0, CGFloat((CACurrentMediaTime() - start) / duration))
+            onTick(self, p)
+            if p >= 1.0 { t.invalidate(); onDone(self) }
+        }
+        RunLoop.current.add(timer, forMode: commonModes ? .common : .default)
+        return timer
+    }
+
     private func startPillAnimation(info: SpaceInfo, displayIndex: Int, from oldSpace: Int, to newSpace: Int) {
         animSpacePillTimer?.invalidate()
         spaceWatcher.cancelChaseReads()
@@ -709,47 +716,37 @@ final class Indicator {
         animLayoutMorphNewW = renderer.targetWidth(for: new, stackIndicators: stackIndicators)
         previousLayoutDisplays = old
         animLayoutProgress = 0
-        let startTime = CACurrentMediaTime()
-        animLayoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            self.animLayoutProgress = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / 0.4))
-            if self.animLayoutProgress >= 1.0 { self.animLayoutProgress = 1.0; t.invalidate(); self.animLayoutTimer = nil }
-            self.refresh()
-        }
+        animLayoutTimer = runProgressTimer(duration: 0.4, onTick: { me, p in
+            me.animLayoutProgress = p
+            me.refresh()
+        }, onDone: { me in me.animLayoutTimer = nil })
     }
 
     private func startRowMorph(fromCount: Int, fromStacked: Bool) {
-        let capFromCount = fromCount; let capFromStacked = fromStacked
-        animRowMorphPending?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.animRowMorphTimer?.invalidate()
-            self.animRowMorphFromCount = capFromCount
-            self.animRowMorphFromStacked = capFromStacked
-            self.animRowMorphProgress = 0.0
-            let startTime = CACurrentMediaTime()
-            self.animRowMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-                guard let self else { return }
-                self.animRowMorphProgress = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / 0.32))
-                if self.animRowMorphProgress >= 1.0 { self.animRowMorphProgress = 1.0; t.invalidate() }
-                self.refresh(); self.statusItem.button?.display()
-            }
-        }
-        animRowMorphPending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        // Start immediately and synchronously (like startLayoutMorph): the trigger in
+        // refresh() guards on animRowMorphProgress, so setting it to 0 here makes the
+        // very next render in this same refresh pass draw the *old* layout, and the
+        // morph plays forward from it. The previous 0.3s debounce delay caused the
+        // frame to snap to the new layout, hold, then jump back to morph from the start.
+        animRowMorphTimer?.invalidate()
+        animRowMorphFromCount = fromCount
+        animRowMorphFromStacked = fromStacked
+        animRowMorphProgress = 0.0
+        animRowMorphTimer = runProgressTimer(interval: 0.016, duration: 0.4, onTick: { me, p in
+            me.animRowMorphProgress = p
+            me.refresh(); me.statusItem.button?.display()
+        })
     }
 
     private func startFocusAnimation(from: Int, to: Int) {
         animFocusTimer?.invalidate()
         animFocusOldDisplay = from; animFocusNewDisplay = to; animFocusProgress = 0.0
-        let startTime = CACurrentMediaTime()
-        animFocusTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
-            guard let self else { return }
-            self.animFocusProgress = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / 0.25))
-            if self.animFocusProgress >= 1.0 { self.animFocusProgress = 1.0; t.invalidate()
-                self.animFocusOldDisplay = -1; self.animFocusNewDisplay = -1 }
-            self.refresh()
-        }
+        animFocusTimer = runProgressTimer(interval: 0.016, duration: 0.25, onTick: { me, p in
+            me.animFocusProgress = p
+            me.refresh()
+        }, onDone: { me in
+            me.animFocusOldDisplay = -1; me.animFocusNewDisplay = -1
+        })
     }
 
     // MARK: - Grid
@@ -764,7 +761,7 @@ final class Indicator {
         var above: [(Int, CGFloat)] = []; var below: [(Int, CGFloat)] = []
         var left:  [(Int, CGFloat)] = []; var right: [(Int, CGFloat)] = []
         for (screenIdx, screen) in screens.enumerated() {
-            guard let uuid = Self.screenUUID(screen), let di = uuidToDisplayIndex[uuid] else { continue }
+            guard let uuid = screen.uuid, let di = uuidToDisplayIndex[uuid] else { continue }
             if screenIdx == 0 { mainIdx = di; continue }
             let f = screen.frame, b = builtIn.frame
             if f.minY >= b.maxY       { above.append((di, f.minX)) }
@@ -788,43 +785,24 @@ final class Indicator {
 
     func gridDimensions(for rows: [GridRow]) -> GridDims {
         let imgH = statusItem.button?.bounds.height ?? 22
-        let dotD: CGFloat = 4, pillW: CGFloat = 18, pillH: CGFloat = 4, sp: CGFloat = 4, rowH: CGFloat = 8, gap: CGFloat = 1
+        let dotD: CGFloat = 3.5, pillW: CGFloat = 18, pillH: CGFloat = 4, sp: CGFloat = 4, rowH: CGFloat = 8, gap: CGFloat = 1
         let neededH = CGFloat(rows.count) * rowH + CGFloat(rows.count - 1) * gap
         if neededH > imgH {
             let scale = (imgH - CGFloat(rows.count - 1) * gap) / (CGFloat(rows.count) * rowH)
-            return GridDims(dotD: max(3, round(dotD * scale)), pillW: max(6, round(pillW * scale)),
+            return GridDims(dotD: max(2, round(dotD * scale)), pillW: max(6, round(pillW * scale)),
                             pillH: max(2, round(pillH * scale)), sp: max(2, round(sp * scale)),
                             rowH: max(4, round(rowH * scale)), gap: gap)
         }
         return GridDims(dotD: dotD, pillW: pillW, pillH: pillH, sp: sp, rowH: rowH, gap: gap)
     }
 
-    static func screenUUID(_ screen: NSScreen) -> String? {
-        guard let dID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-              let u = CGDisplayCreateUUIDFromDisplayID(dID),
-              let s = CFUUIDCreateString(nil, u.takeRetainedValue()) as String? else { return nil }
-        return s
-    }
-
-    private func currentScreenRefreshRate() -> Double {
-        guard let screen = NSScreen.main else { return 60.0 }
-        let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
-        if displayID != 0, let mode = CGDisplayCopyDisplayMode(displayID) {
-            let rate = mode.refreshRate
-            return rate > 0 ? rate : 120.0
-        }
-        return 60.0
-    }
 }
 
 // MARK: - Easing
 
 enum Easing {
-    static func outCubic(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 3) }
     static func outQuart(_ t: CGFloat) -> CGFloat { 1 - pow(1 - t, 4) }
     static func inOutQuart(_ t: CGFloat) -> CGFloat { t < 0.5 ? 8 * t * t * t * t : 1 - pow(-2 * t + 2, 4) / 2 }
-    static func inOutCubic(_ t: CGFloat) -> CGFloat { t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2 }
-    static func outExpo(_ t: CGFloat) -> CGFloat { t == 1 ? 1 : 1 - pow(2, -10 * t) }
     static func spring(_ t: CGFloat) -> CGFloat {
         if t <= 0 { return 0 }
         if t >= 1 { return 1 }

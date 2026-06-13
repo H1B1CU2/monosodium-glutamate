@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import ScreenCaptureKit
 
 // MARK: - Models
@@ -17,6 +18,7 @@ struct TrayApp: Identifiable, Equatable {
 
 enum TraySelection: Equatable {
     case active(Int)
+    case hidden(Int)
     case pinned(Int)
     case none
 }
@@ -25,6 +27,7 @@ enum TraySelection: Equatable {
 
 final class TrayState: ObservableObject {
     @Published var activeApps:  [TrayApp] = []
+    @Published var hiddenApps:  [TrayApp] = []
     @Published var pinnedApps:  [TrayApp] = []
     @Published var search:      String    = ""
     @Published var selection:   TraySelection = .none
@@ -43,15 +46,20 @@ final class TrayState: ObservableObject {
     private var musicMonitor: MusicMonitor?
     private var cancellables = Set<AnyCancellable>()
 
+    private var hiddenAppIDs: Set<String> = []
     var filteredActive: [TrayApp] {
-        let base = search.isEmpty ? activeApps : activeApps.filter { matches($0) }
-        // Desktop apps first, then rest — maintain MRU order within each group
+        let base = (search.isEmpty ? activeApps : activeApps.filter { matches($0) })
+            .filter { !hiddenAppIDs.contains($0.id) }
         return base.sorted { a, b in
             let aDesktop = desktopAppIDs.contains(a.id)
             let bDesktop = desktopAppIDs.contains(b.id)
             if aDesktop != bDesktop { return aDesktop }
             return base.firstIndex(of: a) ?? 0 < base.firstIndex(of: b) ?? 0
         }
+    }
+    var filteredHidden: [TrayApp] {
+        let base = hiddenApps.filter { !desktopAppIDs.contains($0.id) }
+        return search.isEmpty ? base : base.filter { matches($0) }
     }
     var filteredPinned: [TrayApp] {
         let activeIDs = Set(activeApps.map(\.id))
@@ -61,6 +69,7 @@ final class TrayState: ObservableObject {
     var previewedApp: TrayApp? {
         switch selection {
         case .active(let i): return filteredActive.indices.contains(i) ? filteredActive[i] : nil
+        case .hidden(let i): return filteredHidden.indices.contains(i) ? filteredHidden[i] : nil
         case .pinned(let i): return filteredPinned.indices.contains(i) ? filteredPinned[i] : nil
         case .none: return nil
         }
@@ -70,12 +79,18 @@ final class TrayState: ObservableObject {
         self.settings = settings
         self.musicMonitor = musicMonitor
         tracker.onChange = { [weak self] apps in
-            DispatchQueue.main.async { self?.activeApps = apps }
+            DispatchQueue.main.async {
+                self?.activeApps = apps
+                self?.updatePlayingStatuses()
+            }
         }
         pins.onChange = { [weak self] apps in
-            DispatchQueue.main.async { self?.pinnedApps = apps }
+            DispatchQueue.main.async {
+                self?.pinnedApps = apps
+                self?.updatePlayingStatuses()
+            }
         }
-        musicMonitor.onChange = { [weak self] in
+        musicMonitor.addObserver { [weak self] in
             guard let self, let m = self.musicMonitor else { return }
             DispatchQueue.main.async {
                 self.isNowPlaying      = m.isPlaying
@@ -83,11 +98,7 @@ final class TrayState: ObservableObject {
                 self.nowPlayingArtist  = m.currentArtist
                 self.nowPlayingSource  = m.currentSource
                 self.albumArt         = m.albumArt
-                self.activeApps = self.activeApps.map { app in
-                    var copy = app
-                    copy.isPlaying = (m.currentSource?.lowercased().contains(app.name.lowercased()) == true) && m.isPlaying
-                    return copy
-                }
+                self.updatePlayingStatuses()
             }
         }
 
@@ -97,6 +108,24 @@ final class TrayState: ObservableObject {
                 if #available(macOS 14.0, *) { self?.capturePreviewImages() }
             }
             .store(in: &cancellables)
+    }
+
+    private func updatePlayingStatuses() {
+        guard let m = musicMonitor else { return }
+        let updatePlaying: (TrayApp) -> TrayApp = { app in
+            var copy = app
+            let sourceMatches: Bool
+            if let sourceBID = m.currentSourceBundleID {
+                sourceMatches = (sourceBID.lowercased() == app.id.lowercased())
+            } else {
+                sourceMatches = (m.currentSource?.lowercased().contains(app.name.lowercased()) == true)
+            }
+            copy.isPlaying = sourceMatches && m.isPlaying
+            return copy
+        }
+        self.activeApps = self.activeApps.map(updatePlaying)
+        self.hiddenApps = self.hiddenApps.map(updatePlaying)
+        self.pinnedApps = self.pinnedApps.map(updatePlaying)
     }
 
     // MARK: - Window preview capture
@@ -115,29 +144,64 @@ final class TrayState: ObservableObject {
 
     @available(macOS 14.0, *)
     private static func captureWindowsSCK(pid: pid_t) async -> [NSImage] {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(
+        // First try ScreenCaptureKit for on-screen windows
+        if let content = try? await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true
-        ) else { return [] }
-
-        let windows = content.windows
-            .filter {
+        ) {
+            let onScreen = content.windows.filter {
                 $0.owningApplication?.processID == Int32(pid) &&
                 $0.windowLayer == 0 &&
                 $0.frame.width >= 200 && $0.frame.height >= 100
             }
-            .sorted { $0.frame.width * $0.frame.height > $1.frame.width * $1.frame.height }
+            if !onScreen.isEmpty {
+                var images: [NSImage] = []
+                for win in onScreen.sorted(by: { $0.frame.width * $0.frame.height > $1.frame.width * $1.frame.height }).prefix(3) {
+                    let filter = SCContentFilter(desktopIndependentWindow: win)
+                    let scale = CGFloat(filter.pointPixelScale)
+                    let cfg = SCStreamConfiguration()
+                    cfg.width  = max(1, Int(filter.contentRect.width  * scale))
+                    cfg.height = max(1, Int(filter.contentRect.height * scale))
+                    cfg.ignoreShadowsSingleWindow = true
+                    cfg.showsCursor = false
+                    cfg.scalesToFit = true
+                    cfg.preservesAspectRatio = true
+                    if let cg = try? await SCScreenshotManager.captureImage(
+                        contentFilter: filter, configuration: cfg
+                    ) {
+                        images.append(NSImage(cgImage: cg, size: filter.contentRect.size))
+                    }
+                }
+                if !images.isEmpty { return images }
+            }
+        }
+        // Fallback: CGWindowList for off-screen / other-space windows
+        return captureWindowsCG(pid: pid)
+    }
+
+    private static func captureWindowsCG(pid: pid_t) -> [NSImage] {
+        guard let list = CGWindowListCopyWindowInfo([.excludeDesktopElements],
+                                                     kCGNullWindowID) as? [[String: Any]] else { return [] }
+        let infos = list.compactMap { info -> (CGWindowID, CGFloat, CGFloat)? in
+            guard let wPid = info[kCGWindowOwnerPID as String] as? pid_t, wPid == pid,
+                  let wID = info[kCGWindowNumber as String] as? CGWindowID,
+                  let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+                  let width  = bounds["Width"]  as? CGFloat,
+                  let height = bounds["Height"] as? CGFloat,
+                  width >= 200, height >= 100
+            else { return nil }
+            return (wID, width, height)
+        }
+        .sorted { $0.1 * $0.2 > $1.1 * $1.2 }
+
+        typealias Creator = @convention(c) (CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption) -> CGImage?
+        let sym = dlsym(dlopen(nil, RTLD_LAZY), "CGWindowListCreateImage")
+        let create = unsafeBitCast(sym, to: Creator.self)
 
         var images: [NSImage] = []
-        for win in windows.prefix(3) {
-            guard win.frame.width > 0, win.frame.height > 0 else { continue }
-            let filter = SCContentFilter(desktopIndependentWindow: win)
-            let cfg = SCStreamConfiguration()
-            cfg.width  = max(1, Int(win.frame.width  * 2))
-            cfg.height = max(1, Int(win.frame.height * 2))
-            if let cg = try? await SCScreenshotManager.captureImage(
-                contentFilter: filter, configuration: cfg
-            ) {
-                images.append(NSImage(cgImage: cg, size: win.frame.size))
+        for (wID, _, _) in infos.prefix(3) {
+            if let cg = create(.null, .optionIncludingWindow, wID, [.boundsIgnoreFraming, .bestResolution]) {
+                images.append(NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width), height: CGFloat(cg.height))))
             }
         }
         return images
@@ -154,6 +218,7 @@ final class TrayState: ObservableObject {
         tracker.reload()
         pins.reload(dockSync: settings.trayDockSync)
         refreshDesktopApps()
+        refreshHiddenApps()
     }
 
     private func refreshDesktopApps() {
@@ -175,12 +240,62 @@ final class TrayState: ObservableObject {
         desktopAppIDs = Set(bids)
     }
 
+    private func refreshHiddenApps() {
+        // Apps with windows but none visible: Cmd+H hidden or all minimized.
+        guard let all = CGWindowListCopyWindowInfo([.excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else {
+            hiddenApps = []
+            hiddenAppIDs = []
+            return
+        }
+        var allPIDs = Set<pid_t>()
+        for info in all {
+            if let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+               let layer = info[kCGWindowLayer as String] as? Int, layer == 0 {
+                allPIDs.insert(pid)
+            }
+        }
+        // Candidates: have windows but none visible
+        let candidates = NSWorkspace.shared.runningApplications
+            .filter { app in
+                guard let bid = app.bundleIdentifier else { return false }
+                return allPIDs.contains(app.processIdentifier)
+                    && !desktopAppIDs.contains(bid)
+            }
+        // Include if Cmd+H hidden or all windows AX-minimized
+        var hidden = Set<String>()
+        for app in candidates {
+            if app.isHidden || allWindowsMinimized(pid: app.processIdentifier) {
+                hidden.insert(app.bundleIdentifier ?? "")
+            }
+        }
+        hiddenAppIDs = hidden
+        hiddenApps = activeApps.filter { hiddenAppIDs.contains($0.id) }
+    }
+
+    private func allWindowsMinimized(pid: pid_t) -> Bool {
+        let axApp = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement],
+              !windows.isEmpty else { return false }
+        return windows.allSatisfy { win in
+            var mini: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &mini)
+            return (mini as? Bool) == true
+        }
+    }
+
     func resetSearch() { search = "" }
 
-    func defaultSelection() {
-        // Select index 1 (next-MRU) like the system switcher, fallback to 0
+    func defaultSelection(goBack: Bool = false) {
         let apps = filteredActive
-        selection = apps.count > 1 ? .active(1) : (apps.isEmpty ? .none : .active(0))
+        guard !apps.isEmpty else { selection = .none; return }
+        if goBack {
+            selection = .active(apps.count - 1)
+        } else {
+            selection = apps.count > 1 ? .active(1) : .active(0)
+        }
     }
 
     // MARK: - Keyboard navigation
@@ -292,10 +407,10 @@ final class TrayAppTracker {
     private func emit() {
         let running = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular }
-        let runningMap = Dictionary(uniqueKeysWithValues: running.compactMap { app -> (String, NSRunningApplication)? in
+        let runningMap = Dictionary(running.compactMap { app -> (String, NSRunningApplication)? in
             guard let bid = app.bundleIdentifier else { return nil }
             return (bid, app)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         // MRU-ordered, then any remaining running apps not yet in mruOrder
         var seen = Set<String>()
         var ordered: [TrayApp] = []

@@ -8,7 +8,10 @@ struct TrayPane: View {
     @ObservedObject var vm: SettingsViewModel
 
     var body: some View {
-        PaneContainer(section: .tray) {
+        PaneContainer(section: .tray, headerToggle: Binding(
+            get: { vm.trayEnabled },
+            set: { vm.trayEnabled = $0; NotificationCenter.default.post(name: .trayEnabledChanged, object: nil) }
+        )) {
             Section("Preview") {
                 TrayHUDPreview()
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -16,15 +19,11 @@ struct TrayPane: View {
             }
 
             Section {
-                Toggle("Replace ⌘⇥ with Tray",
-                       isOn: Binding(get: { vm.trayEnabled }, set: { vm.trayEnabled = $0 }))
-                    .onChange(of: vm.trayEnabled) { _ in
-                        NotificationCenter.default.post(name: .trayEnabledChanged, object: nil)
-                    }
+                Text("When enabled, Tray intercepts ⌘⇥ system-wide and shows the HUD. Requires Accessibility permission.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("Switcher")
-            } footer: {
-                Text("When enabled, Tray intercepts ⌘⇥ system-wide and shows the HUD. Requires Accessibility permission.")
             }
 
             Section("Pinned Apps") {
@@ -38,6 +37,16 @@ struct TrayPane: View {
             Section("Now Playing") {
                 Toggle("Show Now Playing card",
                        isOn: Binding(get: { vm.trayShowNowPlaying }, set: { vm.trayShowNowPlaying = $0 }))
+                if vm.trayShowNowPlaying {
+                    Picker("Source", selection: Binding(
+                        get: { vm.musicSource },
+                        set: { vm.musicSource = $0 }
+                    )) {
+                        ForEach(MusicSource.allCases, id: \.self) { source in
+                            Text(source.rawValue).tag(source)
+                        }
+                    }
+                }
             }
         }
     }
@@ -51,212 +60,212 @@ extension Notification.Name {
 
 @available(macOS 14.0, *)
 struct TrayHUDPreview: View {
-    private let refW: CGFloat = 660
-    private let refH: CGFloat = 300
+    private let refW: CGFloat = 700
+    private let refH: CGFloat = 430
 
     var body: some View {
+        // aspectRatio reserves exactly the scaled canvas height at any pane
+        // width (the old hardcoded-520pt math clipped or gapped the layout).
         GeometryReader { geo in
-            let scale = geo.size.width / refW
             TrayHUDCanvas()
                 .frame(width: refW, height: refH)
-                .scaleEffect(scale, anchor: .topLeading)
-                .frame(width: geo.size.width, height: refH * scale, alignment: .topLeading)
+                .scaleEffect(geo.size.width / refW, anchor: .topLeading)
         }
-        .frame(height: previewHeight)
-    }
-
-    private var previewHeight: CGFloat {
-        // Compute based on typical settings pane content width (~520pt)
-        let availW: CGFloat = 520
-        return refH * (availW / refW)
+        .aspectRatio(refW / refH, contentMode: .fit)
     }
 }
 
-// Fixed-size canvas drawn at refW × refH, then scaled by TrayHUDPreview
+// Fixed-size canvas drawn at refW × refH, then scaled by TrayHUDPreview.
+// Mirrors TrayHUDView's real layout (same tiles, metrics and dark scheme)
+// with sample data, so the preview stays honest about what ⌘⇥ shows.
 @available(macOS 14.0, *)
 private struct TrayHUDCanvas: View {
 
-    private let sampleActive = [
-        ("Fo", "Finder",   false),
-        ("Sa", "Safari",   false),
-        ("VS", "VS Code",  false),
-        ("Fg", "Figma",    false),
-        ("#",  "Slack",    false),
-        ("♪",  "Music",    true ),
-    ]
+    private static func sampleApp(_ bundleID: String, _ name: String, playing: Bool = false) -> TrayApp {
+        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) }
+        return TrayApp(id: bundleID, name: name, icon: icon, pid: 0, badge: nil, isPlaying: playing)
+    }
 
-    private let samplePinned = [
-        ("N",  "Notes"  ),
-        ("✓",  "Things" ),
-        ("🔑", "1Pass"  ),
-        ("L",  "Linear" ),
-        ("R",  "Raycast"),
+    private let active: [TrayApp] = [
+        sampleApp("com.apple.finder", "Finder"),
+        sampleApp("com.apple.Safari", "Safari"),
+        sampleApp("com.apple.Notes", "Notes"),
+        sampleApp("com.apple.Music", "Music", playing: true),
+    ]
+    private let hidden: [TrayApp] = [
+        sampleApp("com.apple.Terminal", "Terminal"),
+        sampleApp("com.apple.Preview", "Preview"),
+    ]
+    private let pinned: [TrayApp] = [
+        sampleApp("com.apple.mail", "Mail"),
+        sampleApp("com.apple.iCal", "Calendar"),
+        sampleApp("com.apple.Photos", "Photos"),
     ]
 
     var body: some View {
         ZStack {
-            // HUD background
             RoundedRectangle(cornerRadius: 16)
                 .fill(.thickMaterial)
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
 
             HStack(alignment: .top, spacing: 0) {
-                leftColumn.padding(14)
+                leftColumn
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(20)
 
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color(nsColor: .separatorColor))
                     .frame(width: 1)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 12)
 
                 rightColumn
-                    .frame(width: 184)
-                    .padding(14)
+                    .padding(20)
+                    .frame(width: 280, alignment: .topLeading)
             }
         }
+        .environment(\.colorScheme, .dark)
         .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
     }
 
-    // MARK: Left column
+    // MARK: Left column (matches TrayHUDView.leftColumn)
 
     private var leftColumn: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            // Search pill
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 9)).foregroundStyle(.secondary)
-                Text("switch to…").font(.system(size: 10)).foregroundStyle(.quaternary)
-                Spacer()
-                Text("type to filter · ⎋ clear")
-                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(.quaternary)
-            }
-            .padding(.vertical, 5).padding(.horizontal, 10)
-            .background(Color.primary.opacity(0.06), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+        VStack(alignment: .leading, spacing: 10) {
+            searchPill
+            rowHeader("Active", count: "\(active.count) apps")
+            tileRow(active, selectedIndex: 1)
+            divider
+            rowHeader("Hidden", count: "\(hidden.count) apps")
+            tileRow(hidden, selectedIndex: nil)
+            divider
+            rowHeader("Dock", count: "\(pinned.count) apps")
+            tileRow(pinned, selectedIndex: nil)
+        }
+    }
 
-            previewRowHeader("Active", count: "6 apps")
+    private var searchPill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+            Text("switch to…")
+                .font(.system(size: 13)).foregroundStyle(.tertiary)
+            Spacer()
+            Text("type to filter · ⎋ clear")
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 6).padding(.horizontal, 12)
+        .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+    }
 
-            // Active tiles
-            HStack(spacing: 8) {
-                ForEach(sampleActive.indices, id: \.self) { i in
-                    let (abbr, name, playing) = sampleActive[i]
-                    previewTile(abbr: abbr, name: name, highlighted: i == 1,
-                                showName: false, playing: playing, size: 48)
-                }
-            }
-
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
-
-            previewRowHeader("Dock", count: "5 apps")
-
-            // Dock tiles
-            HStack(spacing: 6) {
-                ForEach(samplePinned.indices, id: \.self) { i in
-                    let (abbr, name) = samplePinned[i]
-                    previewTile(abbr: abbr, name: name, highlighted: false,
-                                showName: false, playing: false, size: 44)
-                }
+    private func tileRow(_ apps: [TrayApp], selectedIndex: Int?) -> some View {
+        HStack(spacing: 14) {
+            ForEach(apps.indices, id: \.self) { i in
+                TrayTileView(app: apps[i],
+                             selected: i == selectedIndex,
+                             size: 72,
+                             showName: false)
             }
         }
     }
 
-    // MARK: Right column
+    private var divider: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(height: 1)
+            .padding(.vertical, 2)
+    }
+
+    private func rowHeader(_ title: String, count: String) -> some View {
+        HStack(spacing: 4) {
+            Text(title).font(.system(size: 13, weight: .semibold))
+            Text("· \(count)").font(.system(size: 13)).foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    // MARK: Right column (matches TrayHUDView.rightColumn)
 
     private var rightColumn: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("PREVIEW")
-                .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .tracking(1).foregroundStyle(.tertiary)
             Text("Safari")
-                .font(.system(size: 15, weight: .semibold))
-            Text("apple.com · 2 windows")
-                .font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary)
+                .font(.system(size: 20, weight: .semibold))
+            Text("· 2 windows")
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
 
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.primary.opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
-                .frame(height: 100)
-
+            windowThumb(height: 140, radius: 7, icon: active[1].icon)
             HStack(spacing: 4) {
-                ForEach(0..<2, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.primary.opacity(0.06))
-                        .overlay(RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
-                        .frame(height: 46)
+                windowThumb(height: 70, radius: 5)
+                windowThumb(height: 70, radius: 5)
+            }
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: 1)
+                .padding(.vertical, 4)
+
+            nowPlayingCard
+        }
+    }
+
+    private func windowThumb(height: CGFloat, radius: CGFloat, icon: NSImage? = nil) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return Color(nsColor: .controlBackgroundColor)
+            .overlay(
+                Group {
+                    if let icon {
+                        Image(nsImage: icon).resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 48).opacity(0.3)
+                    }
+                }
+            )
+            .frame(height: height)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+    }
+
+    private var nowPlayingCard: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let icon = active[3].icon {
+                    Image(nsImage: icon).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color(nsColor: .controlBackgroundColor)
+                        .overlay(Image(systemName: "music.note")
+                            .font(.system(size: 18)).foregroundStyle(.secondary))
                 }
             }
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            HStack(spacing: 4) {
-                previewChip("⏎ activate")
-                previewChip("⌘W close")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Midnight City")
+                    .font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text("M83")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
             }
-            previewChip("→ next win")
 
-            nowPlayingPreviewCard
-        }
-    }
-
-    private var nowPlayingPreviewCard: some View {
-        HStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1))
-                .frame(width: 28, height: 28)
-                .overlay(Image(systemName: "music.note").font(.system(size: 12)).foregroundStyle(.secondary))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Midnight City").font(.system(size: 9, weight: .semibold)).lineLimit(1)
-                Text("M83").font(.system(size: 8)).foregroundStyle(.secondary)
-            }
             Spacer()
-            HStack(spacing: 4) {
-                Text("⏮").font(.system(size: 9)).foregroundStyle(.secondary)
-                Text("⏸").font(.system(size: 9)).foregroundStyle(.secondary)
-                Text("⏭").font(.system(size: 9)).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(Color.primary.opacity(0.05), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-    }
 
-    // MARK: Helpers
-
-    private func previewRowHeader(_ title: String, count: String) -> some View {
-        HStack(spacing: 3) {
-            Text(title).font(.system(size: 10, weight: .semibold))
-            Text("· \(count)").font(.system(size: 10)).foregroundStyle(.secondary)
-            Spacer()
-        }
-    }
-
-    private func previewTile(abbr: String, name: String, highlighted: Bool,
-                              showName: Bool = true, playing: Bool, size: CGFloat) -> some View {
-        VStack(spacing: 2) {
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: size * 0.22)
-                    .fill(Color.primary.opacity(0.1))
-                    .frame(width: size, height: size)
-                Text(abbr).font(.system(size: size * 0.3, weight: .medium)).lineLimit(1)
-
-                if playing {
-                    Circle().fill(Color.green)
-                        .frame(width: 6, height: 6)
-                        .offset(x: 2, y: size - 8)
+            HStack(spacing: 2) {
+                ForEach([8, 12, 6, 10], id: \.self) { h in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(.white.opacity(0.9))
+                        .frame(width: 2, height: CGFloat(h))
                 }
             }
-            .frame(width: size + 4, height: size + 4)
-            .scaleEffect(highlighted ? 1.1 : 1.0)
-
-            if showName {
-                Text(name).font(.system(size: 8)).lineLimit(1).frame(maxWidth: size + 10)
-            }
+            .frame(height: 14)
         }
-    }
-
-    private func previewChip(_ label: String) -> some View {
-        Text(label)
-            .font(.system(size: 7, design: .monospaced)).foregroundStyle(.secondary)
-            .padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Color.primary.opacity(0.06), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 }

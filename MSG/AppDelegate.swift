@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         musicMonitor = MusicMonitor(settings: settings)
         musicMonitor.start()
 
-        indicator = Indicator(settings: settings)
+        indicator = Indicator(settings: settings, musicMonitor: musicMonitor)
         indicator.start()
 
         WallpaperEngine.shared.start()
@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch category {
             case .corners:
                 self.redrawCornerWindows()
+                WallpaperEngine.shared.settingsChanged()
             case .indicator:
                 self.indicator.applySettings()
                 self.applyFocusDetectionMode()
@@ -87,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.rebuildCornerWindows()
                 self.applyDockIcon()
                 self.indicator.spaceWatcher.updateInfo()
+                WallpaperEngine.shared.settingsChanged()
             }
         }
 
@@ -149,12 +151,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard allowTermination else { return .terminateCancel }
+        if !allowTermination {
+            // System-initiated termination (logout, shutdown, killall). Never
+            // block it — clean up the wallpaper best-effort and let it through.
+            // restore() is idempotent, so the requestQuit path isn't affected.
+            WallpaperEngine.shared.restore()
+            DisplaplacerEngine.reconnectAll()
+        }
         return .terminateNow
     }
 
     @objc func requestQuit() {
         WallpaperEngine.shared.restore()
+        DisplaplacerEngine.reconnectAll()
         allowTermination = true
         NSApp.terminate(nil)
     }
@@ -319,7 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func screenUUID(at point: NSPoint) -> String? {
-        Indicator.screenUUID(NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.screens[0])
+        (NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.screens[0]).uuid
     }
 
     private func requestAccessibilityIfNeeded() {
