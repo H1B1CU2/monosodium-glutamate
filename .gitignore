@@ -3,6 +3,7 @@ build/
 .build/
 *.swp
 *.swo
+*.o
 xcuserdata/
 *.xcuserstate
 .claude/settings.local.json

@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var indicator: Indicator!
     private var settingsMenu: SettingsMenu!
     private var musicMonitor: MusicMonitor!
+    private var hardwareMonitor: HardwareMonitor!
+    private var hardwareStatusItem: HardwareStatusItem?
+    private var systemHUDMonitor: SystemHUDMonitor?
     private var _trayPanel: AnyObject?   // TrayPanel on macOS 14+
 
     @available(macOS 14.0, *)
@@ -18,6 +21,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let p = TrayPanel(state: state)
         _trayPanel = p
         return p
+    }
+
+    private var _dockHover: AnyObject?   // DockHoverController on macOS 14+
+
+    @available(macOS 14.0, *)
+    private var dockHover: DockHoverController {
+        if let c = _dockHover as? DockHoverController { return c }
+        let c = DockHoverController(settings: settings)
+        _dockHover = c
+        return c
     }
 
     // MARK: - Corner windows
@@ -31,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var arrangementPollSource: DispatchSourceTimer?
     private var previousScreenFrames: [CGRect] = []
     private var previousVisibleFrames: [CGRect] = []
+    private var appearanceObserver: NSKeyValueObservation?
 
     // MARK: - Launch
 
@@ -38,17 +52,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         requestAccessibilityIfNeeded()
 
+        if #available(macOS 10.14, *) {
+            appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { _, _ in
+                let isDark = NSApp.effectiveAppearance.name == .darkAqua
+                NSApp.applicationIconImage = isDark ? NSImage(named: "AppIcon-Dark") : nil
+            }
+        }
+
         musicMonitor = MusicMonitor(settings: settings)
+
         musicMonitor.start()
+
+        hardwareMonitor = HardwareMonitor.shared
+        hardwareMonitor.start()
+        if settings.hardwareStatsEnabled {
+            hardwareStatusItem = HardwareStatusItem()
+        }
 
         indicator = Indicator(settings: settings, musicMonitor: musicMonitor)
         indicator.start()
+
+        applySystemHUD()
 
         WallpaperEngine.shared.start()
 
         if #available(macOS 14.0, *), settings.trayEnabled {
             trayPanel.registerHotkey()
             trayPanel.state.prepare()
+        }
+
+        if #available(macOS 14.0, *), settings.dockPreviewEnabled {
+            dockHover.start()
         }
 
         NotificationCenter.default.addObserver(forName: .trayEnabledChanged, object: nil, queue: .main) { [weak self] _ in
@@ -58,6 +92,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.trayPanel.state.prepare()
             } else {
                 self.trayPanel.unregisterHotkey()
+            }
+        }
+
+        NotificationCenter.default.addObserver(forName: .dockPreviewChanged, object: nil, queue: .main) { [weak self] _ in
+            guard #available(macOS 14.0, *), let self else { return }
+            if self.settings.dockPreviewEnabled {
+                self.dockHover.start()
+            } else {
+                self.dockHover.stop()
             }
         }
 
@@ -89,6 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.applyDockIcon()
                 self.indicator.spaceWatcher.updateInfo()
                 WallpaperEngine.shared.settingsChanged()
+                self.applyHardwareStats()
+                self.applySystemHUD()
             }
         }
 
@@ -161,7 +206,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateNow
     }
 
+    private func applyHardwareStats() {
+        let s = settings
+        if s.hardwareStatsEnabled {
+            if hardwareStatusItem == nil {
+                hardwareStatusItem = HardwareStatusItem()
+            }
+            if let bv = hardwareStatusItem?.barView {
+                bv.showCPU    = s.hardwareStatsShowCPU
+                bv.showGPU    = s.hardwareStatsShowGPU
+                bv.showMemory = s.hardwareStatsShowMemory
+                bv.showTemp   = s.hardwareStatsShowTemp
+                bv.showFPS       = s.hardwareStatsShowFPS
+                bv.showFan       = s.hardwareStatsShowFan
+                bv.barStyle      = s.hardwareStatsBarStyle
+                bv.labelPosition = s.hardwareStatsLabelPos
+                bv.updateSize()
+                hardwareMonitor.updateInterval(s.hardwareStatsInterval)
+            }
+        } else {
+            hardwareStatusItem?.remove()
+            hardwareStatusItem = nil
+        }
+    }
+
+    private func applySystemHUD() {
+        if settings.systemHUDEnabled {
+            if systemHUDMonitor == nil {
+                let monitor = SystemHUDMonitor(settings: settings)
+                monitor.onChange = { [weak self] kind, value, muted in
+                    self?.indicator.showSystemHUD(kind: kind, value: value, muted: muted)
+                }
+                systemHUDMonitor = monitor
+            }
+            systemHUDMonitor?.start()
+        } else {
+            systemHUDMonitor?.stop()
+            systemHUDMonitor = nil
+        }
+    }
+
     @objc func requestQuit() {
+        systemHUDMonitor?.stop()
+        hardwareStatusItem?.remove()
         WallpaperEngine.shared.restore()
         DisplaplacerEngine.reconnectAll()
         allowTermination = true
