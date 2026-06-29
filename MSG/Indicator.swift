@@ -54,6 +54,18 @@ final class Indicator {
     private var musicPopover: MusicPopover?
     private var previousDisplaysForSuppression: [SpaceInfo.DisplayInfo]?
 
+    // MARK: System HUD (volume / brightness overlay)
+
+    /// When active, the status item is taken over by the volume/brightness bar
+    /// and `refresh()` returns early so observers can't clobber it.
+    private var systemHUDActive = false
+    private var systemHUDKind: SystemHUDKind = .volume
+    private var systemHUDMuted = false
+    private var systemHUDValue: CGFloat = 0     // animated, currently drawn
+    private var systemHUDTarget: CGFloat = 0
+    private var systemHUDFillTimer: Timer?
+    private var systemHUDExpireTimer: Timer?
+
     // MARK: Animation state
 
     var animSpacePillProgress: CGFloat = 1.0
@@ -64,6 +76,9 @@ final class Indicator {
     private var animSpacePillCapturedGrid: [GridRow] = []
     private var animSpacePillTimer: Timer?
     private var preRenderedPillFrames: [NSImage]?
+    /// Seconds to hold on the old space before the next space-change animation
+    /// advances, so its start isn't hidden behind the music→indicator fade-in.
+    private var pillStartHoldDelay: TimeInterval = 0
 
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
@@ -254,7 +269,12 @@ final class Indicator {
             }
             self.lastMusicTitle = nil
             self.lastMusicArtist = nil
+            // Returning to the space indicator: a space change may have happened
+            // while music was showing. Hold the start of that animation until the
+            // fade-in below finishes, otherwise its beginning is masked by the fade.
+            if !toMusic { self.pillStartHoldDelay = 0.25 }
             self.refresh()
+            self.pillStartHoldDelay = 0
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.25
                 self.statusItem.button?.animator().alphaValue = 1
@@ -294,6 +314,7 @@ final class Indicator {
         animSpacePillOldActive = 0; animSpacePillNewActive = 0
         animSpacePillCaptured = nil
         preRenderedPillFrames = nil
+        pillStartHoldDelay = 0
 
         animLayoutTimer?.invalidate(); animLayoutTimer = nil
         animLayoutProgress = 1.0
@@ -374,6 +395,9 @@ final class Indicator {
     // MARK: - Refresh
 
     func refresh() {
+        // The volume/brightness HUD owns the status item while it's up.
+        if systemHUDActive { return }
+
         let spacerOn = settings.spacerEnabled
         let musicOn = settings.musicEnabled
 
@@ -565,7 +589,7 @@ final class Indicator {
         }
 
         let finalLen = max(24, naturalW)
-        let pad: CGFloat = 4
+        let pad: CGFloat = 2
         let lenToSet = finalLen + pad * 2
         if abs(lenToSet - lastSetLength) > 0.1 {
             lastSetLength = lenToSet
@@ -614,7 +638,7 @@ final class Indicator {
         let duration: TimeInterval = base * (1.0 + Double(distance - 1) * k)
         let interval: TimeInterval = 1.0 / 60.0
         let useSpring = style == .liquid
-        let startTime = CACurrentMediaTime()
+        let startTime = CACurrentMediaTime() + pillStartHoldDelay
 
         // Single-pass frame renderer: bakes focus into the frame at call time.
         let renderFrame: (CGFloat, Int) -> NSImage? = { [weak self] raw, focusIdx in
@@ -648,7 +672,17 @@ final class Indicator {
 
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            let raw = min(1.0, CGFloat((CACurrentMediaTime() - startTime) / duration))
+            let elapsed = CACurrentMediaTime() - startTime
+            // Hold on the old space (progress 0, full opacity) until the swap
+            // fade-in completes, so the animation's start is actually visible.
+            if elapsed < 0 {
+                self.animSpacePillProgress = 0
+                if let img = renderFrame(0, self.spaceWatcher.currentInfo.activeDisplayIndex) {
+                    self.statusItem.button?.image = img
+                }
+                return
+            }
+            let raw = min(1.0, CGFloat(elapsed / duration))
             self.animSpacePillProgress = raw
 
             if raw >= 1.0 {
@@ -746,6 +780,109 @@ final class Indicator {
             me.refresh()
         }, onDone: { me in
             me.animFocusOldDisplay = -1; me.animFocusNewDisplay = -1
+        })
+    }
+
+    // MARK: - System HUD
+
+    /// Show (or update) the volume/brightness bar. On first entry it crossfades
+    /// in over whatever was showing; subsequent calls animate the fill to the new
+    /// value. Auto-dismisses ~1.5s after the last change, like the native OSD.
+    func showSystemHUD(kind: SystemHUDKind, value: CGFloat, muted: Bool) {
+        let v = max(0, min(1, value))
+        let wasActive = systemHUDActive
+        systemHUDKind = kind
+        systemHUDMuted = muted
+        systemHUDTarget = v
+        statusItem.isVisible = true
+
+        if !wasActive {
+            systemHUDActive = true
+            systemHUDValue = v
+            // Stop anything else that writes button.image.
+            animSpacePillTimer?.invalidate(); animSpacePillTimer = nil
+            animSpacePillDisplay = -1
+            preRenderedPillFrames = nil
+            musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
+            stopVisualizer()
+            renderSystemHUD()
+            if let button = statusItem.button {
+                button.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.18
+                    button.animator().alphaValue = 1
+                }
+            }
+        } else {
+            animateSystemHUDFill()
+        }
+        resetSystemHUDExpire()
+    }
+
+    private func animateSystemHUDFill() {
+        systemHUDFillTimer?.invalidate()
+        let start = systemHUDValue
+        let delta = systemHUDTarget - start
+        guard abs(delta) > 0.0001 else {
+            systemHUDValue = systemHUDTarget
+            renderSystemHUD()
+            return
+        }
+        systemHUDFillTimer = runProgressTimer(interval: 1.0 / 60.0, duration: 0.18, commonModes: true, onTick: { me, p in
+            me.systemHUDValue = start + delta * Easing.outQuart(p)
+            me.renderSystemHUD()
+        }, onDone: { me in
+            me.systemHUDFillTimer = nil
+            me.systemHUDValue = me.systemHUDTarget
+            me.renderSystemHUD()
+        })
+    }
+
+    private func renderSystemHUD() {
+        guard systemHUDActive, let button = statusItem.button else { return }
+        button.title = ""
+        button.attributedTitle = NSAttributedString()
+        let frame = renderer.makeSystemHUDFrame(kind: systemHUDKind, value: systemHUDValue, muted: systemHUDMuted)
+        button.image = frame
+        let len = frame.size.width + 4
+        if abs(len - lastSetLength) > 0.1 {
+            lastSetLength = len
+            statusItem.length = len
+        }
+    }
+
+    private func resetSystemHUDExpire() {
+        systemHUDExpireTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
+            self?.dismissSystemHUD()
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        systemHUDExpireTimer = timer
+    }
+
+    private func dismissSystemHUD() {
+        systemHUDExpireTimer?.invalidate(); systemHUDExpireTimer = nil
+        systemHUDFillTimer?.invalidate(); systemHUDFillTimer = nil
+        guard let button = statusItem.button else {
+            systemHUDActive = false
+            refresh()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            button.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            self.systemHUDActive = false
+            self.lastSetLength = 0          // force length recompute on restore
+            self.refresh()
+            if let b = self.statusItem.button {
+                b.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.2
+                    b.animator().alphaValue = 1
+                }
+            }
         })
     }
 

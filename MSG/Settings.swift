@@ -98,8 +98,32 @@ final class AppSettings {
         static let trayEnabled              = "trayEnabled"
         static let trayDockSync             = "trayDockSync"
         static let trayShowNowPlaying       = "trayShowNowPlaying"
+        static let dockPreviewEnabled       = "dockPreviewEnabled"
+        static let dockPreviewHoverDelay    = "dockPreviewHoverDelay"
+        static let dockPreviewThumbHeight   = "dockPreviewThumbHeight"
+        static let dockPreviewOffset        = "dockPreviewOffset"
         static let displaplacerPresets      = "displaplacerPresets"
         static let displaplacerEnabled      = "displaplacerEnabled"
+        static let menuBarSpacing           = "menuBarSpacing"
+        static let menuBarSpacingPadding    = "menuBarSpacingPadding"
+        static let showDeveloper            = "showDeveloper"
+        static let hardwareStatsEnabled        = "hardwareStatsEnabled"
+        static let hardwareStatsShowCPU        = "hardwareStatsShowCPU"
+        static let hardwareStatsShowGPU        = "hardwareStatsShowGPU"
+        static let hardwareStatsShowMemory     = "hardwareStatsShowMemory"
+        static let hardwareStatsShowTemp       = "hardwareStatsShowTemp"
+        static let hardwareStatsShowFPS        = "hardwareStatsShowFPS"
+        static let hardwareStatsShowFan         = "hardwareStatsShowFan"
+        static let hardwareStatsFanPreset      = "hardwareStatsFanPreset"
+        static let hardwareStatsFanCurves      = "hardwareStatsFanCurves"
+        static let hardwareStatsBarStyle       = "hardwareStatsBarStyle"
+        static let hardwareStatsLabelPos       = "hardwareStatsLabelPos"
+        static let hardwareStatsInterval       = "hardwareStatsInterval"
+        static let hardwareStatsTempSensor     = "hardwareStatsTempSensor"
+        static let hardwareStatsMemMode        = "hardwareStatsMemMode"
+        static let systemHUDEnabled            = "systemHUDEnabled"
+        static let systemHUDVolume             = "systemHUDVolume"
+        static let systemHUDBrightness         = "systemHUDBrightness"
     }
 
     static let shared = AppSettings()
@@ -202,8 +226,34 @@ final class AppSettings {
     var trayEnabled: Bool            { didSet { save(); onChange?(.structural) } }
     var trayDockSync: Bool           { didSet { save() } }
     var trayShowNowPlaying: Bool     { didSet { save() } }
+    var dockPreviewEnabled: Bool     { didSet { save() } }
+    var dockPreviewHoverDelay: TimeInterval { didSet { save() } }
+    var dockPreviewThumbHeight: CGFloat { didSet { save() } }
+    var dockPreviewOffset: CGFloat   { didSet { save() } }
     var displaplacerEnabled: Bool { didSet { save(); onChange?(.structural) } }
     var displaplacerPresets: [DisplaplacerPreset] { didSet { save() } }
+    var menuBarSpacing: Int        { didSet { save() } }
+    var menuBarSpacingPadding: Int { didSet { save() } }
+    var showDeveloper: Bool        { didSet { save() } }
+    var hardwareStatsEnabled: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowCPU: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowGPU: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowMemory: Bool      { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowTemp: Bool        { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowFPS: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowFan: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsBarStyle: String      { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsLabelPos: String      { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsInterval: Double      { didSet { save() } }
+    var hardwareStatsTempSensor: String    { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsMemMode: String       { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsFanPreset: String    { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsFanCurves: [String: [[Double]]] { didSet { save(); onChange?(.structural) } }
+
+    // System HUD (replace native volume/brightness OSD)
+    var systemHUDEnabled: Bool    { didSet { save(); onChange?(.structural) } }
+    var systemHUDVolume: Bool     { didSet { save() } }
+    var systemHUDBrightness: Bool { didSet { save() } }
 
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
@@ -245,8 +295,36 @@ final class AppSettings {
             Key.trayEnabled:             true,
             Key.trayDockSync:            true,
             Key.trayShowNowPlaying:      true,
+            Key.dockPreviewEnabled:      true,
+            Key.dockPreviewHoverDelay:   TimeInterval(0.35),
+            Key.dockPreviewThumbHeight:  CGFloat(140),
+            Key.dockPreviewOffset:       CGFloat(0),
             Key.displaplacerEnabled:     true,
             Key.displaplacerPresets:     Data(),
+            Key.menuBarSpacing:          MenuBarSpacingManager.systemDefault,
+            Key.menuBarSpacingPadding:   MenuBarSpacingManager.systemDefault,
+            Key.showDeveloper:           false,
+            Key.hardwareStatsEnabled:       false,
+            Key.hardwareStatsShowCPU:       true,
+            Key.hardwareStatsShowGPU:       true,
+            Key.hardwareStatsShowMemory:    true,
+            Key.hardwareStatsShowTemp:      true,
+            Key.hardwareStatsShowFPS:       false,
+            Key.hardwareStatsShowFan:       false,
+            Key.hardwareStatsBarStyle:      "vertical",
+            Key.hardwareStatsLabelPos:      "vertical",
+            Key.hardwareStatsInterval:      2.0,
+            Key.hardwareStatsTempSensor:    "auto",
+            Key.hardwareStatsMemMode:       "pressure",
+            Key.hardwareStatsFanPreset:    "default",
+            Key.hardwareStatsFanCurves:    [
+                "silent":      [[30.0, 15.0], [50.0, 25.0], [65.0, 40.0], [80.0, 60.0], [95.0, 80.0]],
+                "performance": [[30.0, 30.0], [50.0, 50.0], [65.0, 70.0], [80.0, 85.0], [95.0, 100.0]],
+                "fullBlast":   [[0.0, 100.0], [100.0, 100.0]],
+            ],
+            Key.systemHUDEnabled:        false,
+            Key.systemHUDVolume:         true,
+            Key.systemHUDBrightness:     true,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -282,15 +360,45 @@ final class AppSettings {
         trayEnabled          = d.bool(forKey: Key.trayEnabled)
         trayDockSync         = d.object(forKey: Key.trayDockSync) as? Bool ?? true
         trayShowNowPlaying   = d.object(forKey: Key.trayShowNowPlaying) as? Bool ?? true
+        dockPreviewEnabled   = d.object(forKey: Key.dockPreviewEnabled) as? Bool ?? true
+        dockPreviewHoverDelay = d.object(forKey: Key.dockPreviewHoverDelay) as? Double ?? 0.35
+        dockPreviewThumbHeight = CGFloat(d.object(forKey: Key.dockPreviewThumbHeight) as? Double ?? 140)
+        dockPreviewOffset    = CGFloat(d.object(forKey: Key.dockPreviewOffset) as? Double ?? 0)
         if let data = d.data(forKey: Key.displaplacerPresets),
            let decoded = try? JSONDecoder().decode([DisplaplacerPreset].self, from: data) {
             displaplacerPresets = decoded
         } else { displaplacerPresets = [] }
         displaplacerEnabled  = d.object(forKey: Key.displaplacerEnabled) as? Bool ?? true
+        menuBarSpacing        = d.object(forKey: Key.menuBarSpacing) as? Int ?? MenuBarSpacingManager.systemDefault
+        menuBarSpacingPadding = d.object(forKey: Key.menuBarSpacingPadding) as? Int ?? MenuBarSpacingManager.systemDefault
+        showDeveloper         = d.object(forKey: Key.showDeveloper) as? Bool ?? false
+        hardwareStatsEnabled      = d.object(forKey: Key.hardwareStatsEnabled) as? Bool ?? false
+        hardwareStatsShowCPU      = d.object(forKey: Key.hardwareStatsShowCPU) as? Bool ?? true
+        hardwareStatsShowGPU      = d.object(forKey: Key.hardwareStatsShowGPU) as? Bool ?? true
+        hardwareStatsShowMemory   = d.object(forKey: Key.hardwareStatsShowMemory) as? Bool ?? true
+        hardwareStatsShowTemp     = d.object(forKey: Key.hardwareStatsShowTemp) as? Bool ?? true
+        hardwareStatsShowFPS      = d.object(forKey: Key.hardwareStatsShowFPS) as? Bool ?? false
+        hardwareStatsShowFan      = d.object(forKey: Key.hardwareStatsShowFan) as? Bool ?? false
+        hardwareStatsBarStyle     = d.string(forKey: Key.hardwareStatsBarStyle) ?? "vertical"
+        hardwareStatsLabelPos     = d.string(forKey: Key.hardwareStatsLabelPos) ?? "vertical"
+        hardwareStatsInterval     = d.object(forKey: Key.hardwareStatsInterval) as? Double ?? 2.0
+        hardwareStatsTempSensor   = d.string(forKey: Key.hardwareStatsTempSensor) ?? "auto"
+        hardwareStatsMemMode      = d.string(forKey: Key.hardwareStatsMemMode) ?? "pressure"
+        hardwareStatsFanPreset    = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
+        hardwareStatsFanCurves    = (try? JSONDecoder().decode([String: [[Double]]].self,
+                                       from: d.data(forKey: Key.hardwareStatsFanCurves) ?? Data()))
+                                    ?? [
+                                        "silent":      [[30, 15], [50, 25], [65, 40], [80, 60], [95, 80]],
+                                        "performance": [[30, 30], [50, 50], [65, 70], [80, 85], [95, 100]],
+                                        "fullBlast":   [[0, 100], [100, 100]],
+                                    ]
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
             fakeDisplays = decoded
         } else { fakeDisplays = [] }
+        systemHUDEnabled    = d.object(forKey: Key.systemHUDEnabled) as? Bool ?? false
+        systemHUDVolume     = d.object(forKey: Key.systemHUDVolume) as? Bool ?? true
+        systemHUDBrightness = d.object(forKey: Key.systemHUDBrightness) as? Bool ?? true
     }
 
     private func save() {
@@ -328,8 +436,34 @@ final class AppSettings {
         d.set(trayEnabled,                  forKey: Key.trayEnabled)
         d.set(trayDockSync,                 forKey: Key.trayDockSync)
         d.set(trayShowNowPlaying,           forKey: Key.trayShowNowPlaying)
+        d.set(dockPreviewEnabled,           forKey: Key.dockPreviewEnabled)
+        d.set(dockPreviewHoverDelay,        forKey: Key.dockPreviewHoverDelay)
+        d.set(Double(dockPreviewThumbHeight), forKey: Key.dockPreviewThumbHeight)
+        d.set(Double(dockPreviewOffset),    forKey: Key.dockPreviewOffset)
         d.set(displaplacerEnabled,          forKey: Key.displaplacerEnabled)
+        d.set(menuBarSpacing,               forKey: Key.menuBarSpacing)
+        d.set(menuBarSpacingPadding,        forKey: Key.menuBarSpacingPadding)
+        d.set(showDeveloper,                forKey: Key.showDeveloper)
+        d.set(hardwareStatsEnabled,          forKey: Key.hardwareStatsEnabled)
+        d.set(hardwareStatsShowCPU,          forKey: Key.hardwareStatsShowCPU)
+        d.set(hardwareStatsShowGPU,          forKey: Key.hardwareStatsShowGPU)
+        d.set(hardwareStatsShowMemory,       forKey: Key.hardwareStatsShowMemory)
+        d.set(hardwareStatsShowTemp,         forKey: Key.hardwareStatsShowTemp)
+        d.set(hardwareStatsShowFPS,          forKey: Key.hardwareStatsShowFPS)
+        d.set(hardwareStatsShowFan,          forKey: Key.hardwareStatsShowFan)
+        d.set(hardwareStatsBarStyle,         forKey: Key.hardwareStatsBarStyle)
+        d.set(hardwareStatsLabelPos,         forKey: Key.hardwareStatsLabelPos)
+        d.set(hardwareStatsInterval,         forKey: Key.hardwareStatsInterval)
+        d.set(hardwareStatsTempSensor,       forKey: Key.hardwareStatsTempSensor)
+        d.set(hardwareStatsMemMode,          forKey: Key.hardwareStatsMemMode)
+        d.set(hardwareStatsFanPreset,       forKey: Key.hardwareStatsFanPreset)
+        if let data = try? JSONEncoder().encode(hardwareStatsFanCurves) {
+            d.set(data, forKey: Key.hardwareStatsFanCurves)
+        }
         if let data = try? JSONEncoder().encode(displaplacerPresets) { d.set(data, forKey: Key.displaplacerPresets) }
         if let data = try? JSONEncoder().encode(fakeDisplays) { d.set(data, forKey: Key.fakeDisplays) }
+        d.set(systemHUDEnabled,    forKey: Key.systemHUDEnabled)
+        d.set(systemHUDVolume,     forKey: Key.systemHUDVolume)
+        d.set(systemHUDBrightness, forKey: Key.systemHUDBrightness)
     }
 }

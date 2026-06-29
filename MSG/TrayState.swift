@@ -25,6 +25,7 @@ enum TraySelection: Equatable {
 
 // MARK: - TrayState
 
+@available(macOS 14.0, *)
 final class TrayState: ObservableObject {
     @Published var activeApps:  [TrayApp] = []
     @Published var hiddenApps:  [TrayApp] = []
@@ -105,7 +106,7 @@ final class TrayState: ObservableObject {
         $selection
             .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
             .sink { [weak self] _ in
-                if #available(macOS 14.0, *) { self?.capturePreviewImages() }
+                self?.capturePreviewImages()
             }
             .store(in: &cancellables)
     }
@@ -138,73 +139,8 @@ final class TrayState: ObservableObject {
         }
         let pid = app.pid
         Task { @MainActor [weak self] in
-            self?.previewImages = await Self.captureWindowsSCK(pid: pid)
+            self?.previewImages = await WindowPreviewCapture.capture(pid: pid, maxWindows: 3).map(\.image)
         }
-    }
-
-    @available(macOS 14.0, *)
-    private static func captureWindowsSCK(pid: pid_t) async -> [NSImage] {
-        // First try ScreenCaptureKit for on-screen windows
-        if let content = try? await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: true
-        ) {
-            let onScreen = content.windows.filter {
-                $0.owningApplication?.processID == Int32(pid) &&
-                $0.windowLayer == 0 &&
-                $0.frame.width >= 200 && $0.frame.height >= 100
-            }
-            if !onScreen.isEmpty {
-                var images: [NSImage] = []
-                for win in onScreen.sorted(by: { $0.frame.width * $0.frame.height > $1.frame.width * $1.frame.height }).prefix(3) {
-                    let filter = SCContentFilter(desktopIndependentWindow: win)
-                    let scale = CGFloat(filter.pointPixelScale)
-                    let cfg = SCStreamConfiguration()
-                    cfg.width  = max(1, Int(filter.contentRect.width  * scale))
-                    cfg.height = max(1, Int(filter.contentRect.height * scale))
-                    cfg.ignoreShadowsSingleWindow = true
-                    cfg.showsCursor = false
-                    cfg.scalesToFit = true
-                    cfg.preservesAspectRatio = true
-                    if let cg = try? await SCScreenshotManager.captureImage(
-                        contentFilter: filter, configuration: cfg
-                    ) {
-                        images.append(NSImage(cgImage: cg, size: filter.contentRect.size))
-                    }
-                }
-                if !images.isEmpty { return images }
-            }
-        }
-        // Fallback: CGWindowList for off-screen / other-space windows
-        return captureWindowsCG(pid: pid)
-    }
-
-    private static func captureWindowsCG(pid: pid_t) -> [NSImage] {
-        guard let list = CGWindowListCopyWindowInfo([.excludeDesktopElements],
-                                                     kCGNullWindowID) as? [[String: Any]] else { return [] }
-        let infos = list.compactMap { info -> (CGWindowID, CGFloat, CGFloat)? in
-            guard let wPid = info[kCGWindowOwnerPID as String] as? pid_t, wPid == pid,
-                  let wID = info[kCGWindowNumber as String] as? CGWindowID,
-                  let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
-                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
-                  let width  = bounds["Width"]  as? CGFloat,
-                  let height = bounds["Height"] as? CGFloat,
-                  width >= 200, height >= 100
-            else { return nil }
-            return (wID, width, height)
-        }
-        .sorted { $0.1 * $0.2 > $1.1 * $1.2 }
-
-        typealias Creator = @convention(c) (CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption) -> CGImage?
-        let sym = dlsym(dlopen(nil, RTLD_LAZY), "CGWindowListCreateImage")
-        let create = unsafeBitCast(sym, to: Creator.self)
-
-        var images: [NSImage] = []
-        for (wID, _, _) in infos.prefix(3) {
-            if let cg = create(.null, .optionIncludingWindow, wID, [.boundsIgnoreFraming, .bestResolution]) {
-                images.append(NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width), height: CGFloat(cg.height))))
-            }
-        }
-        return images
     }
 
     // MARK: - Lifecycle
@@ -323,7 +259,7 @@ final class TrayState: ObservableObject {
     func activateSelection() {
         guard let app = previewedApp else { return }
         if let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first {
-            running.activate(options: [.activateIgnoringOtherApps])
+            running.activate(from: .current, options: [])
         } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id) {
             NSWorkspace.shared.open(url)
         }
@@ -333,7 +269,7 @@ final class TrayState: ObservableObject {
     func activateWindowPreview(at index: Int) {
         guard let app = previewedApp else { return }
         if let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first {
-            running.activate(options: [.activateIgnoringOtherApps])
+            running.activate(from: .current, options: [])
         }
         if app.pid > 0 { raiseAXWindow(pid: app.pid, at: index) }
         dismissAction?()

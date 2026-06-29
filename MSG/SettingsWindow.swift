@@ -123,25 +123,61 @@ final class SettingsViewModel: ObservableObject {
     var trayEnabled: Bool                    { get { s.trayEnabled }          set { s.trayEnabled = newValue;          objectWillChange.send() } }
     var trayDockSync: Bool                   { get { s.trayDockSync }         set { s.trayDockSync = newValue;         objectWillChange.send() } }
     var trayShowNowPlaying: Bool             { get { s.trayShowNowPlaying }   set { s.trayShowNowPlaying = newValue;   objectWillChange.send() } }
+    var dockPreviewEnabled: Bool             { get { s.dockPreviewEnabled }   set { s.dockPreviewEnabled = newValue;   objectWillChange.send() } }
+    var dockPreviewHoverDelay: TimeInterval  { get { s.dockPreviewHoverDelay } set { s.dockPreviewHoverDelay = newValue; objectWillChange.send() } }
+    var dockPreviewThumbHeight: CGFloat      { get { s.dockPreviewThumbHeight } set { s.dockPreviewThumbHeight = newValue; objectWillChange.send() } }
+    var dockPreviewOffset: CGFloat           { get { s.dockPreviewOffset } set { s.dockPreviewOffset = newValue; objectWillChange.send() } }
     var displaplacerEnabled: Bool { get { s.displaplacerEnabled } set { s.displaplacerEnabled = newValue; objectWillChange.send() } }
     var displaplacerPresets: [DisplaplacerPreset] { get { s.displaplacerPresets } set { s.displaplacerPresets = newValue; objectWillChange.send() } }
+    var menuBarSpacing: Int        { get { s.menuBarSpacing }        set { s.menuBarSpacing = newValue;        objectWillChange.send() } }
+    var menuBarSpacingPadding: Int { get { s.menuBarSpacingPadding } set { s.menuBarSpacingPadding = newValue; objectWillChange.send() } }
+    var systemHUDEnabled: Bool     { get { s.systemHUDEnabled }     set { s.systemHUDEnabled = newValue;     objectWillChange.send() } }
+    var systemHUDVolume: Bool      { get { s.systemHUDVolume }      set { s.systemHUDVolume = newValue;      objectWillChange.send() } }
+    var systemHUDBrightness: Bool  { get { s.systemHUDBrightness }  set { s.systemHUDBrightness = newValue;  objectWillChange.send() } }
+    var showDeveloper: Bool        { get { s.showDeveloper }        set { s.showDeveloper = newValue;        objectWillChange.send() } }
+    var hardwareStatsEnabled: Bool        { get { s.hardwareStatsEnabled }      set { s.hardwareStatsEnabled = newValue;      objectWillChange.send() } }
+    var hardwareStatsShowCPU: Bool        { get { s.hardwareStatsShowCPU }      set { s.hardwareStatsShowCPU = newValue;      objectWillChange.send() } }
+    var hardwareStatsShowGPU: Bool        { get { s.hardwareStatsShowGPU }      set { s.hardwareStatsShowGPU = newValue;      objectWillChange.send() } }
+    var hardwareStatsShowMemory: Bool     { get { s.hardwareStatsShowMemory }   set { s.hardwareStatsShowMemory = newValue;   objectWillChange.send() } }
+    var hardwareStatsShowTemp: Bool       { get { s.hardwareStatsShowTemp }     set { s.hardwareStatsShowTemp = newValue;     objectWillChange.send() } }
+    var hardwareStatsShowFPS: Bool        { get { s.hardwareStatsShowFPS }      set { s.hardwareStatsShowFPS = newValue;      objectWillChange.send() } }
+    var hardwareStatsShowFan: Bool        { get { s.hardwareStatsShowFan }      set { s.hardwareStatsShowFan = newValue;      objectWillChange.send() } }
+    var hardwareStatsBarStyle: String     { get { s.hardwareStatsBarStyle }     set { s.hardwareStatsBarStyle = newValue;     objectWillChange.send() } }
+    var hardwareStatsLabelPos: String     { get { s.hardwareStatsLabelPos }     set { s.hardwareStatsLabelPos = newValue;     objectWillChange.send() } }
+    var hardwareStatsInterval: Double     { get { s.hardwareStatsInterval }     set { s.hardwareStatsInterval = newValue;     objectWillChange.send() } }
+    var hardwareStatsTempSensor: String   { get { s.hardwareStatsTempSensor }   set { s.hardwareStatsTempSensor = newValue;   objectWillChange.send() } }
+    var hardwareStatsMemMode: String      { get { s.hardwareStatsMemMode }      set { s.hardwareStatsMemMode = newValue;      objectWillChange.send() } }
+    var hardwareStatsFanPreset: String   { get { s.hardwareStatsFanPreset }   set { s.hardwareStatsFanPreset = newValue;   objectWillChange.send() } }
+    var hardwareStatsFanCurves: [String: [[Double]]] {
+        get { s.hardwareStatsFanCurves }
+        set { s.hardwareStatsFanCurves = newValue; objectWillChange.send() }
+    }
+    func fanCurveBinding(for preset: String) -> Binding<[[Double]]> {
+        Binding(
+            get: { self.hardwareStatsFanCurves[preset] ?? [[30, 30], [50, 50], [65, 70], [80, 85], [95, 100]] },
+            set: { self.hardwareStatsFanCurves[preset] = $0 }
+        )
+    }
 }
 
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, spacer, corner, music, tray, displaplacer, developer
+    case general, about, menubar, spacer, corner, music, tray, dock, displaplacer, hardware, developer
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general:      return "General"
         case .about:        return "About"
-        case .spacer:       return "Spacer"
+        case .menubar:      return "Spacer"
+        case .spacer:       return "Space Indicator"
         case .corner:       return "Cornermization"
         case .music:        return "Music Display"
         case .tray:         return "Tray"
+        case .dock:         return "Dock Previews"
         case .displaplacer: return "Displaplacer"
+        case .hardware:     return "Hardware Stats"
         case .developer:    return "Developer"
         }
     }
@@ -150,11 +186,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:      return "gearshape.fill"
         case .about:        return "info.circle.fill"
+        case .menubar:      return "menubar.rectangle"
         case .spacer:       return "rectangle.split.3x1.fill"
         case .corner:       return "viewfinder"
         case .music:        return "music.note"
         case .tray:         return "pad.header"
+        case .dock:         return "macwindow.on.rectangle"
         case .displaplacer: return "display.2"
+        case .hardware:     return "cpu.fill"
         case .developer:    return "hammer.fill"
         }
     }
@@ -167,11 +206,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:      return Color(hex: 0xa0a0a6)
         case .about:        return Color(hex: 0xff5a3c)
+        case .menubar:      return Color(hex: 0x64d2ff)
         case .spacer:       return Color(hex: 0x117cfc)
         case .corner:       return Color(hex: 0x5e5ce6)
         case .music:        return Color(hex: 0xff2d55)
         case .tray:         return Color(hex: 0xff9500)
+        case .dock:         return Color(hex: 0x32d74b)
         case .displaplacer: return Color(hex: 0x0A84FF)
+        case .hardware:     return Color(hex: 0x0A84FF)
         case .developer:    return Color(hex: 0x30d158)
         }
     }
@@ -180,11 +222,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:      return "Launch, permissions, and app behavior"
         case .about:        return "Version info and acknowledgements"
+        case .menubar:      return "Tighten the spacing and click area around every menu bar icon, system-wide"
         case .spacer:       return "Menu bar Deskspace indicator for Mission Control spaces"
         case .corner:       return "Paint black corner masks to match each display's curvature"
         case .music:        return "Menu bar music label with trackpad gesture control"
         case .tray:         return "Floating ⌘⇥ app switcher HUD with pinned apps and Now Playing"
+        case .dock:         return "Hover a Dock app to preview its windows, then click to switch"
         case .displaplacer: return "Arrange, disconnect, and reconnect displays with saved layout presets"
+        case .hardware:     return "Menu bar CPU, GPU, memory & temperature monitor"
         case .developer:    return "Debug tools for development and testing"
         }
     }
@@ -376,12 +421,17 @@ struct SettingsWindow: View {
                 VStack(spacing: 2) {
                     sidebarRow(.general)
                     Color.clear.frame(height: 8)
+                    sidebarRow(.menubar)
                     sidebarRow(.corner)
                     sidebarRow(.spacer)
                     sidebarRow(.music)
                     sidebarRow(.tray)
+                    sidebarRow(.dock)
                     sidebarRow(.displaplacer)
-                    sidebarRow(.developer)
+                    sidebarRow(.hardware)
+                    if vm.showDeveloper {
+                        sidebarRow(.developer)
+                    }
                 }
                 .padding(.top, 8)
             }
@@ -403,11 +453,14 @@ struct SettingsWindow: View {
     private func pane(for s: SettingsSection) -> some View {
         switch s {
         case .general:      GeneralPane(vm: vm)
+        case .menubar:      MenuBarPane(vm: vm)
         case .spacer:       SpacerPane(vm: vm)
         case .corner:       CornermizationPane(vm: vm)
         case .music:        MusicPane(vm: vm)
         case .tray:         TrayPane(vm: vm)
+        case .dock:         DockPane(vm: vm)
         case .displaplacer: DisplaplacerPane(vm: vm)
+        case .hardware:     HardwarePane(vm: vm)
         case .developer:    DeveloperPane(vm: vm)
         case .about:        GeneralPane(vm: vm)
         }

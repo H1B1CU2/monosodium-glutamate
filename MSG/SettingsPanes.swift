@@ -46,13 +46,27 @@ struct SpacerPane: View {
                 }
             }
 
+            Section {
+                Toggle("Replace macOS volume & brightness HUD",
+                       isOn: Binding(get: { vm.systemHUDEnabled }, set: { vm.systemHUDEnabled = $0 }))
+                if vm.systemHUDEnabled {
+                    Toggle("Volume",
+                           isOn: Binding(get: { vm.systemHUDVolume }, set: { vm.systemHUDVolume = $0 }))
+                    Toggle("Brightness (built-in display)",
+                           isOn: Binding(get: { vm.systemHUDBrightness }, set: { vm.systemHUDBrightness = $0 }))
+                }
+            } header: {
+                Text("Volume & Brightness HUD")
+            } footer: {
+                Text("The indicator morphs into a level bar when you press the volume or brightness keys, replacing the native macOS popup. Requires Accessibility permission (System Settings ▸ Privacy & Security ▸ Accessibility); relaunch MSG after granting it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
         }
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
-                previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-                    ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
-                        WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
-                    }
+                WallpaperEngine.shared.previewWallpaper(for: screen) { previewWallpaper = $0 }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
@@ -267,10 +281,7 @@ struct CornermizationPane: View {
 
     private func loadPreviewWallpaper() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-            ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
-                WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
-            }
+        WallpaperEngine.shared.previewWallpaper(for: screen) { previewWallpaper = $0 }
     }
 
     @ViewBuilder
@@ -306,7 +317,7 @@ struct CornermizationPane: View {
         HStack {
             Text("Radius")
             Slider(value: value, in: 0...30, step: 1)
-                .onChange(of: value.wrappedValue) { newVal in
+                .onChange(of: value.wrappedValue) { _, newVal in
                     let i = Int(newVal)
                     if i != lastHaptic {
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -377,7 +388,7 @@ struct MusicPane: View {
                         get: { vm.musicLingerDuration },
                         set: { vm.musicLingerDuration = $0 }
                     ), in: 0...60)
-                    .onChange(of: vm.musicLingerDuration) { newVal in
+                    .onChange(of: vm.musicLingerDuration) { _, newVal in
                         let i = Int(newVal)
                         if i != lastHaptic {
                             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -396,10 +407,7 @@ struct MusicPane: View {
         }
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
-                previewWallpaper = WallpaperEngine.shared.baselineImage(for: screen)
-                    ?? NSWorkspace.shared.desktopImageURL(for: screen).flatMap {
-                        WallpaperEngine.loadImage(url: $0).map { NSImage(cgImage: $0, size: .zero) }
-                    }
+                WallpaperEngine.shared.previewWallpaper(for: screen) { previewWallpaper = $0 }
             }
         }
     }
@@ -633,6 +641,402 @@ struct ArrangeDisplaysView: View {
     }
 }
 
+// MARK: - Hardware Stats pane
+
+@available(macOS 14.0, *)
+struct HardwarePane: View {
+    @ObservedObject var vm: SettingsViewModel
+    @State private var stats = HardwareStats()
+    @State private var timer: Timer?
+
+    var body: some View {
+        PaneContainer(section: .hardware,
+                      headerToggle: Binding(get: { vm.hardwareStatsEnabled },
+                                            set: { vm.hardwareStatsEnabled = $0 })) {
+            Section("Preview") {
+                previewCard
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    .listRowBackground(Color.clear)
+            }
+
+            if vm.hardwareStatsEnabled {
+                Section("Modules") {
+                    Toggle("CPU", isOn: $vm.hardwareStatsShowCPU)
+                    Toggle("GPU", isOn: $vm.hardwareStatsShowGPU)
+                    Toggle("Memory", isOn: $vm.hardwareStatsShowMemory)
+                    Toggle("Temperature", isOn: $vm.hardwareStatsShowTemp)
+                    Toggle("FPS", isOn: $vm.hardwareStatsShowFPS)
+                    Toggle("Fan", isOn: $vm.hardwareStatsShowFan)
+                }
+
+                Section("Appearance") {
+                    Picker("Bar style", selection: $vm.hardwareStatsBarStyle) {
+                        Text("Vertical").tag("vertical")
+                        Text("Circular").tag("circular")
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Label position", selection: $vm.hardwareStatsLabelPos) {
+                        Text("Vertical").tag("vertical")
+                        Text("Horizontal").tag("horizontal")
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Temp sensor", selection: $vm.hardwareStatsTempSensor) {
+                        Text("Auto").tag("auto")
+                        Text("CPU").tag("cpu")
+                        Text("GPU").tag("gpu")
+                    }
+                    Picker("Memory mode", selection: $vm.hardwareStatsMemMode) {
+                        Text("Pressure").tag("pressure")
+                        Text("Usage %").tag("usage")
+                    }
+                    HStack {
+                        Text("Update every")
+                        Slider(value: $vm.hardwareStatsInterval, in: 1...10, step: 1)
+                        Text("\(Int(vm.hardwareStatsInterval))s")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, alignment: .trailing)
+                    }
+                }
+
+                Section("Current Values") {
+                    LabeledContent("CPU") {
+                        Text(String(format: "%.1f%%", stats.cpuPercent))
+                            .foregroundStyle(barColor(ratio: stats.cpuPercent / 100.0))
+                            .monospacedDigit()
+                    }
+                    LabeledContent("GPU") {
+                        Text(String(format: "%.1f%%", stats.gpuPercent))
+                            .foregroundStyle(barColor(ratio: stats.gpuPercent / 100.0))
+                            .monospacedDigit()
+                    }
+                    LabeledContent("Memory") {
+                        HStack(spacing: 4) {
+                            Circle().fill(pressureColor(stats.memoryPressure))
+                                .frame(width: 8, height: 8)
+                            Text(String(format: "%.1f GB", stats.memoryUsedGB))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    if let t = stats.cpuTemp {
+                        LabeledContent("CPU Temp") {
+                            Text(String(format: "%.0f°C", t))
+                                .foregroundStyle(barColor(ratio: (t - 30) / 70.0))
+                                .monospacedDigit()
+                        }
+                    }
+                    if let t = stats.gpuTemp {
+                        LabeledContent("GPU Temp") {
+                            Text(String(format: "%.0f°C", t))
+                                .foregroundStyle(barColor(ratio: (t - 30) / 70.0))
+                                .monospacedDigit()
+                        }
+                    }
+                    if stats.fps > 0 {
+                        LabeledContent("FPS") {
+                            Text("\(stats.fps) Hz")
+                                .foregroundStyle(barColor(ratio: Double(stats.fps) / 144.0))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+
+                Section("Fans") {
+                    if stats.fans.isEmpty {
+                        Text("No fan data available")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(stats.fans) { fan in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(fan.name)
+                                        .font(.system(size: 12, weight: .medium))
+                                    Spacer()
+                                    Text("\(fan.current) RPM")
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                // Bar showing fan speed relative to max
+                                GeometryReader { geo in
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(Color.white.opacity(0.1))
+                                            .frame(height: 4)
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(fanColor(fan))
+                                            .frame(width: geo.size.width * CGFloat(fan.current) / CGFloat(max(1, fan.max)), height: 4)
+                                    }
+                                }
+                                .frame(height: 4)
+                                Text("Min: \(fan.min)  Max: \(fan.max)")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                                    .monospacedDigit()
+                            }
+                            .padding(.vertical, 2)
+                        }
+
+                        Picker("Fan Preset", selection: $vm.hardwareStatsFanPreset) {
+                            Text("Silent").tag("silent")
+                            Text("Default").tag("default")
+                            Text("Performance").tag("performance")
+                            Text("Full Blast").tag("fullBlast")
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: vm.hardwareStatsFanPreset) { _, newVal in
+                            if newVal == "fullBlast" {
+                                HardwareMonitor.shared.fanFullBlast()
+                            } else if newVal == "default" {
+                                HardwareMonitor.shared.fanReset()
+                            }
+                        }
+
+                        if vm.hardwareStatsFanPreset != "default",
+                           vm.hardwareStatsFanPreset != "fullBlast",
+                           let curve = vm.hardwareStatsFanCurves[vm.hardwareStatsFanPreset] {
+                            let presetName = vm.hardwareStatsFanPreset.capitalized
+                            let curveBinding = vm.fanCurveBinding(for: vm.hardwareStatsFanPreset)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("\(presetName) Curve")
+                                    .font(.system(size: 11, weight: .semibold))
+                                ForEach(0..<min(curveBinding.wrappedValue.count, 8), id: \.self) { i in
+                                    HStack(spacing: 8) {
+                                        Text("\(Int(curveBinding.wrappedValue[i][0]))°C")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .frame(width: 32, alignment: .trailing)
+                                        Slider(value: Binding(
+                                            get: { curveBinding.wrappedValue[i][1] },
+                                            set: { newVal in
+                                                var updated = curveBinding.wrappedValue
+                                                updated[i][1] = newVal
+                                                curveBinding.wrappedValue = updated
+                                            }
+                                        ), in: 0...100, step: 5)
+                                        Text("\(Int(curveBinding.wrappedValue[i][1]))%")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .frame(width: 28, alignment: .trailing)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            stats = HardwareMonitor.shared.stats
+            timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+                DispatchQueue.main.async { stats = HardwareMonitor.shared.stats }
+            }
+            if let t = timer { RunLoop.current.add(t, forMode: .common) }
+        }
+        .onDisappear {
+            timer?.invalidate(); timer = nil
+        }
+    }
+
+    // MARK: - Preview card
+
+    /// Mirrors the actual menu bar rendering using SwiftUI shapes.
+    private var previewCard: some View {
+        let mods = previewModules()
+        guard !mods.isEmpty else {
+            return AnyView(
+                Text("Enable at least one module above")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+            )
+        }
+
+        let isCircular = vm.hardwareStatsBarStyle == "circular"
+        let isHorizontal = vm.hardwareStatsLabelPos == "horizontal"
+        let barH: CGFloat = isCircular ? 28 : 36
+
+        return AnyView(
+            HStack(alignment: .bottom, spacing: isHorizontal ? 10 : 12) {
+                ForEach(Array(mods.enumerated()), id: \.offset) { _, mod in
+                    VStack(spacing: 4) {
+                        if mod.isValue {
+                            Text(mod.valueText)
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                            Text(mod.label)
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        } else if isCircular {
+                            ZStack {
+                                Circle()
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 2.5)
+                                    .frame(width: 20, height: 20)
+                                Circle()
+                                    .trim(from: 0, to: max(0.01, mod.ratio))
+                                    .stroke(previewColor(mod), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                    .frame(width: 20, height: 20)
+                                    .rotationEffect(.degrees(-90))
+                            }
+                            if isHorizontal {
+                                Text(mod.label)
+                                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                HStack(spacing: 0) {
+                                    ForEach(Array(mod.label.enumerated()), id: \.offset) { _, ch in
+                                        Text(String(ch))
+                                            .font(.system(size: 5.5, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } else {
+                            // Vertical bar (matches menu bar)
+                            ZStack(alignment: .bottom) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 8, height: barH)
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(previewColor(mod))
+                                    .frame(width: 8, height: max(3, barH * mod.ratio))
+                            }
+                            if isHorizontal {
+                                Text(mod.label)
+                                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                HStack(spacing: 0) {
+                                    ForEach(Array(mod.label.enumerated()), id: \.offset) { _, ch in
+                                        Text(String(ch))
+                                            .font(.system(size: 5.5, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        )
+    }
+
+    private struct PreviewMod {
+        let label: String
+        let ratio: CGFloat
+        var isValue: Bool = false
+        var valueText: String = ""
+    }
+
+    private func previewModules() -> [PreviewMod] {
+        var mods: [PreviewMod] = []
+        if vm.hardwareStatsShowCPU {
+            mods.append(PreviewMod(label: "CPU", ratio: CGFloat(stats.cpuPercent / 100.0)))
+        }
+        if vm.hardwareStatsShowGPU {
+            mods.append(PreviewMod(label: "GPU", ratio: CGFloat(stats.gpuPercent / 100.0)))
+        }
+        if vm.hardwareStatsShowMemory {
+            let r: CGFloat
+            if vm.hardwareStatsMemMode == "usage" {
+                r = stats.memoryTotalGB > 0
+                    ? CGFloat(min(1.0, stats.memoryUsedGB / stats.memoryTotalGB))
+                    : 0
+            } else {
+                r = {
+                    switch stats.memoryPressure {
+                    case .normal: return 0.25
+                    case .warning: return 0.60
+                    case .critical: return 0.90
+                    }
+                }()
+            }
+            mods.append(PreviewMod(label: "MEM", ratio: r))
+        }
+        if vm.hardwareStatsShowTemp {
+            let sensor = vm.hardwareStatsTempSensor
+            let t: Double
+            switch sensor {
+            case "cpu": t = stats.cpuTemp ?? 30
+            case "gpu": t = stats.gpuTemp ?? 30
+            default:    t = stats.cpuTemp ?? stats.gpuTemp ?? 30
+            }
+            mods.append(PreviewMod(label: "TMP", ratio: CGFloat((t - 30) / 70.0)))
+        }
+        if vm.hardwareStatsShowFPS {
+            mods.append(PreviewMod(label: "FPS", ratio: 0,
+                                   isValue: true, valueText: "\(stats.fps)"))
+        }
+        if vm.hardwareStatsShowFan, let fan = stats.fans.first {
+            let r = CGFloat(fan.current) / CGFloat(max(1, fan.max))
+            mods.append(PreviewMod(label: "FAN", ratio: r))
+        }
+        return mods
+    }
+
+    /// Matches the barColor logic in HardwareBarView: white ≤50%, yellow 50%+, orange 65%+, red 80%+.
+    private func previewColor(_ mod: PreviewMod) -> Color {
+        if mod.isValue { return .white }
+        let r = max(0, min(1, mod.ratio))
+        if r < 0.5 { return .white }
+        let hue: Double
+        if r < 0.65 {
+            let t = (r - 0.5) / 0.15
+            hue = 0.15 - 0.05 * t
+        } else if r < 0.8 {
+            let t = (r - 0.65) / 0.15
+            hue = 0.10 * (1.0 - t)
+        } else {
+            hue = 0.0
+        }
+        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+    }
+
+    // MARK: - Colors (used by Current Values section)
+
+    private func barColor(ratio: Double) -> Color {
+        let r = max(0, min(1, ratio))
+        if r < 0.5 { return .white }
+        let hue: Double
+        if r < 0.65 {
+            let t = (r - 0.5) / 0.15
+            hue = 0.15 - 0.05 * t
+        } else if r < 0.8 {
+            let t = (r - 0.65) / 0.15
+            hue = 0.10 * (1.0 - t)
+        } else {
+            hue = 0.0
+        }
+        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+    }
+
+    private func fanColor(_ fan: FanInfo) -> Color {
+        let r = Double(fan.current) / Double(max(1, fan.max))
+        if r < 0.5 { return .white }
+        let hue: Double
+        if r < 0.65 {
+            let t = (r - 0.5) / 0.15
+            hue = 0.15 - 0.05 * t
+        } else if r < 0.8 {
+            let t = (r - 0.65) / 0.15
+            hue = 0.10 * (1.0 - t)
+        } else {
+            hue = 0.0
+        }
+        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+    }
+
+    private func pressureColor(_ p: HardwareStats.MemoryPressure) -> Color {
+        switch p {
+        case .normal: return .gray
+        case .warning: return .orange
+        case .critical: return .red
+        }
+    }
+}
+
 // MARK: - Developer pane
 
 @available(macOS 14.0, *)
@@ -736,7 +1140,7 @@ struct DeveloperPane: View {
             Text(label)
                 .frame(width: 110, alignment: .leading)
             Slider(value: value, in: 0.05...1.0, step: 0.05)
-                .onChange(of: value.wrappedValue) { newVal in
+                .onChange(of: value.wrappedValue) { _, newVal in
                     let i = Int(round(newVal * 100))
                     if i != haptic.wrappedValue {
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -748,6 +1152,59 @@ struct DeveloperPane: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 36, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Menu Bar pane
+
+@available(macOS 14.0, *)
+struct MenuBarPane: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        PaneContainer(section: .menubar) {
+            Section {
+                // One control drives both the gap between icons (spacing) and
+                // the click/highlight padding inside each icon (padding).
+                let densityBinding = Binding(
+                    get: { Double(vm.menuBarSpacing) },
+                    set: {
+                        let v = Int($0.rounded())
+                        vm.menuBarSpacing = v
+                        vm.menuBarSpacingPadding = v
+                    })
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Icon spacing")
+                        Spacer()
+                        Text("\(vm.menuBarSpacing) px").foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Slider(value: densityBinding,
+                           in: Double(MenuBarSpacingManager.paddingRange.lowerBound)...Double(MenuBarSpacingManager.paddingRange.upperBound),
+                           step: 1)
+                }
+            } header: {
+                Text("Spacing")
+            } footer: {
+                Text("Tightens the gap and click area around every menu bar icon, system-wide. macOS reads this value when each item launches, so a logout or restart may be required for all icons to update.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section {
+                Button("Apply") {
+                    MenuBarSpacingManager.applyAndOfferLogout(spacing: vm.menuBarSpacing, padding: vm.menuBarSpacingPadding)
+                }
+                Button("Reset to Default") {
+                    vm.menuBarSpacing = MenuBarSpacingManager.systemDefault
+                    vm.menuBarSpacingPadding = MenuBarSpacingManager.systemDefault
+                    MenuBarSpacingManager.reset()
+                    MenuBarSpacingManager.restartMenuBar()
+                }
+                .foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -779,12 +1236,13 @@ struct GeneralPane: View {
         PaneContainer(section: .general) {
             Section {
                 VStack(spacing: 8) {
-                    if let img = NSImage(named: "AppIcon") {
+                    if let img = NSApp.effectiveAppearance.name == .darkAqua ? (NSImage(named: "AppIcon-Dark") ?? NSImage(named: "AppIcon")) : NSImage(named: "AppIcon") {
                         Image(nsImage: img)
                             .resizable()
                             .frame(width: 64, height: 64)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
+
                     Text("MSG")
                         .font(.system(size: 22, weight: .bold))
                         .kerning(-0.5)
@@ -829,7 +1287,7 @@ struct GeneralPane: View {
             Section("Behavior") {
                 if #available(macOS 13.0, *) {
                     Toggle("Launch at login", isOn: $launchAtLogin)
-                        .onChange(of: launchAtLogin) { on in
+                        .onChange(of: launchAtLogin) { _, on in
                             if #available(macOS 13.0, *) {
                                 do {
                                     if on { try SMAppService.mainApp.register() }
@@ -840,6 +1298,8 @@ struct GeneralPane: View {
                 }
                 Toggle("Show in Dock",
                        isOn: Binding(get: { vm.dockIcon }, set: { vm.dockIcon = $0 }))
+                Toggle("Show Developer section",
+                       isOn: Binding(get: { vm.showDeveloper }, set: { vm.showDeveloper = $0 }))
             }
 
             Section("Permissions") {

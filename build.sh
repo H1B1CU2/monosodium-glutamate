@@ -18,15 +18,19 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 echo "▸ Compiling Swift sources..."
 cd "$SRC_DIR"
-swiftc \
+xcrun -sdk macosx swiftc \
     main.swift \
     Settings.swift \
     SystemState.swift \
     SpaceWatcher.swift \
     Indicator.swift \
     IndicatorRenderer.swift \
+    SystemHUDMonitor.swift \
     CornerWindow.swift \
     AppDelegate.swift \
+    BatteryMonitor.swift \
+    HardwareMonitor.swift \
+    HardwareStatusItem.swift \
     MissionControlDetector.swift \
     SettingsMenu.swift \
     Displaplacer.swift \
@@ -40,12 +44,16 @@ swiftc \
     TrayHUDView.swift \
     TrayPane.swift \
     Shared.swift \
+    DockPane.swift \
+    DockPreview.swift \
+    WindowPreviewCapture.swift \
     SettingsPanes.swift \
     SettingsPreviews.swift \
     -o "$MACOS/$APP_NAME" \
-    -sdk "$(xcrun --show-sdk-path)" \
+    -sdk "$(xcrun -sdk macosx --show-sdk-path)" \
     -target arm64-apple-macos13.0 \
     -framework AppKit \
+    -framework CoreAudio \
     -framework CoreVideo \
     -framework SwiftUI \
     -framework ServiceManagement \
@@ -53,6 +61,7 @@ swiftc \
     -framework ImageIO \
     -F/System/Library/PrivateFrameworks \
     -framework MediaRemote \
+    -framework SkyLight \
     -O
 
 echo "▸ Building MediaRemote helper dylib..."
@@ -63,6 +72,8 @@ clang -dynamiclib MediaRemoteHelper.m \
 echo "▸ Copying Info.plist..."
 cp Info.plist "$CONTENTS/Info.plist"
 cp AppIcon.png "$RESOURCES/AppIcon.png"
+cp AppIcon-Dark.png "$RESOURCES/AppIcon-Dark.png"
+
 
 echo ""
 echo "✅  Built: $APP_BUNDLE"

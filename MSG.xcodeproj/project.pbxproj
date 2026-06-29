@@ -31,6 +31,14 @@
 		BB000017 /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000117 /* SettingsPanes.swift */; };
 		BB000018 /* SettingsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000118 /* SettingsPreviews.swift */; };
 		BB000019 /* MediaRemoteAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000119 /* MediaRemoteAdapter.swift */; };
+		BB00001A /* WindowPreviewCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00011B /* WindowPreviewCapture.swift */; };
+		BB00001B /* DockPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00011C /* DockPreview.swift */; };
+		BB00001C /* DockPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00011D /* DockPane.swift */; };
+		BB00001E /* HardwareMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00011F /* HardwareMonitor.swift */; };
+		BB00001F /* HardwareStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000120 /* HardwareStatusItem.swift */; };
+		BB000021 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000121 /* IOKit.framework */; };
+		BB000022 /* SystemHUDMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000122 /* SystemHUDMonitor.swift */; };
+		BB000023 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000123 /* CoreAudio.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +70,14 @@
 		BB000118 /* SettingsPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPreviews.swift; sourceTree = "<group>"; };
 		BB000119 /* MediaRemoteAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRemoteAdapter.swift; sourceTree = "<group>"; };
 		BB00011A /* MediaRemoteHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaRemoteHelper.m; sourceTree = "<group>"; };
+		BB00011B /* WindowPreviewCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPreviewCapture.swift; sourceTree = "<group>"; };
+		BB00011C /* DockPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockPreview.swift; sourceTree = "<group>"; };
+		BB00011D /* DockPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockPane.swift; sourceTree = "<group>"; };
+		BB00011F /* HardwareMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareMonitor.swift; sourceTree = "<group>"; };
+		BB000120 /* HardwareStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareStatusItem.swift; sourceTree = "<group>"; };
+		BB000121 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		BB000122 /* SystemHUDMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDMonitor.swift; sourceTree = "<group>"; };
+		BB000123 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,12 +85,49 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB000021 /* IOKit.framework in Frameworks */,
+				BB000023 /* CoreAudio.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		189478582FADD198007A7799 /* MSG */ = {
+			isa = PBXGroup;
+			children = (
+				BBA00001 /* Core */,
+				BBA00002 /* Spacer */,
+				BBA00003 /* Cornermization */,
+				BBA00004 /* Music */,
+				BBA00005 /* Tray */,
+				BBA00008 /* Dock */,
+				BBA00006 /* Displaplacer */,
+				BBA0000A /* Hardware */,
+				BBA00007 /* Settings */,
+				BB00010B /* MSG.entitlements */,
+				189478512FADD198007A7799 /* Info.plist */,
+				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
+			);
+			path = MSG;
+			sourceTree = "<group>";
+		};
+		18BF1F252FABA7B4004E29FE = {
+			isa = PBXGroup;
+			children = (
+				189478582FADD198007A7799 /* MSG */,
+				18BF1F2F2FABA7B4004E29FE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		18BF1F2F2FABA7B4004E29FE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				187F0E772FADD2900059B374 /* MSG.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		BBA00001 /* Core */ = {
 			isa = PBXGroup;
 			children = (
@@ -94,6 +147,7 @@
 				BB000103 /* SpaceWatcher.swift */,
 				BB000102 /* SystemState.swift */,
 				BB00010F /* MissionControlDetector.swift */,
+				BB000122 /* SystemHUDMonitor.swift */,
 			);
 			name = Spacer;
 			sourceTree = "<group>";
@@ -125,6 +179,7 @@
 				BB000112 /* TrayPanel.swift */,
 				BB000113 /* TrayHUDView.swift */,
 				BB000114 /* TrayPane.swift */,
+				BB00011B /* WindowPreviewCapture.swift */,
 			);
 			name = Tray;
 			sourceTree = "<group>";
@@ -148,37 +203,22 @@
 			name = Settings;
 			sourceTree = "<group>";
 		};
-		189478582FADD198007A7799 /* MSG */ = {
+		BBA00008 /* Dock */ = {
 			isa = PBXGroup;
 			children = (
-				BBA00001 /* Core */,
-				BBA00002 /* Spacer */,
-				BBA00003 /* Cornermization */,
-				BBA00004 /* Music */,
-				BBA00005 /* Tray */,
-				BBA00006 /* Displaplacer */,
-				BBA00007 /* Settings */,
-				BB00010B /* MSG.entitlements */,
-				189478512FADD198007A7799 /* Info.plist */,
-				18B729E82FADF4A400CEDD2A /* Media.xcassets */,
+				BB00011C /* DockPreview.swift */,
+				BB00011D /* DockPane.swift */,
 			);
-			path = MSG;
+			name = Dock;
 			sourceTree = "<group>";
 		};
-		18BF1F252FABA7B4004E29FE = {
+		BBA0000A /* Hardware */ = {
 			isa = PBXGroup;
 			children = (
-				189478582FADD198007A7799 /* MSG */,
-				18BF1F2F2FABA7B4004E29FE /* Products */,
+				BB00011F /* HardwareMonitor.swift */,
+				BB000120 /* HardwareStatusItem.swift */,
 			);
-			sourceTree = "<group>";
-		};
-		18BF1F2F2FABA7B4004E29FE /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				187F0E772FADD2900059B374 /* MSG.app */,
-			);
-			name = Products;
+			name = Hardware;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -212,7 +252,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2640;
-				LastUpgradeCheck = 2640;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					18BF1F2D2FABA7B4004E29FE = {
 						CreatedOnToolsVersion = 26.4.1;
@@ -297,6 +337,12 @@
 				BB000017 /* SettingsPanes.swift in Sources */,
 				BB000018 /* SettingsPreviews.swift in Sources */,
 				BB000019 /* MediaRemoteAdapter.swift in Sources */,
+				BB00001A /* WindowPreviewCapture.swift in Sources */,
+				BB00001B /* DockPreview.swift in Sources */,
+				BB00001C /* DockPane.swift in Sources */,
+				BB00001E /* HardwareMonitor.swift in Sources */,
+				BB00001F /* HardwareStatusItem.swift in Sources */,
+				BB000022 /* SystemHUDMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -337,6 +383,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -361,6 +408,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -400,6 +448,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -417,6 +466,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -428,11 +478,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODESIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				CODE_SIGN_ENTITLEMENTS = MSG/MSG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CODESIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -445,13 +496,15 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 12.4;
+				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = 1.1.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-F/System/Library/PrivateFrameworks",
 					"-framework",
 					MediaRemote,
+					"-framework",
+					SkyLight,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -473,11 +526,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODESIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				CODE_SIGN_ENTITLEMENTS = MSG/MSG.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CODESIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -490,13 +544,15 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 12.4;
+				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = 1.1.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-F/System/Library/PrivateFrameworks",
 					"-framework",
 					MediaRemote,
+					"-framework",
+					SkyLight,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = H1D3S1GN.MSG;
 				PRODUCT_NAME = "$(TARGET_NAME)";

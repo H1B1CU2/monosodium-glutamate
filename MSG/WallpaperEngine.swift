@@ -41,6 +41,40 @@ final class WallpaperEngine {
         return NSImage(cgImage: cg, size: .zero)
     }
 
+    /// Decoded full-res wallpaper images, memoized by source URL so settings
+    /// panes don't re-decode on every appearance (was a visible hitch when
+    /// switching panes). The app never rewrites a wallpaper file in place, so
+    /// a given URL always maps to the same pixels.
+    private var previewImageCache: [URL: NSImage] = [:]
+
+    /// Resolves the preview wallpaper for `screen` — the baked baseline if we
+    /// have one, otherwise the live desktop image. A cache hit calls back
+    /// synchronously on the main thread; a miss decodes off the main thread and
+    /// delivers the result on the main queue, so the pane never blocks.
+    func previewWallpaper(for screen: NSScreen, completion: @escaping (NSImage?) -> Void) {
+        var candidates: [URL] = []
+        if let uuid = screen.uuid, let url = screens[uuid]?.baselineURL { candidates.append(url) }
+        if let url = NSWorkspace.shared.desktopImageURL(for: screen) { candidates.append(url) }
+
+        for url in candidates where previewImageCache[url] != nil {
+            completion(previewImageCache[url]); return
+        }
+        guard !candidates.isEmpty else { completion(nil); return }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var decoded: (URL, NSImage)?
+            for url in candidates {
+                if let cg = Self.loadImage(url: url) {
+                    decoded = (url, NSImage(cgImage: cg, size: .zero)); break
+                }
+            }
+            DispatchQueue.main.async {
+                if let (url, image) = decoded { self?.previewImageCache[url] = image }
+                completion(decoded?.1)
+            }
+        }
+    }
+
     /// Fires when an external wallpaper change is detected (user changed wallpaper in System Settings).
     var onExternalChange: (() -> Void)?
     /// Stays true from the moment an external change is detected until fetch() is called.
@@ -182,7 +216,7 @@ final class WallpaperEngine {
             guard let uuid = screen.uuid,
                   let state = screens[uuid] else { continue }
             let current = Self.wallpaperURL(for: screen)
-            let showsBake = current.map(Self.isMSGFile) ?? false
+            let showsBake = current.map { Self.isMSGFile(url: $0) } ?? false
             if bottomCornersWanted(for: screen, uuid: uuid) {
                 if !showsBake || bakedSignature[uuid] != signature(for: screen, uuid: uuid, state: state) {
                     staleDisplays.insert(uuid)

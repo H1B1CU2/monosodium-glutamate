@@ -459,6 +459,7 @@ struct DisplayPreviewView: View {
 
 // MARK: - Preview sub-views
 
+@available(macOS 14.0, *)
 struct PreviewMenuBar: View {
     let stackMode: StackMode
     let spaceCount: Int
@@ -507,6 +508,7 @@ struct PillDotsDims {
     }
 }
 
+@available(macOS 14.0, *)
 struct PreviewSpaceIndicator: View {
     let stackMode: StackMode
     let spaceCount: Int
@@ -572,6 +574,7 @@ struct PreviewSpaceIndicator: View {
 
 // TimelineView-driven row that interpolates fractional active-pill position to match
 // IndicatorRenderer's widthForSpace / heightForSpace / colorForSpace math.
+@available(macOS 14.0, *)
 struct AnimatedPillDotsRow: View {
     let spaceCount: Int
     let activeSpace: Int
@@ -597,7 +600,7 @@ struct AnimatedPillDotsRow: View {
                 .frame(width: renderWidth, height: dims.rowH)
         }
         .onAppear { fromActive = activeSpace; toActive = activeSpace }
-        .onChange(of: activeSpace) { newValue in
+        .onChange(of: activeSpace) { _, newValue in
             let snapshot = fractionalActive(at: Date())
             fromActive = max(1, min(spaceCount, Int(round(snapshot))))
             toActive = newValue
@@ -669,6 +672,7 @@ private func blendBlack(weight: CGFloat, dimmed: Bool) -> Color {
     return Color.black.opacity(a * (dimmed ? 0.55 : 1.0))
 }
 
+@available(macOS 14.0, *)
 struct PreviewMusicPill: View {
     var body: some View {
         HStack(spacing: 3) {

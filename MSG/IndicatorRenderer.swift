@@ -590,6 +590,69 @@ final class IndicatorRenderer {
         }
     }
 
+    // MARK: - System HUD (volume / brightness) Frame
+
+    /// Icon + rounded level bar that replaces the native macOS volume/brightness
+    /// OSD. `value` is 0…1; `muted` dims the fill and forces the slash icon.
+    func makeSystemHUDFrame(kind: SystemHUDKind, value: CGFloat, muted: Bool) -> NSImage {
+        let imgH: CGFloat = 22
+        let v = max(0, min(1, value))
+        let color = menuBarTextColor
+
+        let symbolName: String
+        switch kind {
+        case .brightness:
+            symbolName = v < 0.5 ? "sun.min.fill" : "sun.max.fill"
+        case .volume:
+            if muted          { symbolName = "speaker.slash.fill" }
+            else if v <= 0.001 { symbolName = "speaker.fill" }
+            else if v < 0.33   { symbolName = "speaker.wave.1.fill" }
+            else if v < 0.66   { symbolName = "speaker.wave.2.fill" }
+            else               { symbolName = "speaker.wave.3.fill" }
+        }
+        let icon = systemSymbol(symbolName, pointSize: 12, color: color)
+        let iconW = min(icon?.size.width ?? 14, 18)
+        let iconH = icon?.size.height ?? 13
+
+        let gap: CGFloat = 6
+        let trackW: CGFloat = 70
+        let trackH: CGFloat = 4
+        let pad: CGFloat = 4
+        let finalW = pad + iconW + gap + trackW + pad
+
+        let dimmed = muted && kind == .volume
+        let trackColor = color.withAlphaComponent(0.22)
+        let fillColor = dimmed ? color.withAlphaComponent(0.4) : color
+
+        return NSImage(size: NSSize(width: finalW, height: imgH), flipped: false) { _ in
+            if let icon {
+                let iy = (imgH - iconH) / 2
+                icon.draw(in: NSRect(x: pad, y: iy, width: icon.size.width, height: iconH))
+            }
+            let tx = pad + iconW + gap
+            let ty = (imgH - trackH) / 2
+            let track = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: trackW, height: trackH),
+                                     xRadius: trackH / 2, yRadius: trackH / 2)
+            trackColor.setFill(); track.fill()
+
+            let fillW = max(trackH, trackW * v)
+            let fill = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: fillW, height: trackH),
+                                    xRadius: trackH / 2, yRadius: trackH / 2)
+            fillColor.setFill(); fill.fill()
+            return true
+        }
+    }
+
+    /// SF Symbol image tinted to `color` (palette config — the symbol is colored,
+    /// not a template, since `color` already adapts to the menu bar appearance).
+    private func systemSymbol(_ name: String, pointSize: CGFloat, color: NSColor) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        img?.isTemplate = false
+        return img
+    }
+
     // MARK: - Colors
 
     /// Adapts text/pill color to the menu bar's actual translucency
