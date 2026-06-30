@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         indicator.onMCStateChanged = { [weak self] in
             guard let self else { return }
-            self.applyCornerWindowMCState(self.indicator.isMissionControl)
+            self.applyCornerWindowTopState()
         }
 
         rebuildCornerWindows()
@@ -285,13 +285,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Mission Control
 
-    private func applyCornerWindowMCState(_ inMC: Bool) {
+    /// Hide the under-menu-bar top corners while Mission Control is active so that
+    /// leaving it produces a hidden→shown transition the corner view grows in.
+    private func applyCornerWindowTopState() {
+        let hideTop = indicator.isMissionControl
         for win in cornerWindows {
             let uuid = win.displayUUID ?? "_default"
             let underBar = win.targetScreen.isBuiltin
                 ? settings.topCornersUnderMenuBar
                 : settings.extTopCornersUnderMenuBar(for: uuid)
-            win.setSkipTop(inMC && underBar)
+            win.setSkipTop(hideTop && underBar)
         }
     }
 

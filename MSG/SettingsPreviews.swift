@@ -224,9 +224,11 @@ struct MusicPopoverPreview: View {
                     Capsule()
                         .fill(Color.white.opacity(0.08))
                         .frame(width: trackW)
-                    Capsule()
-                        .fill(Color.white.opacity(0.5))
-                        .frame(width: trackW, height: max(trackW, volBarHeight * volumeLevel - 8 * s))
+                    if volumeLevel > 0 {
+                        Capsule()
+                            .fill(Color.white.opacity(0.5))
+                            .frame(width: trackW, height: max(trackW, volBarHeight * volumeLevel - 8 * s))
+                    }
                 }
                 .frame(height: volBarHeight - 8 * s)
                 .padding(.vertical, 4 * s)

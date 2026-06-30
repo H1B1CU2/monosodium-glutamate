@@ -147,6 +147,22 @@ final class SettingsViewModel: ObservableObject {
     var hardwareStatsInterval: Double     { get { s.hardwareStatsInterval }     set { s.hardwareStatsInterval = newValue;     objectWillChange.send() } }
     var hardwareStatsTempSensor: String   { get { s.hardwareStatsTempSensor }   set { s.hardwareStatsTempSensor = newValue;   objectWillChange.send() } }
     var hardwareStatsMemMode: String      { get { s.hardwareStatsMemMode }      set { s.hardwareStatsMemMode = newValue;      objectWillChange.send() } }
+    var hardwareStatsTempMin: Double {
+        get { s.hardwareStatsTempMin }
+        set {
+            let val = min(newValue, s.hardwareStatsTempMax - 5)
+            s.hardwareStatsTempMin = val
+            objectWillChange.send()
+        }
+    }
+    var hardwareStatsTempMax: Double {
+        get { s.hardwareStatsTempMax }
+        set {
+            let val = max(newValue, s.hardwareStatsTempMin + 5)
+            s.hardwareStatsTempMax = val
+            objectWillChange.send()
+        }
+    }
     var hardwareStatsFanPreset: String   { get { s.hardwareStatsFanPreset }   set { s.hardwareStatsFanPreset = newValue;   objectWillChange.send() } }
     var hardwareStatsFanCurves: [String: [[Double]]] {
         get { s.hardwareStatsFanCurves }

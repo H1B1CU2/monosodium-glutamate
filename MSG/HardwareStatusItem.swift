@@ -337,7 +337,10 @@ final class HardwareBarView: NSView {
             case "gpu":  t = stats.gpuTemp ?? 30
             default:     t = stats.cpuTemp ?? stats.gpuTemp ?? 30
             }
-            let tempRatio = CGFloat(max(0, min(1, (t - 30) / 70.0)))
+            let minT = AppSettings.shared.hardwareStatsTempMin
+            let maxT = AppSettings.shared.hardwareStatsTempMax
+            let range = max(1.0, maxT - minT)
+            let tempRatio = CGFloat(max(0, min(1, (t - minT) / range)))
             mods.append(Module(label: "TMP", ratio: tempRatio))
         }
         if showFPS {

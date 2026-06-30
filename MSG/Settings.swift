@@ -121,6 +121,8 @@ final class AppSettings {
         static let hardwareStatsInterval       = "hardwareStatsInterval"
         static let hardwareStatsTempSensor     = "hardwareStatsTempSensor"
         static let hardwareStatsMemMode        = "hardwareStatsMemMode"
+        static let hardwareStatsTempMin        = "hardwareStatsTempMin"
+        static let hardwareStatsTempMax        = "hardwareStatsTempMax"
         static let systemHUDEnabled            = "systemHUDEnabled"
         static let systemHUDVolume             = "systemHUDVolume"
         static let systemHUDBrightness         = "systemHUDBrightness"
@@ -249,6 +251,8 @@ final class AppSettings {
     var hardwareStatsMemMode: String       { didSet { save(); onChange?(.structural) } }
     var hardwareStatsFanPreset: String    { didSet { save(); onChange?(.structural) } }
     var hardwareStatsFanCurves: [String: [[Double]]] { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsTempMin: Double       { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsTempMax: Double       { didSet { save(); onChange?(.structural) } }
 
     // System HUD (replace native volume/brightness OSD)
     var systemHUDEnabled: Bool    { didSet { save(); onChange?(.structural) } }
@@ -322,6 +326,8 @@ final class AppSettings {
                 "performance": [[30.0, 30.0], [50.0, 50.0], [65.0, 70.0], [80.0, 85.0], [95.0, 100.0]],
                 "fullBlast":   [[0.0, 100.0], [100.0, 100.0]],
             ],
+            Key.hardwareStatsTempMin:      30.0,
+            Key.hardwareStatsTempMax:      100.0,
             Key.systemHUDEnabled:        false,
             Key.systemHUDVolume:         true,
             Key.systemHUDBrightness:     true,
@@ -384,6 +390,8 @@ final class AppSettings {
         hardwareStatsInterval     = d.object(forKey: Key.hardwareStatsInterval) as? Double ?? 2.0
         hardwareStatsTempSensor   = d.string(forKey: Key.hardwareStatsTempSensor) ?? "auto"
         hardwareStatsMemMode      = d.string(forKey: Key.hardwareStatsMemMode) ?? "pressure"
+        hardwareStatsTempMin      = d.object(forKey: Key.hardwareStatsTempMin) as? Double ?? 30.0
+        hardwareStatsTempMax      = d.object(forKey: Key.hardwareStatsTempMax) as? Double ?? 100.0
         hardwareStatsFanPreset    = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
         hardwareStatsFanCurves    = (try? JSONDecoder().decode([String: [[Double]]].self,
                                        from: d.data(forKey: Key.hardwareStatsFanCurves) ?? Data()))
@@ -456,6 +464,8 @@ final class AppSettings {
         d.set(hardwareStatsInterval,         forKey: Key.hardwareStatsInterval)
         d.set(hardwareStatsTempSensor,       forKey: Key.hardwareStatsTempSensor)
         d.set(hardwareStatsMemMode,          forKey: Key.hardwareStatsMemMode)
+        d.set(hardwareStatsTempMin,          forKey: Key.hardwareStatsTempMin)
+        d.set(hardwareStatsTempMax,          forKey: Key.hardwareStatsTempMax)
         d.set(hardwareStatsFanPreset,       forKey: Key.hardwareStatsFanPreset)
         if let data = try? JSONEncoder().encode(hardwareStatsFanCurves) {
             d.set(data, forKey: Key.hardwareStatsFanCurves)

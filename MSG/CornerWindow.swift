@@ -31,6 +31,12 @@ final class CornerWindow: NSWindow {
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
 
         contentView = view
+
+        // The view arms a grow-in when the top corners go hidden→shown (Mission
+        // Control closed, or left a fullscreen space). Detection happens at render
+        // time off the `skipTopCorners` flag, which AppDelegate drives from the
+        // reliable isMissionControl / isFullscreen state.
+        view.onTopGrowInNeeded = { [weak self] in self?.startTopGrowIn() }
     }
 
     func updateFrame() {
@@ -48,10 +54,32 @@ final class CornerWindow: NSWindow {
 
     func setSkipTop(_ skip: Bool) {
         view.skipTopCorners = skip
+        if skip { growTimer?.invalidate(); growTimer = nil }   // hidden now (Mission Control)
         redraw()
     }
 
+    /// Ramps the top corners' radius from 0 → full over `duration` using the
+    /// project's main-thread Timer + time-based progress pattern (not CVDisplayLink).
+    /// `CornerView.draw(_:)` has already set `topGrowProgress` to 0 and armed this the
+    /// moment it saw the top corners reappear.
+    private func startTopGrowIn(duration: TimeInterval = 0.25) {
+        growTimer?.invalidate()
+        let start = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let p = min(1.0, CGFloat((CACurrentMediaTime() - start) / duration))
+            self.view.topGrowProgress = p
+            self.view.display()
+            if p >= 1.0 { t.invalidate(); self.growTimer = nil }
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        growTimer = timer
+    }
+
+    deinit { growTimer?.invalidate() }
+
     private let settings: AppSettings
+    private var growTimer: Timer?
 }
 
 // MARK: - CornerView
@@ -60,8 +88,14 @@ final class CornerView: NSView {
 
     var targetScreen: NSScreen
     var skipTopCorners = false
+    /// Top-corner radius scale (0 = invisible, 1 = full). Animated on grow-in.
+    var topGrowProgress: CGFloat = 1.0
+    /// Called when the top corners transition hidden→shown so the window grows them in.
+    var onTopGrowInNeeded: (() -> Void)?
     var displayUUID: String?
     private let settings: AppSettings
+    /// Whether the top corners were shown on the previous draw (transition detection).
+    private var wasTopShown = true
 
     init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
@@ -88,10 +122,22 @@ final class CornerView: NSView {
 
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
         let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
+        let topShown = topEnabled && !skipTop
 
-        if topEnabled && !skipTop {
-            drawCorner(at: NSPoint(x: 0,     y: H - topY), radius: r, kind: .topLeft)
-            drawCorner(at: NSPoint(x: W,     y: H - topY), radius: r, kind: .topRight)
+        // Detect a hidden→shown transition (Mission Control closed, or left a
+        // fullscreen space) and arm a grow-in. `wasTopShown` guarantees we arm exactly
+        // once per transition. Set progress to 0 first so this frame renders nothing
+        // (no full-size flash) before the timer ramps it up.
+        if topShown && !wasTopShown {
+            topGrowProgress = 0
+            onTopGrowInNeeded?()
+        }
+        wasTopShown = topShown
+
+        if topShown {
+            let topR = r * Easing.outQuart(min(1, max(0, topGrowProgress)))
+            drawCorner(at: NSPoint(x: 0, y: H - topY), radius: topR, kind: .topLeft)
+            drawCorner(at: NSPoint(x: W, y: H - topY), radius: topR, kind: .topRight)
         }
         if bottomEnabled {
             drawCorner(at: NSPoint(x: 0, y: 0), radius: r, kind: .bottomLeft)

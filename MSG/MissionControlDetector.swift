@@ -1,26 +1,47 @@
 import AppKit
 
-/// Detects whether Mission Control is currently active.
+/// Detects whether Mission Control / App Exposé is currently on screen.
 ///
-/// When the Dock is visible (not auto-hidden), the dock panel itself sits at
-/// CGWindowLayer ~20 — within the elevated 1..<1000 range. So layer alone isn't
-/// enough to distinguish "dock visible" from "MC active". We count Dock-owned
-/// windows in that layer range instead: the dock panel contributes exactly 1
-/// window; MC adds at least one more (space-preview thumbnails / MC chrome).
+/// macOS 26 (Tahoe) changed the signal. The old heuristic — counting `Dock`-owned
+/// windows — is dead: the Dock now keeps a persistent window (layer 20) on screen
+/// even when Mission Control is closed, so its presence proves nothing.
+///
+/// The reliable signal moved to the `WindowManager` process. On the idle desktop,
+/// WindowManager only owns the wallpaper/backdrop/shield windows, all at hugely
+/// negative CGWindowLayers. When Mission Control or App Exposé opens, WindowManager
+/// adds overlay windows at small *positive* layers (~14–19):
+///   • "Spaces Bar"          (layer 14) — Mission Control's top spaces strip
+///   • "Expose Overlay"      (layer 17) — window-thumbnail overlay
+///   • "ExposeShieldWindow"  (layer 19) — background shield
+/// A positive-layer WindowManager window is therefore the tell.
 enum MissionControlDetector {
+
+    /// Named WindowManager overlays that exist only during Mission Control / Exposé.
+    private static let overlayNames: Set<String> = [
+        "Spaces Bar",
+        "Expose Overlay",
+        "ExposeShieldWindow",
+        "Mission Control",
+    ]
 
     static func isActive() -> Bool {
         guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
-        var count = 0
         for w in list {
-            let owner = w[kCGWindowOwnerName as String] as? String ?? ""
-            guard owner == "Dock" else { continue }
+            guard (w[kCGWindowOwnerName as String] as? String) == "WindowManager" else { continue }
             let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            if layer > 0 && layer < 1000 {
-                count += 1
-                if count >= 2 { return true }
+            guard layer > 0 && layer < 1000 else { continue }
+
+            // When window names are readable (requires Screen Recording permission),
+            // require a known overlay name so Stage Manager's positive-layer windows
+            // can't trigger a false positive. Without that permission the name is
+            // nil/empty — and a positive-layer WindowManager window is, by itself,
+            // already a strong Mission Control signal — so accept it.
+            if let name = w[kCGWindowName as String] as? String, !name.isEmpty {
+                if overlayNames.contains(name) { return true }
+            } else {
+                return true
             }
         }
         return false

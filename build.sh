@@ -28,7 +28,6 @@ xcrun -sdk macosx swiftc \
     SystemHUDMonitor.swift \
     CornerWindow.swift \
     AppDelegate.swift \
-    BatteryMonitor.swift \
     HardwareMonitor.swift \
     HardwareStatusItem.swift \
     MissionControlDetector.swift \

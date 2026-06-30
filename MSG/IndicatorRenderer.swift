@@ -611,14 +611,18 @@ final class IndicatorRenderer {
             else               { symbolName = "speaker.wave.3.fill" }
         }
         let icon = systemSymbol(symbolName, pointSize: 12, color: color)
-        let iconW = min(icon?.size.width ?? 14, 18)
         let iconH = icon?.size.height ?? 13
+
+        // Reserve a fixed-width slot for the icon so the HUD's overall width never
+        // changes as the symbol swaps (speaker.wave.1 → .3, slash, etc.), which
+        // would otherwise resize the status item and shift the whole menu bar.
+        let iconSlotW: CGFloat = 18
 
         let gap: CGFloat = 6
         let trackW: CGFloat = 70
         let trackH: CGFloat = 4
         let pad: CGFloat = 4
-        let finalW = pad + iconW + gap + trackW + pad
+        let finalW = pad + iconSlotW + gap + trackW + pad
 
         let dimmed = muted && kind == .volume
         let trackColor = color.withAlphaComponent(0.22)
@@ -629,16 +633,19 @@ final class IndicatorRenderer {
                 let iy = (imgH - iconH) / 2
                 icon.draw(in: NSRect(x: pad, y: iy, width: icon.size.width, height: iconH))
             }
-            let tx = pad + iconW + gap
+            let tx = pad + iconSlotW + gap
             let ty = (imgH - trackH) / 2
             let track = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: trackW, height: trackH),
                                      xRadius: trackH / 2, yRadius: trackH / 2)
             trackColor.setFill(); track.fill()
 
-            let fillW = max(trackH, trackW * v)
-            let fill = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: fillW, height: trackH),
-                                    xRadius: trackH / 2, yRadius: trackH / 2)
-            fillColor.setFill(); fill.fill()
+            let effectiveV = (muted && kind == .volume) ? 0 : v
+            if effectiveV > 0 {
+                let fillW = max(trackH, trackW * effectiveV)
+                let fill = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: fillW, height: trackH),
+                                        xRadius: trackH / 2, yRadius: trackH / 2)
+                fillColor.setFill(); fill.fill()
+            }
             return true
         }
     }

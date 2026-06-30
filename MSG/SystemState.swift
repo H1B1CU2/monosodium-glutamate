@@ -4,10 +4,11 @@ import ApplicationServices
 /// Tracks Mission Control + fullscreen state so consumers can gate
 /// snapshot mutations and animation triggers.
 ///
-/// MC detection uses CGWindowList: during Mission Control, Dock creates
-/// temporary windows at CGWindowLayer 15-25 for space previews. These
-/// windows exist only during MC. This is reliable where Dock-frontmost
-/// and didActivate/didDeactivate are not.
+/// MC detection uses CGWindowList via `MissionControlDetector`: while Mission
+/// Control / App Exposé is open, the `WindowManager` process adds overlay
+/// windows ("Spaces Bar", "Expose Overlay", "ExposeShieldWindow") at small
+/// positive CGWindowLayers that don't exist on the idle desktop. This is
+/// reliable where Dock-frontmost and didActivate/didDeactivate are not.
 final class SystemState {
 
     // MARK: Public
@@ -28,7 +29,7 @@ final class SystemState {
     private let detectionQueue = DispatchQueue(label: "msg.sysstate.detect", qos: .userInteractive)
 
     func start() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
             self?.refreshState()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }

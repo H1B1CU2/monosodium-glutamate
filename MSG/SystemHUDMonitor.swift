@@ -33,6 +33,14 @@ final class SystemHUDMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
+    /// The native volume feedback "tick" (the classic BezelServices tink),
+    /// loaded once and restarted on each step for the staccato hold-to-repeat feel.
+    private let volumeFeedbackSound: NSSound? = {
+        let path = "/System/Library/LoginPlugins/BezelServices.loginPlugin/Contents/Resources/volume.aiff"
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return NSSound(contentsOfFile: path, byReference: false)
+    }()
+
     // NX aux-control key codes (from IOKit/hidsystem/ev_keymap.h).
     private enum AuxKey {
         static let soundUp        = 0
@@ -146,8 +154,21 @@ final class SystemHUDMonitor {
         next = max(0, min(1, next))
         setVolume(device, next)
 
+        playVolumeFeedback()
+
         let actual = CGFloat(volume(device) ?? next)
         onChange?(.volume, actual, isMuted(device))
+    }
+
+    /// Play the native volume tick, honoring the system "Play feedback when
+    /// volume is changed" preference (NSGlobalDomain `com.apple.sound.beep.feedback`,
+    /// defaulting to on). Restarting allows rapid ticks while a key is held.
+    @MainActor
+    private func playVolumeFeedback() {
+        let feedbackOn = (UserDefaults.standard.object(forKey: "com.apple.sound.beep.feedback") as? NSNumber)?.boolValue ?? true
+        guard feedbackOn, let sound = volumeFeedbackSound else { return }
+        sound.stop()
+        sound.play()
     }
 
     @MainActor

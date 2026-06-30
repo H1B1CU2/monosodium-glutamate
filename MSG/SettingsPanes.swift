@@ -685,6 +685,24 @@ struct HardwarePane: View {
                         Text("CPU").tag("cpu")
                         Text("GPU").tag("gpu")
                     }
+                    if vm.hardwareStatsShowTemp {
+                        HStack {
+                            Text("Temp Min")
+                            Slider(value: $vm.hardwareStatsTempMin, in: 0...80, step: 5)
+                            Text("\(Int(vm.hardwareStatsTempMin))°C")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 38, alignment: .trailing)
+                        }
+                        HStack {
+                            Text("Temp Max")
+                            Slider(value: $vm.hardwareStatsTempMax, in: 60...120, step: 5)
+                            Text("\(Int(vm.hardwareStatsTempMax))°C")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 38, alignment: .trailing)
+                        }
+                    }
                     Picker("Memory mode", selection: $vm.hardwareStatsMemMode) {
                         Text("Pressure").tag("pressure")
                         Text("Usage %").tag("usage")
@@ -872,11 +890,13 @@ struct HardwarePane: View {
                                 Circle()
                                     .stroke(Color.white.opacity(0.15), lineWidth: 2.5)
                                     .frame(width: 20, height: 20)
-                                Circle()
-                                    .trim(from: 0, to: max(0.01, mod.ratio))
-                                    .stroke(previewColor(mod), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                                    .frame(width: 20, height: 20)
-                                    .rotationEffect(.degrees(-90))
+                                if mod.ratio > 0 {
+                                    Circle()
+                                        .trim(from: 0, to: max(0.01, mod.ratio))
+                                        .stroke(previewColor(mod), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                        .frame(width: 20, height: 20)
+                                        .rotationEffect(.degrees(-90))
+                                }
                             }
                             if isHorizontal {
                                 Text(mod.label)
@@ -897,9 +917,11 @@ struct HardwarePane: View {
                                 RoundedRectangle(cornerRadius: 2)
                                     .fill(Color.white.opacity(0.12))
                                     .frame(width: 8, height: barH)
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(previewColor(mod))
-                                    .frame(width: 8, height: max(3, barH * mod.ratio))
+                                if mod.ratio > 0 {
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(previewColor(mod))
+                                        .frame(width: 8, height: max(3, barH * mod.ratio))
+                                }
                             }
                             if isHorizontal {
                                 Text(mod.label)
@@ -963,7 +985,10 @@ struct HardwarePane: View {
             case "gpu": t = stats.gpuTemp ?? 30
             default:    t = stats.cpuTemp ?? stats.gpuTemp ?? 30
             }
-            mods.append(PreviewMod(label: "TMP", ratio: CGFloat((t - 30) / 70.0)))
+            let minT = vm.hardwareStatsTempMin
+            let maxT = vm.hardwareStatsTempMax
+            let range = max(1.0, maxT - minT)
+            mods.append(PreviewMod(label: "TMP", ratio: CGFloat((t - minT) / range)))
         }
         if vm.hardwareStatsShowFPS {
             mods.append(PreviewMod(label: "FPS", ratio: 0,
