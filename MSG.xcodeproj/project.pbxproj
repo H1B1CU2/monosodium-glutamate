@@ -39,6 +39,7 @@
 		BB000021 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000121 /* IOKit.framework */; };
 		BB000022 /* SystemHUDMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000122 /* SystemHUDMonitor.swift */; };
 		BB000023 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000123 /* CoreAudio.framework */; };
+		BB000024 /* SystemHUDStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000125 /* SystemHUDStatusItem.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -78,6 +79,8 @@
 		BB000121 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		BB000122 /* SystemHUDMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDMonitor.swift; sourceTree = "<group>"; };
 		BB000123 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
+		BB000124 /* FanControlHelper.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = FanControlHelper.c; sourceTree = "<group>"; };
+		BB000125 /* SystemHUDStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDStatusItem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -148,6 +151,7 @@
 				BB000102 /* SystemState.swift */,
 				BB00010F /* MissionControlDetector.swift */,
 				BB000122 /* SystemHUDMonitor.swift */,
+				BB000125 /* SystemHUDStatusItem.swift */,
 			);
 			name = Spacer;
 			sourceTree = "<group>";
@@ -217,6 +221,7 @@
 			children = (
 				BB00011F /* HardwareMonitor.swift */,
 				BB000120 /* HardwareStatusItem.swift */,
+				BB000124 /* FanControlHelper.c */,
 			);
 			name = Hardware;
 			sourceTree = "<group>";
@@ -231,7 +236,7 @@
 				18BF1F2A2FABA7B4004E29FE /* Sources */,
 				18BF1F2B2FABA7B4004E29FE /* Frameworks */,
 				18BF1F2C2FABA7B4004E29FE /* Resources */,
-				BB000020 /* Compile MediaRemote Helper */,
+				BB000020 /* Compile Bundled Helpers */,
 			);
 			buildRules = (
 			);
@@ -291,21 +296,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		BB000020 /* Compile MediaRemote Helper */ = {
+		BB000020 /* Compile Bundled Helpers */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputPaths = (
 				"$(SRCROOT)/MSG/MediaRemoteHelper.m",
+				"$(SRCROOT)/MSG/FanControlHelper.c",
 			);
-			name = "Compile MediaRemote Helper";
+			name = "Compile Bundled Helpers";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libMSGMediaRemote.dylib",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/MSGFanControlHelper",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nmkdir -p \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nxcrun clang -dynamiclib \"$SRCROOT/MSG/MediaRemoteHelper.m\" -o \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/libMSGMediaRemote.dylib\" -framework Foundation -fobjc-arc -O2\n";
+			shellScript = "set -e\nmkdir -p \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nxcrun clang -dynamiclib \"$SRCROOT/MSG/MediaRemoteHelper.m\" -o \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/libMSGMediaRemote.dylib\" -framework Foundation -fobjc-arc -O2\nxcrun clang \"$SRCROOT/MSG/FanControlHelper.c\" -o \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/MSGFanControlHelper\" -framework CoreFoundation -framework IOKit -O2\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -343,6 +350,7 @@
 				BB00001E /* HardwareMonitor.swift in Sources */,
 				BB00001F /* HardwareStatusItem.swift in Sources */,
 				BB000022 /* SystemHUDMonitor.swift in Sources */,
+				BB000024 /* SystemHUDStatusItem.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -496,7 +504,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.1.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -544,7 +552,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.1.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",

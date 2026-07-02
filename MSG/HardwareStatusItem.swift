@@ -17,8 +17,7 @@ final class HardwareStatusItem {
         barView = HardwareBarView(frame: NSRect(x: 0, y: 0, width: 88, height: 22))
 
         if let btn = item.button {
-            btn.frame = barView.frame
-            btn.addSubview(barView)
+            btn.imagePosition = .imageOnly
             btn.target = self
             btn.action = #selector(togglePopover)
             btn.sendAction(on: [.leftMouseDown, .rightMouseDown])
@@ -27,9 +26,11 @@ final class HardwareStatusItem {
         HardwareMonitor.shared.addObserver { [weak self] in
             DispatchQueue.main.async {
                 self?.barView.stats = HardwareMonitor.shared.stats
-                self?.barView.needsDisplay = true
+                self?.refreshImage()
             }
         }
+
+        refreshImage()
     }
 
     @objc private func togglePopover() {
@@ -43,8 +44,14 @@ final class HardwareStatusItem {
 
     func remove() {
         popover?.close()
-        barView.removeFromSuperview()
         NSStatusBar.system.removeStatusItem(item)
+    }
+
+    func refreshImage() {
+        let size = barView.intrinsicContentSize
+        barView.frame.size = size
+        item.length = size.width
+        item.button?.image = barView.renderedImage()
     }
 }
 
@@ -63,11 +70,14 @@ final class HardwareBarView: NSView {
     var showFPS: Bool = false
     var showFan: Bool = false
 
-    /// "vertical" | "circular"
+    /// "vertical" | "horizontal" | "circular" | "dot"
     var barStyle: String = "vertical"
 
     /// "vertical" (beside bar) | "horizontal" (below bar, like preview)
     var labelPosition: String = "vertical"
+
+    /// "white" | "green"
+    var colorScale: String = "white"
 
     // -----------------------------------------------------------------------
     // MARK: - Layout
@@ -77,15 +87,18 @@ final class HardwareBarView: NSView {
     private let gap: CGFloat = 3
     private let leftPadding: CGFloat = 4
     private let fontSize: CGFloat = 7.0
-    private let circularRadius: CGFloat = 6
+    private let horizontalLabelFontSize: CGFloat = 7.4
+    private let circularHorizontalLabelFontSize: CGFloat = 6.2
+    private let circularRadius: CGFloat = 6.75
+    private let circularVerticalModuleW: CGFloat = 30
 
     /// Bar height depends on label position: shorter when text is below.
     private var barH: CGFloat {
-        labelPosition == "horizontal" ? 12 : 18
+        labelPosition == "horizontal" ? 10 : 18
     }
 
     private var barY: CGFloat {
-        labelPosition == "horizontal" ? 4 : 2
+        labelPosition == "horizontal" ? 11 : 2
     }
 
     override init(frame: NSRect) { super.init(frame: frame) }
@@ -109,6 +122,10 @@ final class HardwareBarView: NSView {
                 drawValue(module: mod, in: rect)
             } else if barStyle == "circular" {
                 drawCircular(module: mod, in: rect)
+            } else if barStyle == "horizontal" {
+                drawHorizontalBar(module: mod, in: rect)
+            } else if barStyle == "dot" {
+                drawDot(module: mod, in: rect)
             } else {
                 drawVertical(module: mod, in: rect)
             }
@@ -139,10 +156,86 @@ final class HardwareBarView: NSView {
         }
 
         if isHorizontal {
-            drawHorizontalLabel(module.label, x: rect.midX, y: barY - 2, in: rect)
+            drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
         } else {
             // Label on the left side of the bar
             let labelX = barOriginX - gap - estimatedCharWidth()
+            drawVerticalLabel(module.label, x: labelX, in: rect)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: - Horizontal bar
+    // -----------------------------------------------------------------------
+
+    private func drawHorizontalBar(module: Module, in rect: NSRect) {
+        let isHorizontal = labelPosition == "horizontal"
+        let labelW = estimatedLabelWidth(module.label)
+        let trackH: CGFloat = 5
+        let trackW: CGFloat
+        let trackX: CGFloat
+        let trackY: CGFloat
+
+        if isHorizontal {
+            trackW = min(28, max(20, rect.width - 4))
+            trackX = rect.midX - trackW / 2
+            trackY = 11
+        } else {
+            trackW = max(18, rect.width - labelW - gap - 4)
+            trackX = rect.minX + labelW + gap
+            trackY = rect.midY - trackH / 2
+        }
+
+        let track = NSRect(x: trackX, y: trackY, width: trackW, height: trackH)
+        let trackPath = NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2)
+        NSColor.white.withAlphaComponent(0.15).setFill()
+        trackPath.fill()
+
+        if module.ratio > 0 {
+            let fillW = max(trackH, trackW * module.ratio)
+            let fillRect = NSRect(x: trackX, y: trackY, width: fillW, height: trackH)
+            let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: trackH / 2, yRadius: trackH / 2)
+            barColor(ratio: module.ratio, forceWhite: module.forceWhite).setFill()
+            fillPath.fill()
+        }
+
+        if isHorizontal {
+            drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
+        } else {
+            drawHorizontalLabelCentered(module.label, x: rect.minX + labelW / 2, centerY: rect.midY, in: rect)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: - Dot
+    // -----------------------------------------------------------------------
+
+    private func drawDot(module: Module, in rect: NSRect) {
+        let isHorizontal = labelPosition == "horizontal"
+        let dotD: CGFloat = 6
+        let dotX: CGFloat
+        let dotY: CGFloat
+
+        if isHorizontal {
+            dotX = rect.midX - dotD / 2
+            dotY = 13
+        } else {
+            let labelW = estimatedCharWidth()
+            let contentW = labelW + gap + dotD
+            let startX = rect.minX + max(1, (rect.width - contentW) / 2)
+            dotX = startX + labelW + gap
+            dotY = rect.midY - dotD / 2
+        }
+
+        let dotRect = NSRect(x: dotX, y: dotY, width: dotD, height: dotD)
+        let dotPath = NSBezierPath(ovalIn: dotRect)
+        barColor(ratio: module.ratio, forceWhite: false, preferredScale: "green").setFill()
+        dotPath.fill()
+
+        if isHorizontal {
+            drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
+        } else {
+            let labelX = dotX - gap - estimatedCharWidth()
             drawVerticalLabel(module.label, x: labelX, in: rect)
         }
     }
@@ -155,10 +248,18 @@ final class HardwareBarView: NSView {
         let isHorizontal = labelPosition == "horizontal"
         let r = circularRadius
         let centerY: CGFloat = isHorizontal ? rect.midY + 4 : rect.midY
-        // Bar and label share the module; ring is left-aligned, label follows
-        let ringX = rect.minX + r + 2
-        let center = NSPoint(x: ringX, y: centerY)
         let lineW: CGFloat = 2.5
+        let strokeInset = lineW / 2
+        let labelW = estimatedCharWidth()
+        let ringX: CGFloat
+        if isHorizontal {
+            ringX = rect.midX
+        } else {
+            let contentW = labelW + gap + (r + strokeInset) * 2
+            let startX = rect.minX + max(1, (rect.width - contentW) / 2)
+            ringX = startX + labelW + gap + r + strokeInset
+        }
+        let center = NSPoint(x: ringX, y: centerY)
 
         // Background ring
         let bgPath = NSBezierPath()
@@ -168,11 +269,12 @@ final class HardwareBarView: NSView {
         bgPath.stroke()
 
         // Filled arc
-        let endAngle: CGFloat = -90 + 360 * module.ratio
+        let startAngle: CGFloat = 90
+        let endAngle: CGFloat = startAngle - 360 * module.ratio
         if module.ratio > 0.01 {
             let arcPath = NSBezierPath()
             arcPath.appendArc(withCenter: center, radius: r,
-                              startAngle: -90, endAngle: endAngle, clockwise: true)
+                              startAngle: startAngle, endAngle: endAngle, clockwise: true)
             arcPath.lineWidth = lineW
             arcPath.lineCapStyle = .round
             barColor(ratio: module.ratio, forceWhite: module.forceWhite).setStroke()
@@ -181,9 +283,9 @@ final class HardwareBarView: NSView {
 
         // Label on the left side of the ring
         if isHorizontal {
-            drawHorizontalLabel(module.label, x: center.x, y: center.y - r - 4, in: rect)
+            drawHorizontalLabel(module.label, x: center.x, y: 1, in: rect, fontSize: circularHorizontalLabelFontSize)
         } else {
-            let labelX = center.x - r - gap - estimatedCharWidth()
+            let labelX = center.x - r - strokeInset - gap - labelW
             drawVerticalLabel(module.label, x: labelX, in: rect)
         }
     }
@@ -197,6 +299,13 @@ final class HardwareBarView: NSView {
         let s = "X" as NSString
         return s.size(withAttributes: [
             .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
+        ]).width
+    }
+
+    private func estimatedLabelWidth(_ text: String) -> CGFloat {
+        let s = text as NSString
+        return s.size(withAttributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: horizontalLabelFontSize, weight: .bold),
         ]).width
     }
 
@@ -222,14 +331,28 @@ final class HardwareBarView: NSView {
         }
     }
 
-    private func drawHorizontalLabel(_ text: String, x: CGFloat, y: CGFloat, in rect: NSRect) {
+    private func drawHorizontalLabel(_ text: String, x: CGFloat, y: CGFloat, in rect: NSRect, fontSize: CGFloat? = nil) {
         let s = text as NSString
+        let labelFontSize = fontSize ?? horizontalLabelFontSize
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 6.5, weight: .bold),
+            .font: NSFont.monospacedSystemFont(ofSize: labelFontSize, weight: .bold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.7),
         ]
         let sz = s.size(withAttributes: attrs)
-        s.draw(at: NSPoint(x: x - sz.width / 2, y: y - sz.height),
+        let drawY = max(rect.minY + 1, min(y, rect.maxY - sz.height - 1))
+        s.draw(at: NSPoint(x: x - sz.width / 2, y: drawY),
+               withAttributes: attrs)
+    }
+
+    private func drawHorizontalLabelCentered(_ text: String, x: CGFloat, centerY: CGFloat, in rect: NSRect) {
+        let s = text as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: horizontalLabelFontSize, weight: .bold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.7),
+        ]
+        let sz = s.size(withAttributes: attrs)
+        let drawY = max(rect.minY + 1, min(centerY - sz.height / 2, rect.maxY - sz.height - 1))
+        s.draw(at: NSPoint(x: x - sz.width / 2, y: drawY),
                withAttributes: attrs)
     }
 
@@ -268,25 +391,16 @@ final class HardwareBarView: NSView {
     // MARK: - Color
     // -----------------------------------------------------------------------
 
-    /// White ≤ 50%, yellow at 50%+, orange at 65%+, red at 80%+.
-    private func barColor(ratio: CGFloat, forceWhite: Bool = false) -> NSColor {
+    /// Hard threshold colors: low is white/green, then yellow, orange, red.
+    private func barColor(ratio: CGFloat, forceWhite: Bool = false, preferredScale: String? = nil) -> NSColor {
         if forceWhite { return NSColor.white }
         let r = max(0, min(1, ratio))
-        if r < 0.5 { return NSColor.white }
-        let hue: CGFloat
-        if r < 0.65 {
-            // 50–65%: yellow (0.15) → orange (0.10)
-            let t = (r - 0.5) / 0.15
-            hue = 0.15 - 0.05 * t
-        } else if r < 0.8 {
-            // 65–80%: orange (0.10) → red (0.0)
-            let t = (r - 0.65) / 0.15
-            hue = 0.10 * (1.0 - t)
-        } else {
-            // 80%+: red
-            hue = 0.0
-        }
-        return NSColor(hue: hue, saturation: 0.9, brightness: 0.95, alpha: 1.0)
+        let scale = preferredScale ?? colorScale
+        if r >= 0.8 { return NSColor(hue: 0.0, saturation: 0.9, brightness: 0.95, alpha: 1.0) }
+        if r >= 0.65 { return NSColor(hue: 0.10, saturation: 0.9, brightness: 0.95, alpha: 1.0) }
+        if r >= 0.5 { return NSColor(hue: 0.15, saturation: 0.9, brightness: 0.95, alpha: 1.0) }
+        if scale == "green" { return NSColor(hue: 0.34, saturation: 0.62, brightness: 1.0, alpha: 1.0) }
+        return NSColor.white
     }
 
     // -----------------------------------------------------------------------
@@ -365,9 +479,17 @@ final class HardwareBarView: NSView {
 
     override var intrinsicContentSize: NSSize {
         let count = max(1, activeModules().count)
-        let perModule: CGFloat = barStyle == "circular"
-            ? (labelPosition == "horizontal" ? 22 : 22)
-            : (labelPosition == "horizontal" ? 16 : 20)
+        let perModule: CGFloat
+        switch barStyle {
+        case "circular":
+            perModule = labelPosition == "horizontal" ? 24 : circularVerticalModuleW
+        case "horizontal":
+            perModule = labelPosition == "horizontal" ? 36 : 46
+        case "dot":
+            perModule = labelPosition == "horizontal" ? 18 : 24
+        default:
+            perModule = labelPosition == "horizontal" ? 16 : 20
+        }
         return NSSize(width: perModule * CGFloat(count) + 4 + leftPadding, height: 22)
     }
 
@@ -375,6 +497,15 @@ final class HardwareBarView: NSView {
         frame.size = intrinsicContentSize
         if let btn = superview as? NSStatusBarButton {
             btn.frame = frame
+        }
+    }
+
+    func renderedImage() -> NSImage {
+        let size = intrinsicContentSize
+        frame.size = size
+        return NSImage(size: size, flipped: false) { _ in
+            self.draw(self.bounds)
+            return true
         }
     }
 }
@@ -528,9 +659,8 @@ final class HardwarePopover: NSObject {
             presetLabel.font = NSFont.systemFont(ofSize: 10)
             presetLabel.textColor = .secondaryLabelColor
             let presetBtn = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 120, height: 20), pullsDown: false)
-            let presetTitles = ["silent": "Silent", "default": "Default",
-                                "performance": "Performance", "fullBlast": "Full Blast"]
-            presetBtn.addItems(withTitles: ["Silent", "Default", "Performance", "Full Blast"])
+            let presetTitles = ["default": "Default", "performance": "Performance"]
+            presetBtn.addItems(withTitles: ["Default", "Performance"])
             if let title = presetTitles[AppSettings.shared.hardwareStatsFanPreset] {
                 presetBtn.selectItem(withTitle: title)
             }
@@ -588,16 +718,11 @@ final class HardwarePopover: NSObject {
     }
 
     @objc private func presetChanged(_ sender: NSPopUpButton) {
-        let map = ["Silent": "silent", "Default": "default",
-                   "Performance": "performance", "Full Blast": "fullBlast"]
+        let map = ["Default": "default", "Performance": "performance"]
         guard let title = sender.selectedItem?.title,
               let preset = map[title] else { return }
         AppSettings.shared.hardwareStatsFanPreset = preset
-        if preset == "fullBlast" {
-            HardwareMonitor.shared.fanFullBlast()
-        } else if preset == "default" {
-            HardwareMonitor.shared.fanReset()
-        }
+        HardwareMonitor.shared.applySelectedFanPresetFromUser()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.rebuild()
         }

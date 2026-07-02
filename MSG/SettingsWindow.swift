@@ -134,6 +134,8 @@ final class SettingsViewModel: ObservableObject {
     var systemHUDEnabled: Bool     { get { s.systemHUDEnabled }     set { s.systemHUDEnabled = newValue;     objectWillChange.send() } }
     var systemHUDVolume: Bool      { get { s.systemHUDVolume }      set { s.systemHUDVolume = newValue;      objectWillChange.send() } }
     var systemHUDBrightness: Bool  { get { s.systemHUDBrightness }  set { s.systemHUDBrightness = newValue;  objectWillChange.send() } }
+    var systemHUDPresentationMode: SystemHUDPresentationMode { get { s.systemHUDPresentationMode } set { s.systemHUDPresentationMode = newValue; objectWillChange.send() } }
+    var systemHUDDeviceIcons: Bool { get { s.systemHUDDeviceIcons } set { s.systemHUDDeviceIcons = newValue; objectWillChange.send() } }
     var showDeveloper: Bool        { get { s.showDeveloper }        set { s.showDeveloper = newValue;        objectWillChange.send() } }
     var hardwareStatsEnabled: Bool        { get { s.hardwareStatsEnabled }      set { s.hardwareStatsEnabled = newValue;      objectWillChange.send() } }
     var hardwareStatsShowCPU: Bool        { get { s.hardwareStatsShowCPU }      set { s.hardwareStatsShowCPU = newValue;      objectWillChange.send() } }
@@ -144,6 +146,7 @@ final class SettingsViewModel: ObservableObject {
     var hardwareStatsShowFan: Bool        { get { s.hardwareStatsShowFan }      set { s.hardwareStatsShowFan = newValue;      objectWillChange.send() } }
     var hardwareStatsBarStyle: String     { get { s.hardwareStatsBarStyle }     set { s.hardwareStatsBarStyle = newValue;     objectWillChange.send() } }
     var hardwareStatsLabelPos: String     { get { s.hardwareStatsLabelPos }     set { s.hardwareStatsLabelPos = newValue;     objectWillChange.send() } }
+    var hardwareStatsColorScale: String   { get { s.hardwareStatsColorScale }   set { s.hardwareStatsColorScale = newValue;   objectWillChange.send() } }
     var hardwareStatsInterval: Double     { get { s.hardwareStatsInterval }     set { s.hardwareStatsInterval = newValue;     objectWillChange.send() } }
     var hardwareStatsTempSensor: String   { get { s.hardwareStatsTempSensor }   set { s.hardwareStatsTempSensor = newValue;   objectWillChange.send() } }
     var hardwareStatsMemMode: String      { get { s.hardwareStatsMemMode }      set { s.hardwareStatsMemMode = newValue;      objectWillChange.send() } }
@@ -179,7 +182,7 @@ final class SettingsViewModel: ObservableObject {
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, menubar, spacer, corner, music, tray, dock, displaplacer, hardware, developer
+    case general, about, menubar, spacer, hud, corner, music, tray, dock, displaplacer, hardware, developer
     var id: String { rawValue }
 
     var title: String {
@@ -188,6 +191,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return "About"
         case .menubar:      return "Spacer"
         case .spacer:       return "Space Indicator"
+        case .hud:          return "HUD Replacer"
         case .corner:       return "Cornermization"
         case .music:        return "Music Display"
         case .tray:         return "Tray"
@@ -204,6 +208,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return "info.circle.fill"
         case .menubar:      return "menubar.rectangle"
         case .spacer:       return "rectangle.split.3x1.fill"
+        case .hud:          return "slider.horizontal.3"
         case .corner:       return "viewfinder"
         case .music:        return "music.note"
         case .tray:         return "pad.header"
@@ -224,6 +229,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return Color(hex: 0xff5a3c)
         case .menubar:      return Color(hex: 0x64d2ff)
         case .spacer:       return Color(hex: 0x117cfc)
+        case .hud:          return Color(hex: 0xbf5af2)
         case .corner:       return Color(hex: 0x5e5ce6)
         case .music:        return Color(hex: 0xff2d55)
         case .tray:         return Color(hex: 0xff9500)
@@ -240,6 +246,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return "Version info and acknowledgements"
         case .menubar:      return "Tighten the spacing and click area around every menu bar icon, system-wide"
         case .spacer:       return "Menu bar Deskspace indicator for Mission Control spaces"
+        case .hud:          return "Replace the macOS volume and brightness popup"
         case .corner:       return "Paint black corner masks to match each display's curvature"
         case .music:        return "Menu bar music label with trackpad gesture control"
         case .tray:         return "Floating ⌘⇥ app switcher HUD with pinned apps and Now Playing"
@@ -440,6 +447,7 @@ struct SettingsWindow: View {
                     sidebarRow(.menubar)
                     sidebarRow(.corner)
                     sidebarRow(.spacer)
+                    sidebarRow(.hud)
                     sidebarRow(.music)
                     sidebarRow(.tray)
                     sidebarRow(.dock)
@@ -471,6 +479,7 @@ struct SettingsWindow: View {
         case .general:      GeneralPane(vm: vm)
         case .menubar:      MenuBarPane(vm: vm)
         case .spacer:       SpacerPane(vm: vm)
+        case .hud:          HUDReplacerPane(vm: vm)
         case .corner:       CornermizationPane(vm: vm)
         case .music:        MusicPane(vm: vm)
         case .tray:         TrayPane(vm: vm)

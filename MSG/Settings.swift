@@ -41,6 +41,11 @@ enum MusicSource: String, CaseIterable {
     }
 }
 
+enum SystemHUDPresentationMode: String, CaseIterable {
+    case dynamic = "Dynamic"
+    case separate = "Separate Menu Bar"
+}
+
 // MARK: - Fake Display
 
 struct FakeDisplay: Codable, Identifiable, Equatable {
@@ -118,6 +123,7 @@ final class AppSettings {
         static let hardwareStatsFanCurves      = "hardwareStatsFanCurves"
         static let hardwareStatsBarStyle       = "hardwareStatsBarStyle"
         static let hardwareStatsLabelPos       = "hardwareStatsLabelPos"
+        static let hardwareStatsColorScale     = "hardwareStatsColorScale"
         static let hardwareStatsInterval       = "hardwareStatsInterval"
         static let hardwareStatsTempSensor     = "hardwareStatsTempSensor"
         static let hardwareStatsMemMode        = "hardwareStatsMemMode"
@@ -126,6 +132,8 @@ final class AppSettings {
         static let systemHUDEnabled            = "systemHUDEnabled"
         static let systemHUDVolume             = "systemHUDVolume"
         static let systemHUDBrightness         = "systemHUDBrightness"
+        static let systemHUDPresentationMode   = "systemHUDPresentationMode"
+        static let systemHUDDeviceIcons        = "systemHUDDeviceIcons"
     }
 
     static let shared = AppSettings()
@@ -153,7 +161,9 @@ final class AppSettings {
 
     func extCornerRadius(for uuid: String) -> CGFloat {
         if mirrorMainDisplay { return cornerRadius }
-        return CGFloat(UserDefaults.standard.float(forKey: extKey(Key.extCornerRadius, uuid: uuid)))
+        let key = extKey(Key.extCornerRadius, uuid: uuid)
+        guard UserDefaults.standard.object(forKey: key) != nil else { return extCornerRadius }
+        return CGFloat(UserDefaults.standard.float(forKey: key))
     }
     func setExtCornerRadius(_ v: CGFloat, for uuid: String) {
         UserDefaults.standard.set(Float(v), forKey: extKey(Key.extCornerRadius, uuid: uuid))
@@ -246,6 +256,7 @@ final class AppSettings {
     var hardwareStatsShowFan: Bool         { didSet { save(); onChange?(.structural) } }
     var hardwareStatsBarStyle: String      { didSet { save(); onChange?(.structural) } }
     var hardwareStatsLabelPos: String      { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsColorScale: String    { didSet { save(); onChange?(.structural) } }
     var hardwareStatsInterval: Double      { didSet { save() } }
     var hardwareStatsTempSensor: String    { didSet { save(); onChange?(.structural) } }
     var hardwareStatsMemMode: String       { didSet { save(); onChange?(.structural) } }
@@ -258,6 +269,8 @@ final class AppSettings {
     var systemHUDEnabled: Bool    { didSet { save(); onChange?(.structural) } }
     var systemHUDVolume: Bool     { didSet { save() } }
     var systemHUDBrightness: Bool { didSet { save() } }
+    var systemHUDPresentationMode: SystemHUDPresentationMode { didSet { save(); onChange?(.structural) } }
+    var systemHUDDeviceIcons: Bool { didSet { save() } }
 
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
@@ -317,20 +330,21 @@ final class AppSettings {
             Key.hardwareStatsShowFan:       false,
             Key.hardwareStatsBarStyle:      "vertical",
             Key.hardwareStatsLabelPos:      "vertical",
+            Key.hardwareStatsColorScale:    "white",
             Key.hardwareStatsInterval:      2.0,
             Key.hardwareStatsTempSensor:    "auto",
             Key.hardwareStatsMemMode:       "pressure",
             Key.hardwareStatsFanPreset:    "default",
             Key.hardwareStatsFanCurves:    [
-                "silent":      [[30.0, 15.0], [50.0, 25.0], [65.0, 40.0], [80.0, 60.0], [95.0, 80.0]],
                 "performance": [[30.0, 30.0], [50.0, 50.0], [65.0, 70.0], [80.0, 85.0], [95.0, 100.0]],
-                "fullBlast":   [[0.0, 100.0], [100.0, 100.0]],
             ],
             Key.hardwareStatsTempMin:      30.0,
             Key.hardwareStatsTempMax:      100.0,
             Key.systemHUDEnabled:        false,
             Key.systemHUDVolume:         true,
             Key.systemHUDBrightness:     true,
+            Key.systemHUDPresentationMode: SystemHUDPresentationMode.dynamic.rawValue,
+            Key.systemHUDDeviceIcons:    true,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
@@ -387,19 +401,19 @@ final class AppSettings {
         hardwareStatsShowFan      = d.object(forKey: Key.hardwareStatsShowFan) as? Bool ?? false
         hardwareStatsBarStyle     = d.string(forKey: Key.hardwareStatsBarStyle) ?? "vertical"
         hardwareStatsLabelPos     = d.string(forKey: Key.hardwareStatsLabelPos) ?? "vertical"
+        hardwareStatsColorScale   = d.string(forKey: Key.hardwareStatsColorScale) ?? "white"
         hardwareStatsInterval     = d.object(forKey: Key.hardwareStatsInterval) as? Double ?? 2.0
         hardwareStatsTempSensor   = d.string(forKey: Key.hardwareStatsTempSensor) ?? "auto"
         hardwareStatsMemMode      = d.string(forKey: Key.hardwareStatsMemMode) ?? "pressure"
         hardwareStatsTempMin      = d.object(forKey: Key.hardwareStatsTempMin) as? Double ?? 30.0
         hardwareStatsTempMax      = d.object(forKey: Key.hardwareStatsTempMax) as? Double ?? 100.0
-        hardwareStatsFanPreset    = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
-        hardwareStatsFanCurves    = (try? JSONDecoder().decode([String: [[Double]]].self,
-                                       from: d.data(forKey: Key.hardwareStatsFanCurves) ?? Data()))
-                                    ?? [
-                                        "silent":      [[30, 15], [50, 25], [65, 40], [80, 60], [95, 80]],
-                                        "performance": [[30, 30], [50, 50], [65, 70], [80, 85], [95, 100]],
-                                        "fullBlast":   [[0, 100], [100, 100]],
-                                    ]
+        let savedFanPreset = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
+        hardwareStatsFanPreset = savedFanPreset == "performance" ? "performance" : "default"
+        let decodedFanCurves = (try? JSONDecoder().decode([String: [[Double]]].self,
+                                       from: d.data(forKey: Key.hardwareStatsFanCurves) ?? Data())) ?? [:]
+        hardwareStatsFanCurves = [
+            "performance": decodedFanCurves["performance"] ?? [[30, 30], [50, 50], [65, 70], [80, 85], [95, 100]],
+        ]
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
             fakeDisplays = decoded
@@ -407,6 +421,8 @@ final class AppSettings {
         systemHUDEnabled    = d.object(forKey: Key.systemHUDEnabled) as? Bool ?? false
         systemHUDVolume     = d.object(forKey: Key.systemHUDVolume) as? Bool ?? true
         systemHUDBrightness = d.object(forKey: Key.systemHUDBrightness) as? Bool ?? true
+        systemHUDPresentationMode = SystemHUDPresentationMode(rawValue: d.string(forKey: Key.systemHUDPresentationMode) ?? "") ?? .dynamic
+        systemHUDDeviceIcons = d.object(forKey: Key.systemHUDDeviceIcons) as? Bool ?? true
     }
 
     private func save() {
@@ -461,6 +477,7 @@ final class AppSettings {
         d.set(hardwareStatsShowFan,          forKey: Key.hardwareStatsShowFan)
         d.set(hardwareStatsBarStyle,         forKey: Key.hardwareStatsBarStyle)
         d.set(hardwareStatsLabelPos,         forKey: Key.hardwareStatsLabelPos)
+        d.set(hardwareStatsColorScale,       forKey: Key.hardwareStatsColorScale)
         d.set(hardwareStatsInterval,         forKey: Key.hardwareStatsInterval)
         d.set(hardwareStatsTempSensor,       forKey: Key.hardwareStatsTempSensor)
         d.set(hardwareStatsMemMode,          forKey: Key.hardwareStatsMemMode)
@@ -475,5 +492,7 @@ final class AppSettings {
         d.set(systemHUDEnabled,    forKey: Key.systemHUDEnabled)
         d.set(systemHUDVolume,     forKey: Key.systemHUDVolume)
         d.set(systemHUDBrightness, forKey: Key.systemHUDBrightness)
+        d.set(systemHUDPresentationMode.rawValue, forKey: Key.systemHUDPresentationMode)
+        d.set(systemHUDDeviceIcons, forKey: Key.systemHUDDeviceIcons)
     }
 }

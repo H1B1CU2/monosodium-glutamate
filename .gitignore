@@ -7,3 +7,4 @@ build/
 xcuserdata/
 *.xcuserstate
 .claude/settings.local.json
+.claude/worktrees/

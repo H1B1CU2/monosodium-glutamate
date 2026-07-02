@@ -9,6 +9,7 @@ final class MusicPopover {
     private weak var artistLabel: NSTextField?
     private weak var volumeBar: VolumeBar?
     private weak var touchPad: TouchPad?
+    private weak var sourceButton: NSStatusBarButton?
 
     var isShown: Bool { window.isVisible }
 
@@ -35,6 +36,7 @@ final class MusicPopover {
     }
 
     func show(relativeTo button: NSStatusBarButton) {
+        self.sourceButton = button
         titleLabel?.stringValue = monitor.currentTitle ?? "Not Playing"
         artistLabel?.stringValue = monitor.currentArtist ?? ""
         volumeBar?.setLevel(CGFloat(monitor.volume) / 100.0)
@@ -62,6 +64,12 @@ final class MusicPopover {
 
         closeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self, self.window.isVisible else { return }
+            let loc = NSEvent.mouseLocation
+            if self.window.frame.contains(loc) { return }
+            if let btn = self.sourceButton {
+                let btnScreen = btn.window?.convertToScreen(btn.convert(btn.bounds, to: nil)) ?? .zero
+                if btnScreen.contains(loc) { return }
+            }
             DispatchQueue.main.async { self.close() }
         }
 

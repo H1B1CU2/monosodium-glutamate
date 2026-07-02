@@ -26,6 +26,7 @@ xcrun -sdk macosx swiftc \
     Indicator.swift \
     IndicatorRenderer.swift \
     SystemHUDMonitor.swift \
+    SystemHUDStatusItem.swift \
     CornerWindow.swift \
     AppDelegate.swift \
     HardwareMonitor.swift \
@@ -67,6 +68,13 @@ echo "▸ Building MediaRemote helper dylib..."
 clang -dynamiclib MediaRemoteHelper.m \
     -o "$RESOURCES/libMSGMediaRemote.dylib" \
     -framework Foundation -fobjc-arc -O2
+
+echo "▸ Building fan control helper..."
+clang FanControlHelper.c \
+    -o "$RESOURCES/MSGFanControlHelper" \
+    -framework CoreFoundation \
+    -framework IOKit \
+    -O2
 
 echo "▸ Copying Info.plist..."
 cp Info.plist "$CONTENTS/Info.plist"

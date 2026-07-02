@@ -1,5 +1,6 @@
 import IOKit
 import AppKit
+import Darwin
 
 // ---------------------------------------------------------------------------
 // Mach / sysctl runtime bindings
@@ -80,6 +81,11 @@ private let CPU_STATE_USER   = 0
 private let CPU_STATE_SYSTEM = 1
 private let CPU_STATE_IDLE   = 2
 private let CPU_STATE_NICE   = 3
+
+/// Build a 4-char-code SMC key (UInt32) from a string, e.g. "TC0D".
+private func smcFourCC(_ s: String) -> UInt32 {
+    s.utf8.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+}
 
 // ---------------------------------------------------------------------------
 // FanInfo
@@ -318,11 +324,6 @@ final class HardwareMonitor {
 
     // MARK: - Temperature (SMC)
 
-    /// Build a 4-char-code SMC key (UInt32) from a string, e.g. "TC0D".
-    private static func fourCC(_ s: String) -> UInt32 {
-        s.utf8.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-    }
-
     /// CPU temperature sensors across all Apple Silicon generations + Intel.
     /// Non-existent keys simply return nil; we average whatever is valid, so
     /// one list covers M1/M2/M3/M4 and Intel without per-chip detection.
@@ -355,8 +356,8 @@ final class HardwareMonitor {
         "Tg0G", "Tg0H", "Tg1U", "Tg1k", "Tg0K", "Tg0L", "Tg0d", "Tg0e", "Tg0j", "Tg0k",
     ]
 
-    private static let cpuSensorKeys: [UInt32] = cpuSensorNames.map(fourCC)
-    private static let gpuSensorKeys: [UInt32] = gpuSensorNames.map(fourCC)
+    private static let cpuSensorKeys: [UInt32] = cpuSensorNames.map(smcFourCC)
+    private static let gpuSensorKeys: [UInt32] = gpuSensorNames.map(smcFourCC)
 
     private func readTemps() {
         stats.cpuTemp = averageTemp(Self.cpuSensorKeys)
@@ -396,16 +397,20 @@ final class HardwareMonitor {
         let act, min, max, target, mode, modeLower: UInt32
         init(_ i: Int) {
             func k(_ suffix: String) -> UInt32 {
-                HardwareMonitor.fourCC("F\(i)\(suffix)")
+                smcFourCC("F\(i)\(suffix)")
             }
             act = k("Ac"); min = k("Mn"); max = k("Mx")
             target = k("Tg"); mode = k("Md"); modeLower = k("md")
         }
     }
-    private static let fnumKey = fourCC("FNum")
+    private static let fnumKey = smcFourCC("FNum")
     private var fanLogOnce = false
     private var tempLogOnce = false
     private var fansForced = false
+    private var lastHelperFanPercent: Double?
+    private var lastHelperFanWriteAt: Date?
+    private var helperFanControlActive = false
+    private var fanPresetApplyInFlight = false
 
     private func readFans() {
         let fanCountRaw = SMCController.readUInt16(Self.fnumKey)
@@ -448,13 +453,21 @@ final class HardwareMonitor {
 
     /// Ftst key — diagnostic mode flag that suppresses thermalmonitord.
     /// Required on M3/M4+ to take manual fan control.
-    private static let ftstKey = fourCC("Ftst")
+    private static let ftstKey = smcFourCC("Ftst")
     /// FS! key — fan status/manual force bitmask key. Used on Intel Macs.
-    private static let fsKey = fourCC("FS! ")
+    private static let fsKey = smcFourCC("FS! ")
+
+    private static func shouldUseFSFanControl() -> Bool {
+        SMCController.keyInfo(Self.fsKey) != nil && SMCController.keyInfo(Self.ftstKey) == nil
+    }
 
     /// Force all fans to maximum speed. Uses the Ftst unlock sequence when
     /// direct writes are blocked by thermalmonitord (M3/M4+).
     func fanFullBlast() {
+        guard !fanControlUnlocking else {
+            NSLog("[HW] fanFullBlast ignored while another fan command is in flight")
+            return
+        }
         _ = SMCController.open()
         readFans()
         guard !stats.fans.isEmpty else {
@@ -464,10 +477,26 @@ final class HardwareMonitor {
 
         fansForced = true
         fanControlUnlocking = true
+        if !Self.shouldUseFSFanControl() {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let helperOK = Self.runFanHelper(arguments: ["full"], allowPrompt: true)
+                NSLog("[HW] fanFullBlast privileged helper: %@", helperOK ? "OK" : "FAIL")
+                self.helperFanControlActive = helperOK
+                if helperOK {
+                    self.lastHelperFanPercent = 100
+                    self.lastHelperFanWriteAt = Date()
+                }
+                self.fanControlUnlocking = false
+                DispatchQueue.main.async { self.readFans() }
+            }
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            
-            if SMCController.keyInfo(Self.fsKey) != nil {
+
+            let directOK: Bool
+            if Self.shouldUseFSFanControl() {
                 // Intel / FS! path
                 var mask: UInt16 = 0
                 for f in self.stats.fans {
@@ -475,18 +504,20 @@ final class HardwareMonitor {
                 }
                 let fsOK = SMCController.write(Self.fsKey, u16: mask)
                 NSLog("[HW] fanFullBlast FS! write mask %d: %@", mask, fsOK ? "OK" : "FAIL")
-                
+                var targetsOK = true
                 for f in self.stats.fans {
                     let fk = FanKeys(f.index)
                     let tgOK = SMCController.write(fk.target, u16: UInt16(f.max))
+                    targetsOK = targetsOK && tgOK
                     NSLog("[HW] fanFullBlast %@: Tg=%d max=%d", f.name, tgOK, f.max)
                 }
+                directOK = fsOK && targetsOK
             } else {
                 // Apple Silicon / Ftst path
                 // Step 1: Signal diagnostic mode — suppresses thermalmonitord.
                 let ftstOK = SMCController.write(Self.ftstKey, u16: 1)
                 NSLog("[HW] fanFullBlast Ftst=1: %@", ftstOK ? "OK" : "FAIL")
-
+                var targetsOK = ftstOK
                 for f in self.stats.fans {
                     let fk = FanKeys(f.index)
                     // Step 2: Wait for mode to leave System (3) → Auto (0).
@@ -498,7 +529,18 @@ final class HardwareMonitor {
                     _ = SMCController.write(fk.modeLower, u16: 1)
                     // Step 4: Set target to max RPM.
                     let tgOK = SMCController.write(fk.target, u16: UInt16(f.max))
+                    targetsOK = targetsOK && tgOK
                     NSLog("[HW] fanFullBlast %@: Tg=%d max=%@", f.name, tgOK, String(f.max))
+                }
+                directOK = targetsOK
+            }
+            if !directOK {
+                let helperOK = Self.runFanHelper(arguments: ["full"])
+                NSLog("[HW] fanFullBlast privileged helper: %@", helperOK ? "OK" : "FAIL")
+                if helperOK {
+                    self.helperFanControlActive = true
+                    self.lastHelperFanPercent = 100
+                    self.lastHelperFanWriteAt = Date()
                 }
             }
             self.fanControlUnlocking = false
@@ -526,6 +568,10 @@ final class HardwareMonitor {
 
     /// Return all fans to automatic control and release Ftst.
     func fanReset() {
+        guard !fanControlUnlocking else {
+            NSLog("[HW] fanReset ignored while another fan command is in flight")
+            return
+        }
         _ = SMCController.open()
         readFans()
         guard !stats.fans.isEmpty else {
@@ -533,27 +579,54 @@ final class HardwareMonitor {
             return
         }
 
+        if !Self.shouldUseFSFanControl() {
+            fanControlUnlocking = true
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let helperOK = Self.runFanHelper(arguments: ["auto"], allowPrompt: true)
+                NSLog("[HW] fanReset privileged helper: %@", helperOK ? "OK" : "FAIL")
+                self.fansForced = false
+                self.helperFanControlActive = false
+                self.fanControlUnlocking = false
+                self.lastHelperFanPercent = nil
+                self.lastHelperFanWriteAt = nil
+                DispatchQueue.main.async { self.readFans() }
+            }
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            
-            if SMCController.keyInfo(Self.fsKey) != nil {
+            let directOK: Bool
+            if Self.shouldUseFSFanControl() {
                 // Intel / FS! path
                 let fsOK = SMCController.write(Self.fsKey, u16: 0)
                 NSLog("[HW] fanReset FS!=0: %@", fsOK ? "OK" : "FAIL")
+                directOK = fsOK
             } else {
                 // Apple Silicon / Ftst path
+                var modesOK = true
                 for f in self.stats.fans {
                     let fk = FanKeys(f.index)
-                    _ = SMCController.write(fk.mode, u16: 0)
-                    _ = SMCController.write(fk.modeLower, u16: 0)
+                    let mdOK = SMCController.write(fk.mode, u16: 0)
+                    let lowerOK = SMCController.write(fk.modeLower, u16: 0)
+                    modesOK = modesOK && (mdOK || lowerOK)
                     NSLog("[HW] fanReset %@: mode→Auto", f.name)
                 }
                 // Release diagnostic mode so thermalmonitord resumes.
                 let ftstOK = SMCController.write(Self.ftstKey, u16: 0)
                 NSLog("[HW] fanReset Ftst=0: %@", ftstOK ? "OK" : "FAIL")
+                directOK = modesOK && ftstOK
+            }
+            if !directOK {
+                let helperOK = Self.runFanHelper(arguments: ["auto"])
+                NSLog("[HW] fanReset privileged helper: %@", helperOK ? "OK" : "FAIL")
             }
             self.fansForced = false
+            self.helperFanControlActive = false
             self.fanControlUnlocking = false
+            self.lastHelperFanPercent = nil
+            self.lastHelperFanWriteAt = nil
             DispatchQueue.main.async { self.readFans() }
         }
     }
@@ -564,6 +637,45 @@ final class HardwareMonitor {
     /// Guards against duplicate unlock attempts while the Ftst dance is in flight.
     private var fanControlUnlocking = false
 
+    func applySelectedFanPresetFromUser() {
+        guard !fanPresetApplyInFlight else {
+            NSLog("[HW] fan preset request ignored while another fan command is in flight")
+            return
+        }
+        _ = SMCController.open()
+        readFans()
+        let preset = AppSettings.shared.hardwareStatsFanPreset
+        if preset == "default" {
+            fanReset()
+            return
+        }
+        guard preset == "performance" else {
+            fanReset()
+            return
+        }
+        guard !stats.fans.isEmpty else { return }
+        let curve = fanCurve(for: preset)
+        let maxTemp = max(stats.cpuTemp ?? 30, stats.gpuTemp ?? 30)
+        let rpmPct = curveRPMPercent(for: maxTemp, curve: curve)
+        fanPresetApplyInFlight = true
+        fanControlUnlocking = true
+        fansForced = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let pct = String(format: "%.0f", max(0, min(100, rpmPct)))
+            let helperOK = Self.runFanHelper(arguments: ["set", pct], allowPrompt: true)
+            NSLog("[HW] fan preset privileged helper %@%%: %@", pct, helperOK ? "OK" : "FAIL")
+            self.helperFanControlActive = helperOK
+            if helperOK {
+                self.lastHelperFanPercent = rpmPct
+                self.lastHelperFanWriteAt = Date()
+            }
+            self.fanPresetApplyInFlight = false
+            self.fanControlUnlocking = false
+            DispatchQueue.main.async { self.readFans() }
+        }
+    }
+
     // MARK: - Fan curve engine
 
     /// Returns the stored curve for a preset, or a sensible fallback.
@@ -572,12 +684,8 @@ final class HardwareMonitor {
             return stored.map { ($0[0], $0[1]) }
         }
         switch preset {
-        case "silent":
-            return [(30, 15), (50, 25), (65, 40), (80, 60), (95, 80)]
         case "performance":
             return [(30, 30), (50, 50), (65, 70), (80, 85), (95, 100)]
-        case "fullBlast":
-            return [(0, 100), (100, 100)]
         default:
             return [(30, 30), (50, 50), (65, 70), (80, 85), (95, 100)]
         }
@@ -604,7 +712,7 @@ final class HardwareMonitor {
     /// When already in control: updates target RPM inline (fast).
     private func applyFanCurve() {
         let preset = AppSettings.shared.hardwareStatsFanPreset
-        guard preset != "default" else {
+        guard preset == "performance" else {
             if fansForced { fanReset() }
             return
         }
@@ -614,20 +722,27 @@ final class HardwareMonitor {
         let maxTemp = max(stats.cpuTemp ?? 30, stats.gpuTemp ?? 30)
         let rpmPct = curveRPMPercent(for: maxTemp, curve: curve)
 
-        // Already in control — quick inline target update.
-        if fansForced {
-            for f in stats.fans {
-                let targetRPM = Int(Double(f.max) * rpmPct / 100.0)
-                let clamped = max(f.min, min(f.max, targetRPM))
-                let fk = FanKeys(f.index)
-                SMCController.write(fk.target, u16: UInt16(clamped))
-            }
+        if helperFanControlActive {
+            setFanPercentWithHelperIfNeeded(rpmPct)
             return
         }
 
-        // Not yet in control — do the full Ftst unlock asynchronously.
-        guard !fanControlUnlocking else { return }
-        takeFanControl(targetPct: rpmPct)
+        // Polling must never launch a privileged prompt. The helper is started
+        // only by explicit preset changes; otherwise the 2s poll timer can
+        // repeatedly ask for an admin password.
+        guard fansForced else { return }
+
+        // Already in control — quick inline target update.
+        var wroteAllTargets = true
+        for f in stats.fans {
+            let targetRPM = Int(Double(f.max) * rpmPct / 100.0)
+            let clamped = max(f.min, min(f.max, targetRPM))
+            let fk = FanKeys(f.index)
+            wroteAllTargets = SMCController.write(fk.target, u16: UInt16(clamped)) && wroteAllTargets
+        }
+        if !wroteAllTargets {
+            setFanPercentWithHelperIfNeeded(rpmPct)
+        }
     }
 
     /// Full Ftst unlock sequence on a background queue.
@@ -646,7 +761,8 @@ final class HardwareMonitor {
             guard let self else { return }
             _ = SMCController.open()
 
-            if SMCController.keyInfo(Self.fsKey) != nil {
+            let directOK: Bool
+            if Self.shouldUseFSFanControl() {
                 // Intel / FS! path
                 var mask: UInt16 = 0
                 for f in fans {
@@ -654,20 +770,22 @@ final class HardwareMonitor {
                 }
                 let fsOK = SMCController.write(Self.fsKey, u16: mask)
                 NSLog("[HW] takeFanControl FS! write mask %d: %@", mask, fsOK ? "OK" : "FAIL")
-                
+                var targetsOK = true
                 for f in fans {
                     let fk = FanKeys(f.index)
                     let targetRPM = Int(Double(f.max) * rpmPct / 100.0)
                     let clamped = max(f.min, min(f.max, targetRPM))
                     let tgOK = SMCController.write(fk.target, u16: UInt16(clamped))
+                    targetsOK = targetsOK && tgOK
                     NSLog("[HW] takeFanControl %@: Tg=%d rpm=%d", f.name, tgOK, clamped)
                 }
+                directOK = fsOK && targetsOK
             } else {
                 // Apple Silicon / Ftst path
                 // Step 1 — diagnostic mode.
                 let ftstOK = SMCController.write(Self.ftstKey, u16: 1)
                 NSLog("[HW] takeFanControl Ftst=1: %@", ftstOK ? "OK" : "FAIL")
-
+                var targetsOK = ftstOK
                 for f in fans {
                     let fk = FanKeys(f.index)
                     // Step 2 — wait for System(3)→Auto(0).
@@ -680,13 +798,210 @@ final class HardwareMonitor {
                     let targetRPM = Int(Double(f.max) * rpmPct / 100.0)
                     let clamped = max(f.min, min(f.max, targetRPM))
                     let tgOK = SMCController.write(fk.target, u16: UInt16(clamped))
+                    targetsOK = targetsOK && tgOK
                     NSLog("[HW] takeFanControl %@: Md=%d md=%d Tg=%d rpm=%@",
                           f.name, mdOK, mdOK2, tgOK, String(clamped))
+                }
+                directOK = targetsOK
+            }
+            if !directOK {
+                let pct = String(format: "%.0f", max(0, min(100, rpmPct)))
+                let helperOK = Self.runFanHelper(arguments: ["set", pct], allowPrompt: true)
+                NSLog("[HW] takeFanControl privileged helper %@%%: %@", pct, helperOK ? "OK" : "FAIL")
+                if helperOK {
+                    self.helperFanControlActive = true
+                    self.lastHelperFanPercent = rpmPct
+                    self.lastHelperFanWriteAt = Date()
                 }
             }
             self.fanControlUnlocking = false
             DispatchQueue.main.async { self.readFans() }
         }
+    }
+
+    private func setFanPercentWithHelperIfNeeded(_ rpmPct: Double) {
+        let now = Date()
+        if let last = lastHelperFanPercent,
+           abs(last - rpmPct) < 2,
+           let lastWrite = lastHelperFanWriteAt,
+           now.timeIntervalSince(lastWrite) < 8 {
+            return
+        }
+        lastHelperFanPercent = rpmPct
+        lastHelperFanWriteAt = now
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pct = String(format: "%.0f", max(0, min(100, rpmPct)))
+            let helperOK = Self.runFanHelper(arguments: ["set", pct], allowPrompt: false)
+            NSLog("[HW] fan curve privileged helper %@%%: %@", pct, helperOK ? "OK" : "FAIL")
+            if !helperOK {
+                self.helperFanControlActive = false
+            }
+        }
+    }
+
+    private static func runFanHelper(arguments: [String], allowPrompt: Bool = true) -> Bool {
+        switch sendFanHelperCommand(arguments: arguments) {
+        case .success:
+            return true
+        case .commandFailed(let code):
+            NSLog("[HW] fan helper command failed before restart attempt: %d", code)
+            return false
+        case .notRunning:
+            break
+        }
+        guard allowPrompt else {
+            return false
+        }
+        guard startFanHelperSession() else {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            switch sendFanHelperCommand(arguments: arguments) {
+            case .success:
+                return true
+            case .commandFailed(let code):
+                NSLog("[HW] fan helper command failed: %d", code)
+                return false
+            case .notRunning:
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return false
+    }
+
+    private enum FanHelperCommandResult {
+        case notRunning
+        case success
+        case commandFailed(Int32)
+    }
+
+    private static let fanHelperToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    private static let fanHelperSocketPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("msg-fan-\(getuid()).sock")
+        .path
+    private static let fanHelperLock = NSLock()
+    private static var fanHelperLastStartAttempt: Date?
+    private static var fanHelperPromptInFlight = false
+
+    private static func startFanHelperSession() -> Bool {
+        fanHelperLock.lock()
+        if fanHelperPromptInFlight {
+            fanHelperLock.unlock()
+            return false
+        }
+        if let last = fanHelperLastStartAttempt, Date().timeIntervalSince(last) < 15 {
+            fanHelperLock.unlock()
+            return false
+        }
+        fanHelperLastStartAttempt = Date()
+        fanHelperPromptInFlight = true
+        fanHelperLock.unlock()
+
+        defer {
+            fanHelperLock.lock()
+            fanHelperPromptInFlight = false
+            fanHelperLock.unlock()
+        }
+
+        guard let helperURL = Bundle.main.url(forResource: "MSGFanControlHelper", withExtension: nil) else {
+            NSLog("[HW] fan helper missing from bundle")
+            return false
+        }
+
+        _ = Darwin.unlink(fanHelperSocketPath)
+
+        let command = [
+            helperURL.path,
+            "serve",
+            fanHelperSocketPath,
+            fanHelperToken,
+            String(getuid()),
+        ].map(shellQuote).joined(separator: " ") + " >/dev/null 2>&1 &"
+        let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            NSLog("[HW] fan helper session launch failed: %@", String(describing: error))
+            return false
+        }
+    }
+
+    private static func sendFanHelperCommand(arguments: [String]) -> FanHelperCommandResult {
+        guard let fd = connectFanHelperSocket() else {
+            return .notRunning
+        }
+        defer { Darwin.close(fd) }
+
+        let line = ([fanHelperToken] + arguments).joined(separator: " ") + "\n"
+        guard let data = line.data(using: .utf8) else { return .notRunning }
+
+        let wroteAll = data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            var sent = 0
+            while sent < raw.count {
+                let n = Darwin.write(fd, base.advanced(by: sent), raw.count - sent)
+                if n <= 0 { return false }
+                sent += n
+            }
+            return true
+        }
+        guard wroteAll else { return .notRunning }
+
+        _ = shutdown(fd, SHUT_WR)
+
+        var response = [UInt8](repeating: 0, count: 32)
+        let count = Darwin.read(fd, &response, response.count - 1)
+        guard count > 0,
+              let text = String(bytes: response.prefix(count), encoding: .utf8),
+              let code = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return .notRunning
+        }
+        return code == 0 ? .success : .commandFailed(code)
+    }
+
+    private static func connectFanHelperSocket() -> Int32? {
+        guard fanHelperSocketPath.utf8.count < 104 else { return nil }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        fanHelperSocketPath.withCString { path in
+            withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+                raw.copyMemory(from: UnsafeRawBufferPointer(start: path, count: strlen(path) + 1))
+            }
+        }
+
+        let length = socklen_t(MemoryLayout.offset(of: \sockaddr_un.sun_path)! + fanHelperSocketPath.utf8.count + 1)
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                Darwin.connect(fd, sockaddrPtr, length)
+            }
+        }
+        if result == 0 {
+            return fd
+        }
+        Darwin.close(fd)
+        return nil
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func appleScriptQuote(_ s: String) -> String {
+        "\"" + s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
 

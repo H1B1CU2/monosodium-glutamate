@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hardwareMonitor: HardwareMonitor!
     private var hardwareStatusItem: HardwareStatusItem?
     private var systemHUDMonitor: SystemHUDMonitor?
+    private var systemHUDStatusItem: SystemHUDStatusItem?
     private var _trayPanel: AnyObject?   // TrayPanel on macOS 14+
 
     @available(macOS 14.0, *)
@@ -65,11 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hardwareMonitor = HardwareMonitor.shared
         hardwareMonitor.start()
-        if settings.hardwareStatsEnabled {
-            hardwareStatusItem = HardwareStatusItem()
-        }
 
         indicator = Indicator(settings: settings, musicMonitor: musicMonitor)
+        applyHardwareStats()
         indicator.start()
 
         applySystemHUD()
@@ -221,8 +220,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bv.showFan       = s.hardwareStatsShowFan
                 bv.barStyle      = s.hardwareStatsBarStyle
                 bv.labelPosition = s.hardwareStatsLabelPos
+                bv.colorScale    = s.hardwareStatsColorScale
                 bv.updateSize()
                 hardwareMonitor.updateInterval(s.hardwareStatsInterval)
+                hardwareStatusItem?.refreshImage()
             }
         } else {
             hardwareStatusItem?.remove()
@@ -232,10 +233,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applySystemHUD() {
         if settings.systemHUDEnabled {
+            if settings.systemHUDPresentationMode == .separate, systemHUDStatusItem == nil {
+                systemHUDStatusItem = SystemHUDStatusItem(settings: settings)
+            } else if settings.systemHUDPresentationMode == .dynamic {
+                systemHUDStatusItem?.remove()
+                systemHUDStatusItem = nil
+            }
             if systemHUDMonitor == nil {
                 let monitor = SystemHUDMonitor(settings: settings)
-                monitor.onChange = { [weak self] kind, value, muted in
-                    self?.indicator.showSystemHUD(kind: kind, value: value, muted: muted)
+                monitor.onChange = { [weak self] kind, value, muted, audioOutputKind in
+                    guard let self else { return }
+                    if self.settings.systemHUDPresentationMode == .separate {
+                        if self.systemHUDStatusItem == nil {
+                            self.systemHUDStatusItem = SystemHUDStatusItem(settings: self.settings)
+                        }
+                        self.systemHUDStatusItem?.show(kind: kind, value: value, muted: muted, audioOutputKind: audioOutputKind)
+                    } else {
+                        self.indicator.showSystemHUD(kind: kind, value: value, muted: muted, audioOutputKind: audioOutputKind)
+                    }
                 }
                 systemHUDMonitor = monitor
             }
@@ -243,11 +258,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             systemHUDMonitor?.stop()
             systemHUDMonitor = nil
+            systemHUDStatusItem?.remove()
+            systemHUDStatusItem = nil
         }
     }
 
     @objc func requestQuit() {
         systemHUDMonitor?.stop()
+        systemHUDStatusItem?.remove()
         hardwareStatusItem?.remove()
         WallpaperEngine.shared.restore()
         DisplaplacerEngine.reconnectAll()
@@ -277,10 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - AppSettings menu
 
     private func showSettingsMenu() {
-        let menu = settingsMenu.menu
-        indicator.statusItem.menu = menu
-        indicator.statusItem.button?.performClick(nil)
-        indicator.statusItem.menu = nil
+        guard let button = indicator.statusItem.button else { return }
+        settingsMenu.menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
     }
 
     // MARK: - Mission Control
@@ -311,15 +327,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.redraw()
             cornerWindows.append(win)
         }
+        applyCornerWindowTopState()
     }
 
     private func redrawCornerWindows() {
         guard settings.cornersEnabled else { return }
+        let screenFrames = NSScreen.screens.map(\.frame)
+        let windowFrames = cornerWindows.map(\.frame)
+        if cornerWindows.count != NSScreen.screens.count || windowFrames != screenFrames {
+            rebuildCornerWindows()
+            return
+        }
         for win in cornerWindows {
             win.updateFrame()
             win.orderFrontRegardless()
             win.redraw()
         }
+        applyCornerWindowTopState()
     }
 
     // MARK: - Screen arrangement
@@ -343,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previousScreenFrames = currentFrames
             previousVisibleFrames = currentVisible
             if frameChanged && settings.displayOrderMode == .physicalDetection { applyAutoOrder() }
+            redrawCornerWindows()
             indicator.refresh()
             indicator.statusItem.button?.display()
         }
@@ -427,4 +452,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
             
-

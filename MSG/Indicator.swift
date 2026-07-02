@@ -26,6 +26,7 @@ final class Indicator {
 
     /// When > now, music display suppressed (space change cooldown)
     private var musicSuppressUntil: TimeInterval = 0
+    private var musicUnsuppressTimer: Timer?
     /// Whether music info was shown in last refresh (for morph detection)
     private var musicDisplayShown = false
     /// Whether currently in linger mode (stored for timer access)
@@ -53,6 +54,7 @@ final class Indicator {
     // Music popover
     private var musicPopover: MusicPopover?
     private var previousDisplaysForSuppression: [SpaceInfo.DisplayInfo]?
+    private var rightClickTracker: RightClickTracker?
 
     // MARK: System HUD (volume / brightness overlay)
 
@@ -61,6 +63,7 @@ final class Indicator {
     private var systemHUDActive = false
     private var systemHUDKind: SystemHUDKind = .volume
     private var systemHUDMuted = false
+    private var systemHUDAudioOutputKind: AudioOutputKind?
     private var systemHUDValue: CGFloat = 0     // animated, currently drawn
     private var systemHUDTarget: CGFloat = 0
     private var systemHUDFillTimer: Timer?
@@ -79,6 +82,8 @@ final class Indicator {
     /// Seconds to hold on the old space before the next space-change animation
     /// advances, so its start isn't hidden behind the music→indicator fade-in.
     private var pillStartHoldDelay: TimeInterval = 0
+    private let musicIndicatorSwapFadeDuration: TimeInterval = 0.25
+    private let pillStartHoldAfterMusicFadeIn: TimeInterval = 0.42
 
     var animLayoutProgress: CGFloat = 1.0
     var animLayoutMorphOldW: CGFloat = 0
@@ -124,6 +129,18 @@ final class Indicator {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem.button?.imagePosition = .imageOnly
 
+        if let button = statusItem.button {
+            let tracker = RightClickTracker(frame: button.bounds)
+            tracker.autoresizingMask = [.width, .height]
+            tracker.onRightClick = { [weak self] in
+                guard let self else { return }
+                self.musicPopover?.close()
+                self.onStatusBarClicked?()
+            }
+            button.addSubview(tracker)
+            self.rightClickTracker = tracker
+        }
+
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
         spaceWatcher.prioritizeMain = settings.displayOrderMode == .prioritizeMain
         spaceWatcher.focusDetection = settings.focusDetectionMode != .off
@@ -143,6 +160,7 @@ final class Indicator {
             if spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
                 let alreadySuppressed = ProcessInfo.processInfo.systemUptime < self.musicSuppressUntil
                 self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 3.0 : 1.5)
+                self.scheduleMusicUnsuppressRefresh()
             }
             guard self.systemState.isStable else { return }
             guard self.animSpacePillDisplay < 0 else { return }
@@ -256,10 +274,10 @@ final class Indicator {
         guard let button = statusItem.button else { return }
         musicSwapFadeActive = true
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
+            ctx.duration = musicIndicatorSwapFadeDuration
             button.animator().alphaValue = 0
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + musicIndicatorSwapFadeDuration) {
             self.musicDisplayShown = toMusic
             if !toMusic {
                 self.musicLingerExpireTimer?.invalidate(); self.musicLingerExpireTimer = nil
@@ -270,16 +288,16 @@ final class Indicator {
             self.lastMusicTitle = nil
             self.lastMusicArtist = nil
             // Returning to the space indicator: a space change may have happened
-            // while music was showing. Hold the start of that animation until the
-            // fade-in below finishes, otherwise its beginning is masked by the fade.
-            if !toMusic { self.pillStartHoldDelay = 0.25 }
+            // while music was showing. Hold slightly beyond the fade-in so the
+            // first visible motion starts after the indicator has fully returned.
+            if !toMusic { self.pillStartHoldDelay = self.pillStartHoldAfterMusicFadeIn }
             self.refresh()
             self.pillStartHoldDelay = 0
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
+                ctx.duration = self.musicIndicatorSwapFadeDuration
                 self.statusItem.button?.animator().alphaValue = 1
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.musicIndicatorSwapFadeDuration) {
                 self.musicSwapFadeActive = false
             }
         }
@@ -328,6 +346,7 @@ final class Indicator {
         musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
         musicLingerMorphProgress = 0
         musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
+        musicUnsuppressTimer?.invalidate(); musicUnsuppressTimer = nil
         musicSwapFadeActive = false
         musicLingerActive = false
         stopVisualizer()
@@ -358,11 +377,23 @@ final class Indicator {
         musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
         musicLingerMorphProgress = 0
         musicLingerExpireTimer?.invalidate(); musicLingerExpireTimer = nil
+        musicUnsuppressTimer?.invalidate(); musicUnsuppressTimer = nil
         musicSwapFadeActive = false
         lastMusicTitle = nil
         lastMusicArtist = nil
         stopVisualizer()
         refresh()
+    }
+
+    private func scheduleMusicUnsuppressRefresh() {
+        musicUnsuppressTimer?.invalidate()
+        let delay = max(0.05, musicSuppressUntil - ProcessInfo.processInfo.systemUptime)
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            self?.musicUnsuppressTimer = nil
+            self?.refresh()
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        musicUnsuppressTimer = timer
     }
 
     // MARK: - Computed
@@ -415,10 +446,21 @@ final class Indicator {
             musicLingerActive = false
         } else if !musicLingerActive && musicDisplayShown && musicLastPlayedAt > 0 {
             musicLingerActive = true
+            stopVisualizer()
         }
 
-        let showMusic = musicOn && settings.musicDisplayMode == .dynamic
-            && (musicMonitor.isPlaying || musicLingerActive)
+        let musicModeAllowsDisplay: Bool
+        switch settings.musicDisplayMode {
+        case .dynamic:
+            musicModeAllowsDisplay = musicMonitor.isPlaying || musicLingerActive
+        case .static:
+            musicModeAllowsDisplay = true
+        case .off:
+            musicModeAllowsDisplay = false
+        }
+
+        let showMusic = musicOn
+            && musicModeAllowsDisplay
             && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
 
         // Swap between music and space indicator
@@ -788,11 +830,12 @@ final class Indicator {
     /// Show (or update) the volume/brightness bar. On first entry it crossfades
     /// in over whatever was showing; subsequent calls animate the fill to the new
     /// value. Auto-dismisses ~1.5s after the last change, like the native OSD.
-    func showSystemHUD(kind: SystemHUDKind, value: CGFloat, muted: Bool) {
+    func showSystemHUD(kind: SystemHUDKind, value: CGFloat, muted: Bool, audioOutputKind: AudioOutputKind? = nil) {
         let v = max(0, min(1, value))
         let wasActive = systemHUDActive
         systemHUDKind = kind
         systemHUDMuted = muted
+        systemHUDAudioOutputKind = audioOutputKind
         systemHUDTarget = v
         statusItem.isVisible = true
 
@@ -842,7 +885,7 @@ final class Indicator {
         guard systemHUDActive, let button = statusItem.button else { return }
         button.title = ""
         button.attributedTitle = NSAttributedString()
-        let frame = renderer.makeSystemHUDFrame(kind: systemHUDKind, value: systemHUDValue, muted: systemHUDMuted)
+        let frame = renderer.makeSystemHUDFrame(kind: systemHUDKind, value: systemHUDValue, muted: systemHUDMuted, audioOutputKind: systemHUDAudioOutputKind)
         button.image = frame
         let len = frame.size.width + 4
         if abs(len - lastSetLength) > 0.1 {
@@ -944,5 +987,15 @@ enum Easing {
         if t <= 0 { return 0 }
         if t >= 1 { return 1 }
         return 1.0 - exp(-6.0 * t) * cos(8.0 * t)
+    }
+}
+
+// MARK: - RightClickTracker
+
+final class RightClickTracker: NSView {
+    var onRightClick: (() -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?()
     }
 }

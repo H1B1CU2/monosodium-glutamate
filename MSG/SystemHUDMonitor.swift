@@ -11,6 +11,13 @@ enum SystemHUDKind {
     case brightness
 }
 
+enum AudioOutputKind {
+    case speaker
+    case headphones
+    case airPods
+    case airPodsPro
+}
+
 // MARK: - SystemHUDMonitor
 //
 // Replaces the native macOS volume/brightness OSD ("Option A"). A session-level
@@ -26,8 +33,8 @@ enum SystemHUDKind {
 
 final class SystemHUDMonitor {
 
-    /// `(kind, value 0…1, muted)` — fired on the main thread after a change.
-    var onChange: ((SystemHUDKind, CGFloat, Bool) -> Void)?
+    /// `(kind, value 0…1, muted, outputKind)` — fired on the main thread after a change.
+    var onChange: ((SystemHUDKind, CGFloat, Bool, AudioOutputKind?) -> Void)?
 
     private let settings: AppSettings
     private var eventTap: CFMachPort?
@@ -157,7 +164,7 @@ final class SystemHUDMonitor {
         playVolumeFeedback()
 
         let actual = CGFloat(volume(device) ?? next)
-        onChange?(.volume, actual, isMuted(device))
+        onChange?(.volume, actual, isMuted(device), audioOutputKind(for: device))
     }
 
     /// Play the native volume tick, honoring the system "Play feedback when
@@ -176,7 +183,7 @@ final class SystemHUDMonitor {
         guard let device = defaultOutputDevice() else { return }
         let newMuted = !isMuted(device)
         setMuted(device, newMuted)
-        onChange?(.volume, CGFloat(volume(device) ?? 0), newMuted)
+        onChange?(.volume, CGFloat(volume(device) ?? 0), newMuted, audioOutputKind(for: device))
     }
 
     private func defaultOutputDevice() -> AudioDeviceID? {
@@ -189,6 +196,65 @@ final class SystemHUDMonitor {
         let status = AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
         return status == noErr && deviceID != 0 ? deviceID : nil
+    }
+
+    private func audioOutputKind(for device: AudioDeviceID) -> AudioOutputKind {
+        let name = audioDeviceName(device).lowercased()
+        let uid = audioDeviceStringProperty(kAudioDevicePropertyDeviceUID, device: device).lowercased()
+        let model = audioDeviceStringProperty(kAudioDevicePropertyModelUID, device: device).lowercased()
+        let searchable = [name, uid, model].joined(separator: " ")
+
+        if searchable.contains("airpods pro") || searchable.contains("airpod pro") || searchable.contains("airpodspro") {
+            return .airPodsPro
+        }
+        if searchable.contains("airpods") || searchable.contains("airpod") {
+            return .airPods
+        }
+
+        if searchable.contains("speaker") || searchable.contains("built-in") || searchable.contains("internal") || searchable.contains("macbook") {
+            return .speaker
+        }
+
+        let headphoneHints = ["headphone", "headset", "earbud", "earphone", "buds", "beats"]
+        if headphoneHints.contains(where: { searchable.contains($0) }) {
+            return .headphones
+        }
+
+        if audioDeviceTransportType(device) == kAudioDeviceTransportTypeBluetooth {
+            return .headphones
+        }
+
+        return .speaker
+    }
+
+    private func audioDeviceName(_ device: AudioDeviceID) -> String {
+        audioDeviceStringProperty(kAudioObjectPropertyName, device: device)
+    }
+
+    private func audioDeviceStringProperty(_ selector: AudioObjectPropertySelector, device: AudioDeviceID) -> String {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(device, &address) else { return "" }
+        var name: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &name) { pointer in
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, pointer)
+        }
+        return status == noErr ? (name as String) : ""
+    }
+
+    private func audioDeviceTransportType(_ device: AudioDeviceID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(device, &address) else { return nil }
+        var value = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value)
+        return status == noErr ? value : nil
     }
 
     private func volumeAddress(element: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
@@ -279,7 +345,7 @@ final class SystemHUDMonitor {
         next = max(0, min(1, next))
         DisplayServicesBridge.shared.setBrightness(display, next)
         let actual = CGFloat(DisplayServicesBridge.shared.getBrightness(display) ?? next)
-        onChange?(.brightness, actual, false)
+        onChange?(.brightness, actual, false, nil)
     }
 
     private func builtinDisplay() -> CGDirectDisplayID? {

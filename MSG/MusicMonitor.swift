@@ -59,24 +59,33 @@ final class MusicMonitor {
 
     init(settings: AppSettings) {
         self.settings = settings
+        self.lastMusicSource = settings.musicSource
         MRRegister?(.main)
-        adapter.onUpdate = { [weak self] np in
-            self?.applyAdapterState(np)
-        }
     }
 
     /// Pushes helper updates into the monitor state. In Now Playing mode the
     /// adapter is the source of truth; in Apple Music mode AppleScript drives
     /// title/state and the adapter only contributes album art (the direct
     /// MediaRemote art fetch is blocked on macOS 15.4+).
-    private func applyAdapterState(_ np: MediaRemoteAdapter.NowPlaying) {
+    private func applyAdapterState(_ np: MediaRemoteAdapter.NowPlaying, forceNotify: Bool = false) {
         switch settings.musicSource {
         case .nowPlaying:
             let wasPlaying = isPlaying
-            if np.playing {
-                isPlaying = true
-                currentTitle = np.title
-                currentArtist = np.artist
+            let incomingTitle = (np.title?.isEmpty == false) ? np.title : nil
+            let incomingArtist = (np.artist?.isEmpty == false) ? np.artist : nil
+            let hasMetadata = incomingTitle != nil || incomingArtist != nil
+            // The helper reports `playing` authoritatively (via
+            // MRMediaRemoteGetNowPlayingApplicationIsPlaying), so trust it —
+            // inferring "still playing" from unchanged metadata used to keep
+            // the visualizer running after a pause.
+            let effectivePlaying = np.playing
+            let oldTitle = currentTitle
+            let oldArtist = currentArtist
+            let oldSource = currentSource
+            let oldSourceBundleID = currentSourceBundleID
+            let hadAlbumArt = albumArt != nil
+            if effectivePlaying || hasMetadata {
+                isPlaying = effectivePlaying
                 if np.pid > 0, let app = NSRunningApplication(processIdentifier: np.pid) {
                     currentSource = app.localizedName ?? "Now Playing"
                     currentSourceBundleID = app.bundleIdentifier
@@ -84,14 +93,39 @@ final class MusicMonitor {
                     currentSource = "Now Playing"
                     currentSourceBundleID = nil
                 }
+                if let title = incomingTitle {
+                    currentTitle = title
+                    currentArtist = incomingArtist
+                } else if effectivePlaying {
+                    // Playing, but the current item exposes no title (some
+                    // browser videos, ads, etc.). Show the app name rather than
+                    // a stale previous track's title.
+                    currentTitle = currentSource ?? "Now Playing"
+                    currentArtist = nil
+                }
                 if let art = np.art { albumArt = art }
-                notify()
+                let changed = forceNotify
+                    || wasPlaying != isPlaying
+                    || oldTitle != currentTitle
+                    || oldArtist != currentArtist
+                    || oldSource != currentSource
+                    || oldSourceBundleID != currentSourceBundleID
+                    || (!hadAlbumArt && np.art != nil)
+                if changed {
+                    NSLog("[Music] Applying Now Playing playing=%@ source=%@ bundle=%@ title=%@",
+                          isPlaying ? "true" : "false",
+                          currentSource ?? "nil",
+                          currentSourceBundleID ?? "nil",
+                          currentTitle ?? "nil")
+                    notify()
+                }
             } else if wasPlaying || currentTitle != nil {
                 isPlaying = false
                 currentTitle = nil
                 currentArtist = nil
                 currentSource = nil
                 currentSourceBundleID = nil
+                NSLog("[Music] Now Playing stopped")
                 notify()
             }
         case .appleMusic:
@@ -116,9 +150,9 @@ final class MusicMonitor {
     /// When the in-flight AppleScript query started (systemUptime). Used by the
     /// watchdog in poll() to recover if a completion is never delivered.
     private var queryStartedAt: TimeInterval = 0
+    private var lastMusicSource: MusicSource
 
     func start() {
-        if MediaRemoteAdapter.isAvailable { adapter.start() }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.poll()
         }
@@ -128,7 +162,6 @@ final class MusicMonitor {
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
-        adapter.stop()
     }
 
     private func poll() {
@@ -137,11 +170,27 @@ final class MusicMonitor {
         if isQuerying, ProcessInfo.processInfo.systemUptime - queryStartedAt > 6 {
             isQuerying = false
         }
+        let sourceChanged = settings.musicSource != lastMusicSource
+        if sourceChanged {
+            lastMusicSource = settings.musicSource
+            isQuerying = false
+        }
         switch settings.musicSource {
         case .nowPlaying:
-            // Adapter pushes state; poll only as fallback when it isn't running.
-            guard !adapter.isRunning else { return }
-            pollNowPlaying()          // MR is non-blocking; no isQuerying guard needed
+            // Poll a fresh one-shot read each tick (never a long-lived stream, so
+            // it can't go stale). The isQuerying guard keeps spawns from stacking.
+            if MediaRemoteAdapter.isAvailable {
+                guard !isQuerying else { return }
+                isQuerying = true
+                queryStartedAt = ProcessInfo.processInfo.systemUptime
+                adapter.query { [weak self] np in
+                    guard let self else { return }
+                    self.isQuerying = false
+                    if let np = np { self.applyAdapterState(np, forceNotify: sourceChanged) }
+                }
+                return
+            }
+            pollNowPlaying()          // legacy fallback when the helper dylib is absent
         case .appleMusic:
             guard !isQuerying else { return }
             pollAppleMusic()
@@ -382,10 +431,17 @@ final class MusicMonitor {
     }
 
     private func fetchAlbumArt() {
-        // Helper streams art with its updates; the direct MR read below
-        // returns nothing on macOS 15.4+ anyway.
-        if adapter.isRunning {
-            if let art = adapter.latest?.art { albumArt = art }
+        // Prefer the helper (a fresh get read); the direct MR read below returns
+        // nothing on macOS 15.4+ anyway. In Apple Music mode only adopt the art
+        // when Music is the now-playing app.
+        if MediaRemoteAdapter.isAvailable {
+            adapter.query { [weak self] np in
+                guard let self, let art = np?.art else { return }
+                if self.settings.musicSource == .appleMusic
+                    && self.currentSourceBundleID != "com.apple.Music" { return }
+                self.albumArt = art
+                self.notify()
+            }
             return
         }
         guard let mrInfo = MRNowPlayingInfo else { return }

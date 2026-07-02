@@ -46,23 +46,6 @@ struct SpacerPane: View {
                 }
             }
 
-            Section {
-                Toggle("Replace macOS volume & brightness HUD",
-                       isOn: Binding(get: { vm.systemHUDEnabled }, set: { vm.systemHUDEnabled = $0 }))
-                if vm.systemHUDEnabled {
-                    Toggle("Volume",
-                           isOn: Binding(get: { vm.systemHUDVolume }, set: { vm.systemHUDVolume = $0 }))
-                    Toggle("Brightness (built-in display)",
-                           isOn: Binding(get: { vm.systemHUDBrightness }, set: { vm.systemHUDBrightness = $0 }))
-                }
-            } header: {
-                Text("Volume & Brightness HUD")
-            } footer: {
-                Text("The indicator morphs into a level bar when you press the volume or brightness keys, replacing the native macOS popup. Requires Accessibility permission (System Settings ▸ Privacy & Security ▸ Accessibility); relaunch MSG after granting it.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-
         }
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
@@ -71,6 +54,55 @@ struct SpacerPane: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
+        }
+    }
+}
+
+// MARK: - HUD Replacer pane
+
+@available(macOS 14.0, *)
+struct HUDReplacerPane: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        PaneContainer(section: .hud,
+                      headerToggle: Binding(get: { vm.systemHUDEnabled }, set: { vm.systemHUDEnabled = $0 })) {
+            Section {
+                Picker("Show HUD As", selection: Binding(get: { vm.systemHUDPresentationMode }, set: { vm.systemHUDPresentationMode = $0 })) {
+                    ForEach(SystemHUDPresentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Mode")
+            } footer: {
+                Text("Dynamic temporarily replaces the space indicator. Separate Menu Bar shows the HUD in its own status item while leaving the space indicator alone.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Keys") {
+                Toggle("Volume",
+                       isOn: Binding(get: { vm.systemHUDVolume }, set: { vm.systemHUDVolume = $0 }))
+                Toggle("Brightness (built-in display)",
+                       isOn: Binding(get: { vm.systemHUDBrightness }, set: { vm.systemHUDBrightness = $0 }))
+            }
+
+            Section {
+                Toggle("Use current sound device icon",
+                       isOn: Binding(get: { vm.systemHUDDeviceIcons }, set: { vm.systemHUDDeviceIcons = $0 }))
+            } header: {
+                Text("Volume Icon")
+            } footer: {
+                Text("AirPods Pro uses the AirPods Pro symbol, headphones use headphones, and built-in speakers keep the speaker symbol.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section {
+                Text("Requires Accessibility permission in System Settings > Privacy & Security > Accessibility. Relaunch MSG after granting it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }
@@ -672,12 +704,19 @@ struct HardwarePane: View {
                 Section("Appearance") {
                     Picker("Bar style", selection: $vm.hardwareStatsBarStyle) {
                         Text("Vertical").tag("vertical")
+                        Text("Horizontal").tag("horizontal")
                         Text("Circular").tag("circular")
+                        Text("Dot").tag("dot")
                     }
                     .pickerStyle(.segmented)
                     Picker("Label position", selection: $vm.hardwareStatsLabelPos) {
                         Text("Vertical").tag("vertical")
                         Text("Horizontal").tag("horizontal")
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Dot color", selection: $vm.hardwareStatsColorScale) {
+                        Text("White").tag("white")
+                        Text("Green").tag("green")
                     }
                     .pickerStyle(.segmented)
                     Picker("Temp sensor", selection: $vm.hardwareStatsTempSensor) {
@@ -686,22 +725,36 @@ struct HardwarePane: View {
                         Text("GPU").tag("gpu")
                     }
                     if vm.hardwareStatsShowTemp {
-                        HStack {
-                            Text("Temp Min")
-                            Slider(value: $vm.hardwareStatsTempMin, in: 0...80, step: 5)
-                            Text("\(Int(vm.hardwareStatsTempMin))°C")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 38, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Temperature Range")
+                                Spacer()
+                                Text("\(Int(vm.hardwareStatsTempMin))°C – \(Int(vm.hardwareStatsTempMax))°C")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            TemperatureRangeSlider(
+                                minVal: $vm.hardwareStatsTempMin,
+                                maxVal: $vm.hardwareStatsTempMax
+                            )
+                            .padding(.vertical, 4)
+                            
+                            HStack {
+                                Text("0°C")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Text("60°C")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Text("120°C")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
-                        HStack {
-                            Text("Temp Max")
-                            Slider(value: $vm.hardwareStatsTempMax, in: 60...120, step: 5)
-                            Text("\(Int(vm.hardwareStatsTempMax))°C")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 38, alignment: .trailing)
-                        }
+                        .padding(.vertical, 6)
                     }
                     Picker("Memory mode", selection: $vm.hardwareStatsMemMode) {
                         Text("Pressure").tag("pressure")
@@ -795,23 +848,16 @@ struct HardwarePane: View {
                         }
 
                         Picker("Fan Preset", selection: $vm.hardwareStatsFanPreset) {
-                            Text("Silent").tag("silent")
                             Text("Default").tag("default")
                             Text("Performance").tag("performance")
-                            Text("Full Blast").tag("fullBlast")
                         }
                         .pickerStyle(.menu)
                         .onChange(of: vm.hardwareStatsFanPreset) { _, newVal in
-                            if newVal == "fullBlast" {
-                                HardwareMonitor.shared.fanFullBlast()
-                            } else if newVal == "default" {
-                                HardwareMonitor.shared.fanReset()
-                            }
+                            HardwareMonitor.shared.applySelectedFanPresetFromUser()
                         }
 
                         if vm.hardwareStatsFanPreset != "default",
-                           vm.hardwareStatsFanPreset != "fullBlast",
-                           let curve = vm.hardwareStatsFanCurves[vm.hardwareStatsFanPreset] {
+                           vm.hardwareStatsFanCurves[vm.hardwareStatsFanPreset] != nil {
                             let presetName = vm.hardwareStatsFanPreset.capitalized
                             let curveBinding = vm.fanCurveBinding(for: vm.hardwareStatsFanPreset)
                             VStack(alignment: .leading, spacing: 6) {
@@ -857,198 +903,106 @@ struct HardwarePane: View {
 
     // MARK: - Preview card
 
-    /// Mirrors the actual menu bar rendering using SwiftUI shapes.
+    /// Uses the same AppKit view as the real menu bar item, so the preview stays exact.
     private var previewCard: some View {
-        let mods = previewModules()
-        guard !mods.isEmpty else {
-            return AnyView(
-                Text("Enable at least one module above")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+        let size = hardwarePreviewSize
+        let scale: CGFloat = 2.0
+
+        return HStack {
+            HardwareStatsBarPreview(
+                stats: stats,
+                showCPU: vm.hardwareStatsShowCPU,
+                showGPU: vm.hardwareStatsShowGPU,
+                showMemory: vm.hardwareStatsShowMemory,
+                showTemp: vm.hardwareStatsShowTemp,
+                showFPS: vm.hardwareStatsShowFPS,
+                showFan: vm.hardwareStatsShowFan,
+                barStyle: vm.hardwareStatsBarStyle,
+                labelPosition: vm.hardwareStatsLabelPos,
+                colorScale: vm.hardwareStatsColorScale
             )
+            .frame(width: size.width, height: size.height)
+            .scaleEffect(scale)
+            .frame(width: size.width * scale, height: size.height * scale)
+            .opacity(vm.hardwareStatsEnabled ? 1.0 : 0.45)
         }
-
-        let isCircular = vm.hardwareStatsBarStyle == "circular"
-        let isHorizontal = vm.hardwareStatsLabelPos == "horizontal"
-        let barH: CGFloat = isCircular ? 28 : 36
-
-        return AnyView(
-            HStack(alignment: .bottom, spacing: isHorizontal ? 10 : 12) {
-                ForEach(Array(mods.enumerated()), id: \.offset) { _, mod in
-                    VStack(spacing: 4) {
-                        if mod.isValue {
-                            Text(mod.valueText)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                            Text(mod.label)
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        } else if isCircular {
-                            ZStack {
-                                Circle()
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 2.5)
-                                    .frame(width: 20, height: 20)
-                                if mod.ratio > 0 {
-                                    Circle()
-                                        .trim(from: 0, to: max(0.01, mod.ratio))
-                                        .stroke(previewColor(mod), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                                        .frame(width: 20, height: 20)
-                                        .rotationEffect(.degrees(-90))
-                                }
-                            }
-                            if isHorizontal {
-                                Text(mod.label)
-                                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                HStack(spacing: 0) {
-                                    ForEach(Array(mod.label.enumerated()), id: \.offset) { _, ch in
-                                        Text(String(ch))
-                                            .font(.system(size: 5.5, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        } else {
-                            // Vertical bar (matches menu bar)
-                            ZStack(alignment: .bottom) {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 8, height: barH)
-                                if mod.ratio > 0 {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(previewColor(mod))
-                                        .frame(width: 8, height: max(3, barH * mod.ratio))
-                                }
-                            }
-                            if isHorizontal {
-                                Text(mod.label)
-                                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                HStack(spacing: 0) {
-                                    ForEach(Array(mod.label.enumerated()), id: \.offset) { _, ch in
-                                        Text(String(ch))
-                                            .font(.system(size: 5.5, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-        )
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
     }
 
-    private struct PreviewMod {
-        let label: String
-        let ratio: CGFloat
-        var isValue: Bool = false
-        var valueText: String = ""
+    private var hardwarePreviewSize: CGSize {
+        let count = max(1, [
+            vm.hardwareStatsShowCPU,
+            vm.hardwareStatsShowGPU,
+            vm.hardwareStatsShowMemory,
+            vm.hardwareStatsShowTemp,
+            vm.hardwareStatsShowFPS,
+            vm.hardwareStatsShowFan,
+        ].filter { $0 }.count)
+        let perModule: CGFloat
+        switch vm.hardwareStatsBarStyle {
+        case "circular":
+            perModule = vm.hardwareStatsLabelPos == "horizontal" ? 24 : 30
+        case "horizontal":
+            perModule = vm.hardwareStatsLabelPos == "horizontal" ? 36 : 46
+        case "dot":
+            perModule = vm.hardwareStatsLabelPos == "horizontal" ? 18 : 24
+        default:
+            perModule = vm.hardwareStatsLabelPos == "horizontal" ? 16 : 20
+        }
+        return CGSize(width: perModule * CGFloat(count) + 8, height: 22)
     }
 
-    private func previewModules() -> [PreviewMod] {
-        var mods: [PreviewMod] = []
-        if vm.hardwareStatsShowCPU {
-            mods.append(PreviewMod(label: "CPU", ratio: CGFloat(stats.cpuPercent / 100.0)))
-        }
-        if vm.hardwareStatsShowGPU {
-            mods.append(PreviewMod(label: "GPU", ratio: CGFloat(stats.gpuPercent / 100.0)))
-        }
-        if vm.hardwareStatsShowMemory {
-            let r: CGFloat
-            if vm.hardwareStatsMemMode == "usage" {
-                r = stats.memoryTotalGB > 0
-                    ? CGFloat(min(1.0, stats.memoryUsedGB / stats.memoryTotalGB))
-                    : 0
-            } else {
-                r = {
-                    switch stats.memoryPressure {
-                    case .normal: return 0.25
-                    case .warning: return 0.60
-                    case .critical: return 0.90
-                    }
-                }()
-            }
-            mods.append(PreviewMod(label: "MEM", ratio: r))
-        }
-        if vm.hardwareStatsShowTemp {
-            let sensor = vm.hardwareStatsTempSensor
-            let t: Double
-            switch sensor {
-            case "cpu": t = stats.cpuTemp ?? 30
-            case "gpu": t = stats.gpuTemp ?? 30
-            default:    t = stats.cpuTemp ?? stats.gpuTemp ?? 30
-            }
-            let minT = vm.hardwareStatsTempMin
-            let maxT = vm.hardwareStatsTempMax
-            let range = max(1.0, maxT - minT)
-            mods.append(PreviewMod(label: "TMP", ratio: CGFloat((t - minT) / range)))
-        }
-        if vm.hardwareStatsShowFPS {
-            mods.append(PreviewMod(label: "FPS", ratio: 0,
-                                   isValue: true, valueText: "\(stats.fps)"))
-        }
-        if vm.hardwareStatsShowFan, let fan = stats.fans.first {
-            let r = CGFloat(fan.current) / CGFloat(max(1, fan.max))
-            mods.append(PreviewMod(label: "FAN", ratio: r))
-        }
-        return mods
-    }
+    private struct HardwareStatsBarPreview: NSViewRepresentable {
+        let stats: HardwareStats
+        let showCPU: Bool
+        let showGPU: Bool
+        let showMemory: Bool
+        let showTemp: Bool
+        let showFPS: Bool
+        let showFan: Bool
+        let barStyle: String
+        let labelPosition: String
+        let colorScale: String
 
-    /// Matches the barColor logic in HardwareBarView: white ≤50%, yellow 50%+, orange 65%+, red 80%+.
-    private func previewColor(_ mod: PreviewMod) -> Color {
-        if mod.isValue { return .white }
-        let r = max(0, min(1, mod.ratio))
-        if r < 0.5 { return .white }
-        let hue: Double
-        if r < 0.65 {
-            let t = (r - 0.5) / 0.15
-            hue = 0.15 - 0.05 * t
-        } else if r < 0.8 {
-            let t = (r - 0.65) / 0.15
-            hue = 0.10 * (1.0 - t)
-        } else {
-            hue = 0.0
+        func makeNSView(context: Context) -> HardwareBarView {
+            let view = HardwareBarView(frame: NSRect(x: 0, y: 0, width: 88, height: 22))
+            view.autoresizingMask = []
+            return view
         }
-        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+
+        func updateNSView(_ view: HardwareBarView, context: Context) {
+            view.stats = stats
+            view.showCPU = showCPU
+            view.showGPU = showGPU
+            view.showMemory = showMemory
+            view.showTemp = showTemp
+            view.showFPS = showFPS
+            view.showFan = showFan
+            view.barStyle = barStyle
+            view.labelPosition = labelPosition
+            view.colorScale = colorScale
+            view.updateSize()
+            view.needsDisplay = true
+        }
     }
 
     // MARK: - Colors (used by Current Values section)
 
     private func barColor(ratio: Double) -> Color {
         let r = max(0, min(1, ratio))
-        if r < 0.5 { return .white }
-        let hue: Double
-        if r < 0.65 {
-            let t = (r - 0.5) / 0.15
-            hue = 0.15 - 0.05 * t
-        } else if r < 0.8 {
-            let t = (r - 0.65) / 0.15
-            hue = 0.10 * (1.0 - t)
-        } else {
-            hue = 0.0
-        }
-        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+        if r >= 0.8 { return Color(hue: 0.0, saturation: 0.9, brightness: 0.95) }
+        if r >= 0.65 { return Color(hue: 0.10, saturation: 0.9, brightness: 0.95) }
+        if r >= 0.5 { return Color(hue: 0.15, saturation: 0.9, brightness: 0.95) }
+        return .white
     }
 
     private func fanColor(_ fan: FanInfo) -> Color {
         let r = Double(fan.current) / Double(max(1, fan.max))
-        if r < 0.5 { return .white }
-        let hue: Double
-        if r < 0.65 {
-            let t = (r - 0.5) / 0.15
-            hue = 0.15 - 0.05 * t
-        } else if r < 0.8 {
-            let t = (r - 0.65) / 0.15
-            hue = 0.10 * (1.0 - t)
-        } else {
-            hue = 0.0
-        }
-        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
+        if r >= 0.8 { return Color(hue: 0.0, saturation: 0.9, brightness: 0.95) }
+        if r >= 0.65 { return Color(hue: 0.10, saturation: 0.9, brightness: 0.95) }
+        if r >= 0.5 { return Color(hue: 0.15, saturation: 0.9, brightness: 0.95) }
+        return .white
     }
 
     private func pressureColor(_ p: HardwareStats.MemoryPressure) -> Color {
@@ -1514,3 +1468,152 @@ struct DisplaplacerPane: View {
     }
 }
 
+// MARK: - Temperature Range Slider Helper
+
+@available(macOS 14.0, *)
+struct TemperatureRangeSlider: View {
+    @Binding var minVal: Double
+    @Binding var maxVal: Double
+    
+    private let bounds: ClosedRange<Double> = 0...120
+    private let step: Double = 1.0
+    
+    @State private var isHoveringMin = false
+    @State private var isHoveringMax = false
+    @State private var isDraggingMin = false
+    @State private var isDraggingMax = false
+    
+    @State private var activeThumb: ActiveThumb? = nil
+    enum ActiveThumb { case min, max }
+
+    private func xOffset(for value: Double, width: CGFloat, thumbSize: CGFloat) -> CGFloat {
+        let pct = (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)
+        let usableWidth = width - thumbSize
+        return pct * usableWidth + (thumbSize / 2)
+    }
+    
+    private func value(for x: CGFloat, width: CGFloat, thumbSize: CGFloat) -> Double {
+        let usableWidth = width - thumbSize
+        let pct = max(0, min(1, (x - thumbSize / 2) / usableWidth))
+        let rawVal = bounds.lowerBound + pct * (bounds.upperBound - bounds.lowerBound)
+        return (rawVal / step).rounded() * step
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let trackHeight: CGFloat = 6
+            let thumbSize: CGFloat = 16
+            
+            let xMin = xOffset(for: minVal, width: width, thumbSize: thumbSize)
+            let xMax = xOffset(for: maxVal, width: width, thumbSize: thumbSize)
+            
+            ZStack(alignment: .leading) {
+                // Background track
+                Capsule()
+                    .fill(Color.primary.opacity(0.15))
+                    .frame(height: trackHeight)
+                
+                // Active range track (gradient)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.blue.opacity(0.85),
+                                Color.cyan.opacity(0.85),
+                                Color.yellow.opacity(0.85),
+                                Color.orange.opacity(0.9),
+                                Color.red.opacity(0.95)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(2, xMax - xMin), height: trackHeight)
+                    .offset(x: xMin)
+                
+                // Left Thumb (Min)
+                ZStack {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: thumbSize, height: thumbSize)
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, y: 1.5)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.primary.opacity(0.15), lineWidth: 0.5)
+                        )
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 6, height: 6)
+                }
+                .scaleEffect((isHoveringMin || isDraggingMin) ? 1.25 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHoveringMin || isDraggingMin)
+                .position(x: xMin, y: geo.size.height / 2)
+                .contentShape(Circle())
+                .onHover { hovering in
+                    isHoveringMin = hovering
+                }
+                
+                // Right Thumb (Max)
+                ZStack {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: thumbSize, height: thumbSize)
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, y: 1.5)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.primary.opacity(0.15), lineWidth: 0.5)
+                        )
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                }
+                .scaleEffect((isHoveringMax || isDraggingMax) ? 1.25 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: isHoveringMax || isDraggingMax)
+                .position(x: xMax, y: geo.size.height / 2)
+                .contentShape(Circle())
+                .onHover { hovering in
+                    isHoveringMax = hovering
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        let x = gesture.location.x
+                        let val = value(for: x, width: width, thumbSize: thumbSize)
+                        
+                        if activeThumb == nil {
+                            if abs(val - minVal) < abs(val - maxVal) {
+                                activeThumb = .min
+                                isDraggingMin = true
+                            } else {
+                                activeThumb = .max
+                                isDraggingMax = true
+                            }
+                        }
+                        
+                        if activeThumb == .min {
+                            let finalVal = max(bounds.lowerBound, min(val, maxVal - 5))
+                            if finalVal != minVal {
+                                minVal = finalVal
+                                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                            }
+                        } else {
+                            let finalVal = min(bounds.upperBound, max(val, minVal + 5))
+                            if finalVal != maxVal {
+                                maxVal = finalVal
+                                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        activeThumb = nil
+                        isDraggingMin = false
+                        isDraggingMax = false
+                    }
+            )
+        }
+        .frame(height: 22)
+    }
+}
