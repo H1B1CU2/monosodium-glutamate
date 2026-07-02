@@ -56,15 +56,21 @@ private let _vm_page_size_ptr: VmPageSizePtr? = {
     return sym.assumingMemoryBound(to: Int32.self)
 }()
 
-// -- CoreGraphics display refresh rate -------------------------------------
+// -- SkyLight WindowServer frame counter ------------------------------------
+//
+// SLSGetPerformanceTotalUpdateCount returns the WindowServer's cumulative
+// presented-frame count plus a monotonic timestamp (same data Quartz Debug's
+// frame meter reads). Delta between polls = real rendering FPS, unlike
+// CGDisplayModeGetRefreshRate which only reports the panel's fixed Hz.
 
-private typealias CGMainDisplayIDFunc = @convention(c) () -> UInt32
-private typealias CGDisplayCopyDisplayModeFunc = @convention(c) (UInt32) -> Unmanaged<AnyObject>?
-private typealias CGDisplayModeGetRefreshRateFunc = @convention(c) (AnyObject) -> Double
+private typealias SLSMainConnectionIDFunc = @convention(c) () -> Int32
+private typealias SLSGetPerformanceTotalUpdateCountFunc = @convention(c) (
+    Int32, UnsafeMutablePointer<UInt64>, UnsafeMutablePointer<Double>
+) -> Int32
 
-private let _CGMainDisplayID: CGMainDisplayIDFunc? = machSym("CGMainDisplayID")
-private let _CGDisplayCopyDisplayMode: CGDisplayCopyDisplayModeFunc? = machSym("CGDisplayCopyDisplayMode")
-private let _CGDisplayModeGetRefreshRate: CGDisplayModeGetRefreshRateFunc? = machSym("CGDisplayModeGetRefreshRate")
+private let _SLSMainConnectionID: SLSMainConnectionIDFunc? = machSym("SLSMainConnectionID")
+private let _SLSGetPerformanceTotalUpdateCount: SLSGetPerformanceTotalUpdateCountFunc? =
+    machSym("SLSGetPerformanceTotalUpdateCount")
 
 // -- Flame constants -------------------------------------------------------
 
@@ -100,7 +106,7 @@ struct HardwareStats {
     var memoryTotalGB: Double = 0
     var cpuTemp: Double? = nil   // °C, nil = unavailable
     var gpuTemp: Double? = nil
-    var fps: Int = 0             // display refresh rate in Hz
+    var fps: Int = 0             // frames actually presented per second (0 = idle screen)
     var fans: [FanInfo] = []
 
     enum MemoryPressure: String {
@@ -291,16 +297,23 @@ final class HardwareMonitor {
         }
     }
 
-    // MARK: - FPS (display refresh rate)
+    // MARK: - FPS (WindowServer presented frames)
+
+    /// Snapshot of the WindowServer frame counter from the previous poll.
+    private var prevFrameCount: UInt64?
+    private var prevFrameTime: Double = 0
 
     private func readFPS() -> Int {
-        guard let mainID = _CGMainDisplayID,
-              let copyMode = _CGDisplayCopyDisplayMode,
-              let getRate = _CGDisplayModeGetRefreshRate else { return 0 }
+        guard let mainConn = _SLSMainConnectionID,
+              let getCount = _SLSGetPerformanceTotalUpdateCount else { return 0 }
 
-        let did = mainID()
-        guard let mode = copyMode(did)?.takeRetainedValue() else { return 0 }
-        return Int(getRate(mode).rounded())
+        var count: UInt64 = 0
+        var time: Double = 0
+        guard getCount(mainConn(), &count, &time) == 0 else { return 0 }
+        defer { prevFrameCount = count; prevFrameTime = time }
+
+        guard let prev = prevFrameCount, count >= prev, time > prevFrameTime else { return 0 }
+        return Int((Double(count - prev) / (time - prevFrameTime)).rounded())
     }
 
     // MARK: - Temperature (SMC)

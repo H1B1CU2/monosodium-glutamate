@@ -751,12 +751,10 @@ struct HardwarePane: View {
                                 .monospacedDigit()
                         }
                     }
-                    if stats.fps > 0 {
-                        LabeledContent("FPS") {
-                            Text("\(stats.fps) Hz")
-                                .foregroundStyle(barColor(ratio: Double(stats.fps) / 144.0))
-                                .monospacedDigit()
-                        }
+                    LabeledContent("FPS") {
+                        Text("\(stats.fps) fps")
+                            .foregroundStyle(barColor(ratio: Double(stats.fps) / 120.0))
+                            .monospacedDigit()
                     }
                 }
 

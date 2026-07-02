@@ -501,7 +501,7 @@ final class HardwarePopover: NSObject {
         let t = s.cpuTemp ?? s.gpuTemp
         let tempStr = t.map { String(format: "%.0f°C", $0) } ?? "—"
         addRow("Temp", tempStr)
-        if s.fps > 0 { addRow("FPS", "\(s.fps) Hz") }
+        addRow("FPS", "\(s.fps) fps")
 
         if !s.fans.isEmpty {
             let sep = NSBox()
