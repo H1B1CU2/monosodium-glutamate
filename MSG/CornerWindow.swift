@@ -36,7 +36,7 @@ final class CornerWindow: NSWindow {
         // Control closed, or left a fullscreen space). Detection happens at render
         // time off the `skipTopCorners` flag, which AppDelegate drives from the
         // reliable isMissionControl / isFullscreen state.
-        view.onTopGrowInNeeded = { [weak self] in self?.startTopGrowIn() }
+        view.onTopGrowInNeeded = { [weak self] in self?.startGrowIn() }
     }
 
     func updateFrame() {
@@ -58,17 +58,43 @@ final class CornerWindow: NSWindow {
         redraw()
     }
 
-    /// Ramps the top corners' radius from 0 → full over `duration` using the
+    /// Space-switch grow-in, phase 1: the slide just started, so hide all four
+    /// corners instantly — the screen is in motion, which masks the change.
+    /// They stay hidden until `spaceSlideEnded()` grows them back at landing.
+    /// The fallback re-grows them even if the end-of-slide poll never fires.
+    func spaceSlideBegan() {
+        growTimer?.invalidate(); growTimer = nil
+        awaitingSlideGrow = true
+        view.topGrowProgress = 0
+        view.bottomGrowProgress = 0
+        view.display()
+        slideGrowFallback?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.spaceSlideEnded() }
+        slideGrowFallback = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    /// Space-switch grow-in, phase 2: the slide finished — grow the corners in.
+    func spaceSlideEnded() {
+        slideGrowFallback?.cancel(); slideGrowFallback = nil
+        guard awaitingSlideGrow else { return }
+        awaitingSlideGrow = false
+        startGrowIn()
+    }
+
+    /// Ramps armed corners' radius from 0 → full over `duration` using the
     /// project's main-thread Timer + time-based progress pattern (not CVDisplayLink).
-    /// `CornerView.draw(_:)` has already set `topGrowProgress` to 0 and armed this the
-    /// moment it saw the top corners reappear.
-    private func startTopGrowIn(duration: TimeInterval = 0.25) {
+    /// Corners are armed by zeroing their progress before this starts; unarmed
+    /// corners sit at 1 and `max` leaves them untouched, so a top-only grow can
+    /// restart mid-flight of a full grow without freezing the bottom corners.
+    private func startGrowIn(duration: TimeInterval = 0.25) {
         growTimer?.invalidate()
         let start = CACurrentMediaTime()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let p = min(1.0, CGFloat((CACurrentMediaTime() - start) / duration))
-            self.view.topGrowProgress = p
+            self.view.topGrowProgress = max(self.view.topGrowProgress, p)
+            self.view.bottomGrowProgress = max(self.view.bottomGrowProgress, p)
             self.view.display()
             if p >= 1.0 { t.invalidate(); self.growTimer = nil }
         }
@@ -76,10 +102,12 @@ final class CornerWindow: NSWindow {
         growTimer = timer
     }
 
-    deinit { growTimer?.invalidate() }
+    deinit { growTimer?.invalidate(); slideGrowFallback?.cancel() }
 
     private let settings: AppSettings
     private var growTimer: Timer?
+    private var awaitingSlideGrow = false
+    private var slideGrowFallback: DispatchWorkItem?
 }
 
 // MARK: - CornerView
@@ -90,6 +118,8 @@ final class CornerView: NSView {
     var skipTopCorners = false
     /// Top-corner radius scale (0 = invisible, 1 = full). Animated on grow-in.
     var topGrowProgress: CGFloat = 1.0
+    /// Bottom-corner radius scale (0 = invisible, 1 = full). Animated on space-switch grow-in.
+    var bottomGrowProgress: CGFloat = 1.0
     /// Called when the top corners transition hidden→shown so the window grows them in.
     var onTopGrowInNeeded: (() -> Void)?
     var displayUUID: String?
@@ -127,10 +157,15 @@ final class CornerView: NSView {
         // Detect a hidden→shown transition (Mission Control closed, or left a
         // fullscreen space) and arm a grow-in. `wasTopShown` guarantees we arm exactly
         // once per transition. Set progress to 0 first so this frame renders nothing
-        // (no full-size flash) before the timer ramps it up.
+        // (no full-size flash) before the timer ramps it up. With the grow-in
+        // setting off, snap straight to full size instead.
         if topShown && !wasTopShown {
-            topGrowProgress = 0
-            onTopGrowInNeeded?()
+            if settings.cornerGrowEnabled {
+                topGrowProgress = 0
+                onTopGrowInNeeded?()
+            } else {
+                topGrowProgress = 1
+            }
         }
         wasTopShown = topShown
 
@@ -140,8 +175,9 @@ final class CornerView: NSView {
             drawCorner(at: NSPoint(x: W, y: H - topY), radius: topR, kind: .topRight)
         }
         if bottomEnabled {
-            drawCorner(at: NSPoint(x: 0, y: 0), radius: r, kind: .bottomLeft)
-            drawCorner(at: NSPoint(x: W, y: 0), radius: r, kind: .bottomRight)
+            let bottomR = r * Easing.outQuart(min(1, max(0, bottomGrowProgress)))
+            drawCorner(at: NSPoint(x: 0, y: 0), radius: bottomR, kind: .bottomLeft)
+            drawCorner(at: NSPoint(x: W, y: 0), radius: bottomR, kind: .bottomRight)
         }
     }
 

@@ -63,10 +63,22 @@ struct SpacerPane: View {
 @available(macOS 14.0, *)
 struct HUDReplacerPane: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var previewWallpaper: NSImage? = nil
 
     var body: some View {
         PaneContainer(section: .hud,
                       headerToggle: Binding(get: { vm.systemHUDEnabled }, set: { vm.systemHUDEnabled = $0 })) {
+            Section("Preview") {
+                SystemHUDPreviewScene(
+                    presentationMode: vm.systemHUDPresentationMode,
+                    volumeEnabled: vm.systemHUDVolume,
+                    brightnessEnabled: vm.systemHUDBrightness,
+                    wallpaperImage: previewWallpaper
+                )
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .listRowBackground(Color.clear)
+            }
+
             Section {
                 Picker("Show HUD As", selection: Binding(get: { vm.systemHUDPresentationMode }, set: { vm.systemHUDPresentationMode = $0 })) {
                     ForEach(SystemHUDPresentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -102,6 +114,11 @@ struct HUDReplacerPane: View {
                 Text("Requires Accessibility permission in System Settings > Privacy & Security > Accessibility. Relaunch MSG after granting it.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
+            }
+        }
+        .onAppear {
+            if let screen = NSScreen.main ?? NSScreen.screens.first {
+                WallpaperEngine.shared.previewWallpaper(for: screen) { previewWallpaper = $0 }
             }
         }
     }
@@ -176,6 +193,11 @@ struct CornermizationPane: View {
                             .animation(.easeInOut(duration: 0.2), value: vm.mirrorMainDisplay)
                     }
                 }
+            }
+
+            Section("Animation") {
+                Toggle("Grow-in animation",
+                       isOn: bind({ vm.cornerGrowEnabled }, { vm.cornerGrowEnabled = $0 }))
             }
         }
         .onAppear {
@@ -680,6 +702,10 @@ struct HardwarePane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var stats = HardwareStats()
     @State private var timer: Timer?
+    /// Row the dragged module is currently hovering, for the insertion line.
+    /// `orderEndTarget` marks the drop zone that sends a module to the end.
+    @State private var dropTargetID: String?
+    private let orderEndTarget = "__end__"
 
     var body: some View {
         PaneContainer(section: .hardware,
@@ -692,13 +718,22 @@ struct HardwarePane: View {
             }
 
             if vm.hardwareStatsEnabled {
-                Section("Modules") {
-                    Toggle("CPU", isOn: $vm.hardwareStatsShowCPU)
-                    Toggle("GPU", isOn: $vm.hardwareStatsShowGPU)
-                    Toggle("Memory", isOn: $vm.hardwareStatsShowMemory)
-                    Toggle("Temperature", isOn: $vm.hardwareStatsShowTemp)
-                    Toggle("FPS", isOn: $vm.hardwareStatsShowFPS)
-                    Toggle("Fan", isOn: $vm.hardwareStatsShowFan)
+                Section {
+                    orderColumnHeader
+                    ForEach(vm.hardwareStatsModuleOrder, id: \.self) { id in
+                        orderRow(id)
+                    }
+                    orderEndZone
+                } header: {
+                    Text("Order & Visibility")
+                } footer: {
+                    Text("Drag the ≡ handle to reorder. Menu shows the module in the menu bar; Card shows its detail card in the popover.")
+                }
+
+                Section("Options") {
+                    ForEach(AppSettings.hardwareModuleIDs, id: \.self) { id in
+                        moduleGroup(for: id)
+                    }
                 }
 
                 Section("Appearance") {
@@ -719,47 +754,6 @@ struct HardwarePane: View {
                         Text("Green").tag("green")
                     }
                     .pickerStyle(.segmented)
-                    Picker("Temp sensor", selection: $vm.hardwareStatsTempSensor) {
-                        Text("Auto").tag("auto")
-                        Text("CPU").tag("cpu")
-                        Text("GPU").tag("gpu")
-                    }
-                    if vm.hardwareStatsShowTemp {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Temperature Range")
-                                Spacer()
-                                Text("\(Int(vm.hardwareStatsTempMin))°C – \(Int(vm.hardwareStatsTempMax))°C")
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            TemperatureRangeSlider(
-                                minVal: $vm.hardwareStatsTempMin,
-                                maxVal: $vm.hardwareStatsTempMax
-                            )
-                            .padding(.vertical, 4)
-                            
-                            HStack {
-                                Text("0°C")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                Spacer()
-                                Text("60°C")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                Spacer()
-                                Text("120°C")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .padding(.vertical, 6)
-                    }
-                    Picker("Memory mode", selection: $vm.hardwareStatsMemMode) {
-                        Text("Pressure").tag("pressure")
-                        Text("Usage %").tag("usage")
-                    }
                     HStack {
                         Text("Update every")
                         Slider(value: $vm.hardwareStatsInterval, in: 1...10, step: 1)
@@ -767,47 +761,6 @@ struct HardwarePane: View {
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .frame(width: 24, alignment: .trailing)
-                    }
-                }
-
-                Section("Current Values") {
-                    LabeledContent("CPU") {
-                        Text(String(format: "%.1f%%", stats.cpuPercent))
-                            .foregroundStyle(barColor(ratio: stats.cpuPercent / 100.0))
-                            .monospacedDigit()
-                    }
-                    LabeledContent("GPU") {
-                        Text(String(format: "%.1f%%", stats.gpuPercent))
-                            .foregroundStyle(barColor(ratio: stats.gpuPercent / 100.0))
-                            .monospacedDigit()
-                    }
-                    LabeledContent("Memory") {
-                        HStack(spacing: 4) {
-                            Circle().fill(pressureColor(stats.memoryPressure))
-                                .frame(width: 8, height: 8)
-                            Text(String(format: "%.1f GB", stats.memoryUsedGB))
-                                .monospacedDigit()
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                    if let t = stats.cpuTemp {
-                        LabeledContent("CPU Temp") {
-                            Text(String(format: "%.0f°C", t))
-                                .foregroundStyle(barColor(ratio: (t - 30) / 70.0))
-                                .monospacedDigit()
-                        }
-                    }
-                    if let t = stats.gpuTemp {
-                        LabeledContent("GPU Temp") {
-                            Text(String(format: "%.0f°C", t))
-                                .foregroundStyle(barColor(ratio: (t - 30) / 70.0))
-                                .monospacedDigit()
-                        }
-                    }
-                    LabeledContent("FPS") {
-                        Text("\(stats.fps) fps")
-                            .foregroundStyle(barColor(ratio: Double(stats.fps) / 120.0))
-                            .monospacedDigit()
                     }
                 }
 
@@ -848,6 +801,7 @@ struct HardwarePane: View {
                         }
 
                         Picker("Fan Preset", selection: $vm.hardwareStatsFanPreset) {
+                            Text("Silent").tag("silent")
                             Text("Default").tag("default")
                             Text("Performance").tag("performance")
                         }
@@ -901,14 +855,339 @@ struct HardwarePane: View {
         }
     }
 
+    // MARK: - Module rows
+
+    /// One row per module: name + live reading on the left, gauge/number
+    /// style picker and the enable switch on the right.
+    private func moduleRow(_ title: String,
+                           live: String,
+                           liveColor: Color? = nil,
+                           liveDot: Color? = nil,
+                           isOn: Binding<Bool>,
+                           raw: Binding<Bool>?,
+                           style: Binding<String>? = nil) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .fontWeight(.medium)
+                HStack(spacing: 4) {
+                    if let liveDot {
+                        Circle().fill(liveDot).frame(width: 6, height: 6)
+                    }
+                    Text(live)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(liveColor ?? Color.secondary)
+                }
+            }
+            Spacer()
+            if let style, isOn.wrappedValue {
+                Picker("", selection: style) {
+                    Text("Bar").tag("bar")
+                    Text("Number").tag("number")
+                    Text("Icon").tag("icon")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            } else if let raw, isOn.wrappedValue {
+                Picker("", selection: raw) {
+                    Text("Bar").tag(false)
+                    Text("Number").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            }
+        }
+    }
+
+    private func rangeEditor(title: String,
+                             minVal: Binding<Double>,
+                             maxVal: Binding<Double>,
+                             bounds: ClosedRange<Double>,
+                             unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(Int(minVal.wrappedValue))\(unit) – \(Int(maxVal.wrappedValue))\(unit)")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            TemperatureRangeSlider(minVal: minVal, maxVal: maxVal, bounds: bounds)
+                .padding(.vertical, 4)
+
+            HStack {
+                Text("\(Int(bounds.lowerBound))\(unit)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Text("\(Int((bounds.lowerBound + bounds.upperBound) / 2))\(unit)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Text("\(Int(bounds.upperBound))\(unit)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    // MARK: - Live readings
+
+    private var tempLive: String {
+        switch (stats.cpuTemp, stats.gpuTemp) {
+        case let (c?, g?): return String(format: "CPU %.0f° · GPU %.0f°", c, g)
+        case let (c?, nil): return String(format: "%.0f°C", c)
+        case let (nil, g?): return String(format: "%.0f°C", g)
+        default: return "—"
+        }
+    }
+
+    private var fanLive: String {
+        guard !stats.fans.isEmpty else { return "—" }
+        return stats.fans.map { "\($0.current)" }.joined(separator: " / ") + " RPM"
+    }
+
+    private var powerLive: String {
+        guard let w = stats.powerWatts else { return "—" }
+        let suffix = stats.isCharging == true ? " · charging" : ""
+        return String(format: "%.1f W%@", w, suffix)
+    }
+
+    private var batteryLive: String {
+        stats.batteryPercentText() ?? "—"
+    }
+
+    /// Threshold color for a live reading, or nil (secondary) while it's in
+    /// the calm range — so the row list isn't a wall of colored numbers.
+    private func warnColor(_ ratio: Double) -> Color? {
+        loadWarningColor(ratio)
+    }
+
     // MARK: - Preview card
+
+    /// True when the battery module renders in its own dedicated status item
+    /// instead of the combined hardware bar.
+    private var batterySeparate: Bool {
+        vm.hardwareStatsShowBattery && vm.hardwareStatsBatterySeparate
+    }
+
+    /// The toggle row (and any sub-settings) for one module id, shown in the
+    /// Modules section. Arrangement lives in the separate Order section.
+    @ViewBuilder
+    private func moduleGroup(for id: String) -> some View {
+        switch id {
+        case "cpu":
+            moduleRow("CPU", live: String(format: "%.1f%%", stats.cpuPercent),
+                      liveColor: warnColor(stats.cpuPercent / 100.0),
+                      isOn: $vm.hardwareStatsShowCPU, raw: $vm.hardwareStatsCPURaw)
+        case "gpu":
+            moduleRow("GPU", live: String(format: "%.1f%%", stats.gpuPercent),
+                      liveColor: warnColor(stats.gpuPercent / 100.0),
+                      isOn: $vm.hardwareStatsShowGPU, raw: $vm.hardwareStatsGPURaw)
+        case "memory":
+            moduleRow("Memory", live: String(format: "%.1f GB", stats.memoryUsedGB),
+                      liveDot: pressureColor(stats.memoryPressure),
+                      isOn: $vm.hardwareStatsShowMemory, raw: $vm.hardwareStatsMemoryRaw)
+            if vm.hardwareStatsShowMemory {
+                Picker("Show as", selection: $vm.hardwareStatsMemMode) {
+                    Text("Pressure").tag("pressure")
+                    Text("Usage %").tag("usage")
+                }
+            }
+        case "temp":
+            moduleRow("Temperature", live: tempLive,
+                      isOn: $vm.hardwareStatsShowTemp, raw: $vm.hardwareStatsTempRaw)
+            if vm.hardwareStatsShowTemp {
+                Picker("Sensor", selection: $vm.hardwareStatsTempSensor) {
+                    Text("Auto").tag("auto")
+                    Text("CPU").tag("cpu")
+                    Text("GPU").tag("gpu")
+                }
+                rangeEditor(title: "Bar range",
+                            minVal: $vm.hardwareStatsTempMin,
+                            maxVal: $vm.hardwareStatsTempMax,
+                            bounds: 0...120, unit: "°C")
+            }
+        case "fan":
+            moduleRow("Fan", live: fanLive,
+                      isOn: $vm.hardwareStatsShowFan, raw: $vm.hardwareStatsFanRaw)
+        case "power":
+            moduleRow("Power", live: powerLive,
+                      isOn: $vm.hardwareStatsShowPower, raw: $vm.hardwareStatsPowerRaw)
+        case "battery":
+            moduleRow("Battery", live: batteryLive,
+                      isOn: $vm.hardwareStatsShowBattery, raw: nil,
+                      style: $vm.hardwareStatsBatteryStyle)
+            if vm.hardwareStatsShowBattery {
+                Toggle("Separate menu bar item", isOn: $vm.hardwareStatsBatterySeparate)
+                if vm.hardwareStatsBatterySeparate {
+                    Text("Shows a larger battery icon in its own menu bar item with a dedicated popover.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case "fps":
+            moduleRow("FPS", live: "\(stats.fps) fps",
+                      isOn: $vm.hardwareStatsShowFPS, raw: nil)
+        default:
+            EmptyView()
+        }
+    }
+
+    // MARK: - Order (drag to reorder)
+
+    /// One draggable row in the Order section: a grip, the module name, and a
+    /// "Hidden" hint when it's toggled off. An accent insertion line appears
+    /// above the row a drag is hovering. `.onMove` only works in a `List`; this
+    /// pane is a `Form`, so reordering is driven by general drag-and-drop.
+    @ViewBuilder
+    private func orderRow(_ id: String) -> some View {
+        HStack(spacing: 10) {
+            // Only the handle starts a drag, so the toggles stay tappable.
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .draggable(id) {
+                    Label(moduleDisplayName(id), systemImage: "line.3.horizontal").padding(6)
+                }
+            Text(moduleDisplayName(id))
+                .fontWeight(.medium)
+            Spacer(minLength: 8)
+            Toggle("", isOn: menuBarBinding(id))
+                .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                .frame(width: orderToggleColumn)
+            Toggle("", isOn: cardBinding(id))
+                .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                .frame(width: orderToggleColumn)
+        }
+        .contentShape(Rectangle())
+        .overlay(alignment: .top) { insertionLine(for: id) }
+        .dropDestination(for: String.self) { items, _ in
+            dropTargetID = nil
+            guard let dragged = items.first else { return false }
+            return moveModule(dragged, before: id)
+        } isTargeted: { hovering in
+            if hovering { dropTargetID = id }
+            else if dropTargetID == id { dropTargetID = nil }
+        }
+    }
+
+    /// Column captions aligned above the Menu / Card toggles.
+    private var orderColumnHeader: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            Text("Menu").font(.caption2).foregroundStyle(.secondary)
+                .frame(width: orderToggleColumn)
+            Text("Card").font(.caption2).foregroundStyle(.secondary)
+                .frame(width: orderToggleColumn)
+        }
+    }
+
+    private let orderToggleColumn: CGFloat = 46
+
+    /// Menu-bar visibility flag for a module (drives the same show-flags as
+    /// before, just relocated into the Order section).
+    private func menuBarBinding(_ id: String) -> Binding<Bool> {
+        switch id {
+        case "cpu":     return $vm.hardwareStatsShowCPU
+        case "gpu":     return $vm.hardwareStatsShowGPU
+        case "memory":  return $vm.hardwareStatsShowMemory
+        case "temp":    return $vm.hardwareStatsShowTemp
+        case "fan":     return $vm.hardwareStatsShowFan
+        case "power":   return $vm.hardwareStatsShowPower
+        case "battery": return $vm.hardwareStatsShowBattery
+        case "fps":     return $vm.hardwareStatsShowFPS
+        default:        return .constant(false)
+        }
+    }
+
+    /// Popover-card visibility for a module, backed by the hidden-cards set.
+    private func cardBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !vm.hardwareStatsHiddenCards.contains(id) },
+            set: { visible in
+                var hidden = Set(vm.hardwareStatsHiddenCards)
+                if visible { hidden.remove(id) } else { hidden.insert(id) }
+                vm.hardwareStatsHiddenCards = AppSettings.hardwareModuleIDs.filter { hidden.contains($0) }
+            }
+        )
+    }
+
+    /// Trailing drop zone that sends a module to the very end of the order.
+    private var orderEndZone: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 10)
+            .contentShape(Rectangle())
+            .overlay(alignment: .top) { insertionLine(for: orderEndTarget) }
+            .dropDestination(for: String.self) { items, _ in
+                dropTargetID = nil
+                guard let dragged = items.first else { return false }
+                return moveModuleToEnd(dragged)
+            } isTargeted: { hovering in
+                if hovering { dropTargetID = orderEndTarget }
+                else if dropTargetID == orderEndTarget { dropTargetID = nil }
+            }
+    }
+
+    @ViewBuilder
+    private func insertionLine(for target: String) -> some View {
+        if dropTargetID == target {
+            Capsule().fill(Color.accentColor)
+                .frame(height: 2)
+                .padding(.horizontal, -4)
+        }
+    }
+
+    /// Moves `dragged` so it sits just before `target` in the module order.
+    @discardableResult
+    private func moveModule(_ dragged: String, before target: String) -> Bool {
+        guard dragged != target else { return false }
+        var order = vm.hardwareStatsModuleOrder
+        guard let from = order.firstIndex(of: dragged) else { return false }
+        order.remove(at: from)
+        let insertAt = order.firstIndex(of: target) ?? order.count
+        order.insert(dragged, at: insertAt)
+        vm.hardwareStatsModuleOrder = order
+        return true
+    }
+
+    @discardableResult
+    private func moveModuleToEnd(_ dragged: String) -> Bool {
+        var order = vm.hardwareStatsModuleOrder
+        guard let from = order.firstIndex(of: dragged), from != order.count - 1 else { return false }
+        order.remove(at: from)
+        order.append(dragged)
+        vm.hardwareStatsModuleOrder = order
+        return true
+    }
+
+    private func moduleDisplayName(_ id: String) -> String {
+        switch id {
+        case "cpu": return "CPU"
+        case "gpu": return "GPU"
+        case "memory": return "Memory"
+        case "temp": return "Temperature"
+        case "fan": return "Fan"
+        case "power": return "Power"
+        case "battery": return "Battery"
+        case "fps": return "FPS"
+        default: return id.uppercased()
+        }
+    }
 
     /// Uses the same AppKit view as the real menu bar item, so the preview stays exact.
     private var previewCard: some View {
         let size = hardwarePreviewSize
         let scale: CGFloat = 2.0
 
-        return HStack {
+        return HStack(spacing: 10) {
             HardwareStatsBarPreview(
                 stats: stats,
                 showCPU: vm.hardwareStatsShowCPU,
@@ -917,17 +1196,60 @@ struct HardwarePane: View {
                 showTemp: vm.hardwareStatsShowTemp,
                 showFPS: vm.hardwareStatsShowFPS,
                 showFan: vm.hardwareStatsShowFan,
+                showPower: vm.hardwareStatsShowPower,
+                showBattery: vm.hardwareStatsShowBattery && !batterySeparate,
+                cpuRaw: vm.hardwareStatsCPURaw,
+                gpuRaw: vm.hardwareStatsGPURaw,
+                memoryRaw: vm.hardwareStatsMemoryRaw,
+                tempRaw: vm.hardwareStatsTempRaw,
+                fanRaw: vm.hardwareStatsFanRaw,
+                powerRaw: vm.hardwareStatsPowerRaw,
+                batteryStyle: vm.hardwareStatsBatteryStyle,
+                batteryIconScale: 1.0,
                 barStyle: vm.hardwareStatsBarStyle,
                 labelPosition: vm.hardwareStatsLabelPos,
-                colorScale: vm.hardwareStatsColorScale
+                colorScale: vm.hardwareStatsColorScale,
+                moduleOrder: vm.hardwareStatsModuleOrder
             )
             .frame(width: size.width, height: size.height)
             .scaleEffect(scale)
             .frame(width: size.width * scale, height: size.height * scale)
             .opacity(vm.hardwareStatsEnabled ? 1.0 : 0.45)
+
+            if batterySeparate {
+                let batterySize = separateBatteryPreviewSize
+                HardwareStatsBarPreview(
+                    stats: stats,
+                    showCPU: false, showGPU: false, showMemory: false, showTemp: false,
+                    showFPS: false, showFan: false, showPower: false, showBattery: true,
+                    cpuRaw: false, gpuRaw: false, memoryRaw: false, tempRaw: false,
+                    fanRaw: false, powerRaw: false,
+                    batteryStyle: vm.hardwareStatsBatteryStyle,
+                    batteryIconScale: 1.15,
+                    barStyle: vm.hardwareStatsBarStyle,
+                    labelPosition: vm.hardwareStatsLabelPos,
+                    colorScale: vm.hardwareStatsColorScale,
+                    moduleOrder: ["battery"]
+                )
+                .frame(width: batterySize.width, height: batterySize.height)
+                .scaleEffect(scale)
+                .frame(width: batterySize.width * scale, height: batterySize.height * scale)
+                .opacity(vm.hardwareStatsEnabled ? 1.0 : 0.45)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
+    }
+
+    /// Size of the standalone battery status item's larger icon, mirroring
+    /// HardwareBarView.intrinsicContentSize's solo-battery-icon branch.
+    private var separateBatteryPreviewSize: CGSize {
+        guard vm.hardwareStatsBatteryStyle == "icon" else { return hardwarePreviewSize(count: 1) }
+        let s: CGFloat = 1.15
+        let bodyCap = 22.5 * s
+        let nubW = 2.0 * s
+        let nubGap = 1.0 * s
+        return CGSize(width: bodyCap + nubGap + nubW + 6 + 8, height: 22)
     }
 
     private var hardwarePreviewSize: CGSize {
@@ -938,7 +1260,13 @@ struct HardwarePane: View {
             vm.hardwareStatsShowTemp,
             vm.hardwareStatsShowFPS,
             vm.hardwareStatsShowFan,
+            vm.hardwareStatsShowPower,
+            vm.hardwareStatsShowBattery && !batterySeparate,
         ].filter { $0 }.count)
+        return hardwarePreviewSize(count: count)
+    }
+
+    private func hardwarePreviewSize(count: Int) -> CGSize {
         let perModule: CGFloat
         switch vm.hardwareStatsBarStyle {
         case "circular":
@@ -961,9 +1289,20 @@ struct HardwarePane: View {
         let showTemp: Bool
         let showFPS: Bool
         let showFan: Bool
+        let showPower: Bool
+        let showBattery: Bool
+        let cpuRaw: Bool
+        let gpuRaw: Bool
+        let memoryRaw: Bool
+        let tempRaw: Bool
+        let fanRaw: Bool
+        let powerRaw: Bool
+        let batteryStyle: String
+        let batteryIconScale: CGFloat
         let barStyle: String
         let labelPosition: String
         let colorScale: String
+        let moduleOrder: [String]
 
         func makeNSView(context: Context) -> HardwareBarView {
             let view = HardwareBarView(frame: NSRect(x: 0, y: 0, width: 88, height: 22))
@@ -979,6 +1318,17 @@ struct HardwarePane: View {
             view.showTemp = showTemp
             view.showFPS = showFPS
             view.showFan = showFan
+            view.showPower = showPower
+            view.showBattery = showBattery
+            view.batteryIconScale = batteryIconScale
+            view.cpuRaw = cpuRaw
+            view.gpuRaw = gpuRaw
+            view.memoryRaw = memoryRaw
+            view.tempRaw = tempRaw
+            view.fanRaw = fanRaw
+            view.powerRaw = powerRaw
+            view.batteryStyle = batteryStyle
+            view.moduleOrder = moduleOrder
             view.barStyle = barStyle
             view.labelPosition = labelPosition
             view.colorScale = colorScale
@@ -989,28 +1339,33 @@ struct HardwarePane: View {
 
     // MARK: - Colors (used by Current Values section)
 
-    private func barColor(ratio: Double) -> Color {
+    /// Load-warning ramp matching the menu-bar gauges: neutral below 80%, then
+    /// yellow (0.80) → orange (0.90) → red (1.00), interpolated continuously.
+    /// Returns nil below the threshold so callers fall back to a calm color.
+    private func loadWarningColor(_ ratio: Double) -> Color? {
         let r = max(0, min(1, ratio))
-        if r >= 0.8 { return Color(hue: 0.0, saturation: 0.9, brightness: 0.95) }
-        if r >= 0.65 { return Color(hue: 0.10, saturation: 0.9, brightness: 0.95) }
-        if r >= 0.5 { return Color(hue: 0.15, saturation: 0.9, brightness: 0.95) }
-        return .white
+        guard r >= 0.8 else { return nil }
+        let yellow = 0.15, orange = 0.083, red = 0.0
+        let hue = r < 0.9
+            ? yellow + (orange - yellow) * (r - 0.8) / 0.1
+            : orange + (red - orange) * (r - 0.9) / 0.1
+        return Color(hue: hue, saturation: 0.9, brightness: 0.95)
     }
 
     private func fanColor(_ fan: FanInfo) -> Color {
-        let r = Double(fan.current) / Double(max(1, fan.max))
-        if r >= 0.8 { return Color(hue: 0.0, saturation: 0.9, brightness: 0.95) }
-        if r >= 0.65 { return Color(hue: 0.10, saturation: 0.9, brightness: 0.95) }
-        if r >= 0.5 { return Color(hue: 0.15, saturation: 0.9, brightness: 0.95) }
-        return .white
+        loadWarningColor(Double(fan.current) / Double(max(1, fan.max))) ?? .white
     }
 
     private func pressureColor(_ p: HardwareStats.MemoryPressure) -> Color {
+        // Run each pressure level's nominal ratio through the same ramp, so the
+        // dot stays neutral until pressure is genuinely high.
+        let ratio: Double
         switch p {
-        case .normal: return .gray
-        case .warning: return .orange
-        case .critical: return .red
+        case .normal:   ratio = 0.25
+        case .warning:  ratio = 0.60
+        case .critical: ratio = 0.90
         }
+        return loadWarningColor(ratio) ?? .gray
     }
 }
 
@@ -1474,8 +1829,8 @@ struct DisplaplacerPane: View {
 struct TemperatureRangeSlider: View {
     @Binding var minVal: Double
     @Binding var maxVal: Double
-    
-    private let bounds: ClosedRange<Double> = 0...120
+    var bounds: ClosedRange<Double> = 0...120
+
     private let step: Double = 1.0
     
     @State private var isHoveringMin = false

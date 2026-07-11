@@ -66,6 +66,7 @@ final class SystemHUDMonitor {
     // MARK: Lifecycle
 
     func start() {
+        AirPodsBLEDetector.shared.start()
         guard eventTap == nil else { return }
 
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -96,6 +97,7 @@ final class SystemHUDMonitor {
     }
 
     func stop() {
+        AirPodsBLEDetector.shared.stop()
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         eventTap = nil
@@ -199,6 +201,14 @@ final class SystemHUDMonitor {
     }
 
     private func audioOutputKind(for device: AudioDeviceID) -> AudioOutputKind {
+        // Prefer BLE-based model detection when it has a fresh reading — it
+        // identifies the real hardware, unlike the name-based checks below
+        // which break the moment the device is renamed in Bluetooth settings.
+        if audioDeviceTransportType(device) == kAudioDeviceTransportTypeBluetooth,
+           let bleKind = AirPodsBLEDetector.shared.currentKind() {
+            return bleKind
+        }
+
         let name = audioDeviceName(device).lowercased()
         let uid = audioDeviceStringProperty(kAudioDevicePropertyDeviceUID, device: device).lowercased()
         let model = audioDeviceStringProperty(kAudioDevicePropertyModelUID, device: device).lowercased()

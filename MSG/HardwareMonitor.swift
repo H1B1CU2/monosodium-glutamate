@@ -114,11 +114,29 @@ struct HardwareStats {
     var gpuTemp: Double? = nil
     var fps: Int = 0             // frames actually presented per second (0 = idle screen)
     var fans: [FanInfo] = []
+    var powerWatts: Double? = nil // system power draw, nil = unavailable
+    var isCharging: Bool? = nil   // nil = no battery / charge state unknown (e.g. desktop Mac)
+    var adapterWatts: Int? = nil  // rated wattage of the connected AC adapter, nil = none connected
+    var batteryPercent: Int? = nil // 0–100 charge level, nil = no battery
+    var batteryRawPercent: Double? = nil // raw charge estimate used for one decimal while charging
+    var chargeLimitPercent: Int? = nil // user-set macOS charge limit %, nil = none/unknown
+    var isLowPowerMode: Bool = false
 
     enum MemoryPressure: String {
         case normal  = "N"
         case warning = "W"
         case critical = "C"
+    }
+
+    func batteryPercentText(includeSymbol: Bool = true) -> String? {
+        guard let percent = batteryPercent else { return nil }
+        let value: String
+        if isCharging == true, let raw = batteryRawPercent {
+            value = String(format: "%.2f", raw)
+        } else {
+            value = "\(percent)"
+        }
+        return value + (includeSymbol ? "%" : "")
     }
 }
 
@@ -131,12 +149,27 @@ final class HardwareMonitor {
     static let shared = HardwareMonitor()
 
     private var timer: Timer?
+    private var batteryTimer: Timer?
+    private var fpsTimer: Timer?
+    private var hardwarePollInterval = 2.0
     private var observers: [() -> Void] = []
 
     private(set) var stats = HardwareStats()
 
     /// Previous CPU tick snapshot for delta computation.
     private var prevCPU: [UInt32]?
+
+    /// Last non-nil AdapterDetails.Watts while on AC. The key drops out of
+    /// the IORegistry for a beat during PD renegotiation; falling back to the
+    /// held value keeps the adapter label from flickering (same
+    /// previous-value pattern as SpaceWatcher).
+    private var lastAdapterWatts: Int?
+
+    /// Smooth one-second charge estimate between the battery controller's
+    /// coarse raw-capacity publications.
+    private var estimatedChargePercent: Double?
+    private var estimatedChargeTimestamp: TimeInterval?
+    private var estimatedChargeWholePercent: Int?
 
     /// Number of logical CPUs (including hyperthreading).
     private var cpuCount: Int32 = 0
@@ -166,20 +199,44 @@ final class HardwareMonitor {
             self?.poll()
         }
         if let t = timer { RunLoop.current.add(t, forMode: .common) }
+        fpsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.pollFPS()
+        }
+        if let t = fpsTimer { RunLoop.current.add(t, forMode: .common) }
         poll()
+        pollFPS()
+
+        // The SMC keeps manual fan mode across app relaunches, but the
+        // ownership flags don't. Reconcile once after launch: re-apply a
+        // persisted performance preset, or release fans a previous run
+        // (crash, Xcode stop, quit with dead helper) left stuck in manual.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self else { return }
+            let preset = AppSettings.shared.hardwareStatsFanPreset
+            if preset != "default" {
+                self.applySelectedFanPresetFromUser()
+            } else if self.anyFanManual() {
+                NSLog("[HW] leftover manual fan control detected at launch — resetting to auto")
+                self.fanReset()
+            }
+        }
     }
 
     func stop() {
         timer?.invalidate(); timer = nil
+        batteryTimer?.invalidate(); batteryTimer = nil
+        fpsTimer?.invalidate(); fpsTimer = nil
     }
 
     func updateInterval(_ seconds: Double) {
         let clamped = max(1.0, min(10.0, seconds))
+        hardwarePollInterval = clamped
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: clamped, repeats: true) { [weak self] _ in
             self?.poll()
         }
         if let t = timer { RunLoop.current.add(t, forMode: .common) }
+        updateBatteryPollingState()
     }
 
     // MARK: - Poll
@@ -189,9 +246,38 @@ final class HardwareMonitor {
         stats.gpuPercent = readGPU()
         readMemory()
         readTemps()
-        stats.fps = readFPS()
         readFans()
+        // While charging, power/battery has its own 1-second timer. Avoid
+        // duplicating that read on the slower general hardware poll.
+        if batteryTimer == nil { readPower() }
+        stats.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         applyFanCurve()
+        updateBatteryPollingState()
+        notify()
+    }
+
+    /// Raw charge capacity changes quickly enough to make a decimal useful,
+    /// so sample battery state once per second while actively charging. Other
+    /// hardware sensors retain the interval selected in Settings.
+    private func updateBatteryPollingState() {
+        let needsDedicatedTimer = stats.isCharging == true && hardwarePollInterval > 1.0
+        if needsDedicatedTimer, batteryTimer == nil {
+            let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.readPower()
+                self.updateBatteryPollingState()
+                self.notify()
+            }
+            RunLoop.current.add(t, forMode: .common)
+            batteryTimer = t
+        } else if !needsDedicatedTimer, batteryTimer != nil {
+            batteryTimer?.invalidate()
+            batteryTimer = nil
+        }
+    }
+
+    private func pollFPS() {
+        stats.fps = readFPS()
         notify()
     }
 
@@ -389,6 +475,330 @@ final class HardwareMonitor {
         return n > 0 ? sum / Double(n) : nil
     }
 
+    // MARK: - Power (AppleSmartBattery, with SMC fallback for battery-less Macs)
+
+    /// SMC power keys tried only when there's no AppleSmartBattery service
+    /// (desktop Macs). These are far less certain than the per-core temp
+    /// sensors, so treat them as a last resort.
+    private static let powerSensorNames: [String] = [
+        "PSTR",  // System Total Power
+        "PDTR",  // DC-In (AC adapter) Power
+        "PPBR",  // Battery Power
+    ]
+    private static let powerSensorKeys: [UInt32] = powerSensorNames.map(smcFourCC)
+
+    /// Live DC-in (adapter input) power sensor. Unlike the AppleSmartBattery
+    /// telemetry — which the SMC only refreshes every ~10s — this key updates
+    /// every SMC cycle, so it tracks an inline USB-C meter in real time.
+    private static let dcInPowerKey = smcFourCC("PDTR")
+
+    /// Live total-system power sensor, same freshness as PDTR. On battery the
+    /// battery supplies the whole system, so this is the live discharge rate
+    /// (verified against the PPBR battery rail while discharging).
+    private static let systemPowerKey = smcFourCC("PSTR")
+
+    /// The charge limit the user set in System Settings ▸ Battery, read from
+    /// its (undocumented) preference. `CFPreferencesAppSynchronize` re-reads
+    /// from disk so a slider change made while MSG runs is picked up. nil when
+    /// the key is absent (no limit set, or a macOS that stores it elsewhere).
+    private static func readChargeLimitPercent() -> Int? {
+        let appID = "com.apple.batteryui.charging.mac" as CFString
+        CFPreferencesAppSynchronize(appID)
+        let value = CFPreferencesCopyAppValue(
+            "com.apple.batteryui.charging.mac.prior.limit" as CFString, appID)
+        guard let n = value as? NSNumber else { return nil }
+        let pct = n.intValue
+        return (pct > 0 && pct <= 100) ? pct : nil
+    }
+
+    private func readPower() {
+        stats.chargeLimitPercent = Self.readChargeLimitPercent()
+        if let (watts, charging, adapterWatts, percent, rawPercent, chargeRate) = readPowerFromBattery() {
+            stats.powerWatts = watts
+            stats.isCharging = charging
+            stats.adapterWatts = adapterWatts
+            stats.batteryPercent = percent
+            stats.batteryRawPercent = chargingPercentEstimate(
+                systemPercent: percent, rawPercent: rawPercent,
+                chargeRatePerSecond: chargeRate, charging: charging)
+            if !powerLogOnce {
+                NSLog("[HW] Power via AppleSmartBattery: %.1fW (%@)%@",
+                      watts, charging ? "charging" : "discharging",
+                      adapterWatts.map { ", \($0)W adapter" } ?? "")
+                powerLogOnce = true
+            }
+            return
+        }
+        for (name, key) in zip(Self.powerSensorNames, Self.powerSensorKeys) {
+            if let v = SMCController.read(key), v > 0, v < 1000 {
+                stats.powerWatts = v
+                stats.isCharging = nil
+                stats.adapterWatts = nil
+                stats.batteryPercent = nil
+                stats.batteryRawPercent = nil
+                resetChargingPercentEstimate()
+                if !powerLogOnce {
+                    NSLog("[HW] Power sensor resolved via SMC fallback: %@=%.1fW", name, v)
+                    powerLogOnce = true
+                }
+                return
+            }
+        }
+        stats.powerWatts = nil
+        stats.isCharging = nil
+        stats.adapterWatts = nil
+        stats.batteryPercent = nil
+        stats.batteryRawPercent = nil
+        resetChargingPercentEstimate()
+        if !powerLogOnce {
+            NSLog("[HW] No power source resolved (no AppleSmartBattery, no SMC power keys)")
+            powerLogOnce = true
+        }
+    }
+
+    /// Real-time power + charge direction from the AppleSmartBattery
+    /// IORegistry entry — the same data source tools like coconutBattery
+    /// read. `Amperage` × `Voltage` are the battery's live current/voltage
+    /// sensor (signed mA / mV; positive amperage = charging, negative =
+    /// discharging), so this tracks actual load. `AdapterDetails.Watts` is
+    /// the charger's rated (nominal) capacity — purely informational, not
+    /// used in the wattage calculation, which is why it's kept separate from
+    /// the Current/AdapterVoltage fields (those describe the negotiated PD
+    /// contract, not a live measurement).
+    ///
+    /// On AC, battery Amperage only sees the charge current — the system's
+    /// own load is fed directly from the adapter and never crosses the battery
+    /// sensor, so Amperage × Voltage under-reports total input (and reads ~0
+    /// at the charge limit). With an adapter connected and delivering, we
+    /// report the SMC's live DC-in sensor (`PDTR`) — the total power entering
+    /// the Mac, the same figure an inline USB-C power meter shows — with
+    /// `PowerTelemetryData.SystemPowerIn` as the fallback where PDTR is
+    /// absent. Plugged in but not drawing (PD handshake, paused charger) and
+    /// on-battery states show the battery figure, which IS the system draw.
+    private func readPowerFromBattery() -> (watts: Double, charging: Bool, adapterWatts: Int?, percent: Int?, rawPercent: Double?, chargeRate: Double?)? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                   IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+
+        var propsRef: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let props = propsRef?.takeRetainedValue() as? [String: Any] else { return nil }
+
+        // Amperage is signed mA but the IORegistry hands negative values back
+        // as their unsigned 64-bit wrap (e.g. -1073 → 18446744073709550543).
+        // int64Value reinterprets the bit pattern; doubleValue would turn it
+        // into ~1.8e19 and wreck the math.
+        guard let amperageNum = props["Amperage"] as? NSNumber,
+              let voltage = (props["Voltage"] as? NSNumber)?.doubleValue, voltage > 0 else {
+            return nil
+        }
+        let amperage = Double(amperageNum.int64Value)
+        let charging = (props["IsCharging"] as? Bool) ?? (amperage > 0)
+        var adapterWatts = (props["AdapterDetails"] as? [String: Any])
+            .flatMap { ($0["Watts"] as? NSNumber)?.intValue }
+        // AdapterDetails.Watts vanishes for a read or two during PD
+        // renegotiation even though power never dropped. ExternalConnected is
+        // the stable plugged-in signal, so gate on it and bridge Watts
+        // dropouts with the last-known rating.
+        let external = (props["ExternalConnected"] as? Bool) ?? (adapterWatts != nil)
+        if external {
+            if adapterWatts == nil { adapterWatts = lastAdapterWatts }
+            else { lastAdapterWatts = adapterWatts }
+        } else {
+            lastAdapterWatts = nil
+        }
+        // CurrentCapacity is the charge percentage directly on modern macOS.
+        let percent = ((props["CurrentCapacity"] as? NSNumber)?.intValue)
+            .map { max(0, min(100, $0)) }
+        // CurrentCapacity is intentionally rounded by macOS. The gas gauge's
+        // raw charge units let us show meaningful tenths while charge is
+        // actively increasing, without inventing precision when discharging.
+        let batteryData = props["BatteryData"] as? [String: Any]
+        let rawCurrent = (batteryData?["RemainingCapacity"] as? NSNumber)?.doubleValue
+            ?? (batteryData?["AppleRawCurrentCapacity"] as? NSNumber)?.doubleValue
+        let rawMax = (batteryData?["FullChargeCapacity"] as? NSNumber)?.doubleValue
+            ?? (batteryData?["AppleRawMaxCapacity"] as? NSNumber)?.doubleValue
+        let rawPercent: Double? = {
+            guard let current = rawCurrent, let maximum = rawMax, maximum > 0 else { return nil }
+            return max(0, min(100, current / maximum * 100))
+        }()
+        // Percent gained per second at the measured battery charge current:
+        // mA / mAh = 1/hour, then ×100/3600 converts to percent/second.
+        let chargeRate: Double? = {
+            guard charging, amperage > 0, let maximum = rawMax, maximum > 0 else { return nil }
+            return amperage / (maximum * 36.0)
+        }()
+
+        // Battery current × voltage only sees power flowing through the
+        // battery. On AC the system's own load is fed straight from the
+        // adapter and bypasses that sensor, so it under-reports by the Mac's
+        // live draw (and reads ~0 when held at the charge limit). What an
+        // inline USB-C meter shows is the total power entering the Mac, and
+        // the live source for that is the SMC's DC-in sensor (PDTR) — it's
+        // fresh every read, where the AppleSmartBattery figures (Amperage,
+        // PowerTelemetryData) only refresh every ~10s and lag badly right
+        // after plug-in.
+        let batteryWatts = abs(amperage) * voltage / 1_000_000.0
+        if external {
+            let dcIn = SMCController.read(Self.dcInPowerKey)
+            if let dcIn, dcIn > 1, dcIn < 1000 {
+                return (dcIn, charging, adapterWatts, percent, rawPercent, chargeRate)
+            }
+            // No PDTR key on this machine: fall back to the slow-but-correct
+            // telemetry average.
+            if dcIn == nil,
+               let telemetry = props["PowerTelemetryData"] as? [String: Any],
+               let systemMilliwatts = (telemetry["SystemPowerIn"] as? NSNumber)?.doubleValue,
+               systemMilliwatts > 100 {
+                return (systemMilliwatts / 1000.0, charging, adapterWatts, percent, rawPercent, chargeRate)
+            }
+            // PDTR ≈ 0 while plugged in: the adapter isn't delivering (PD
+            // handshake in progress, or macOS paused the charger) — the
+            // battery is powering the Mac, so fall through to its figure.
+        }
+        // Battery is the source (unplugged, or adapter idle): live total
+        // system power IS the discharge rate, and it's fresh every read where
+        // Amperage × Voltage goes ~10s stale.
+        if let sysTotal = SMCController.read(Self.systemPowerKey),
+           sysTotal > 0.5, sysTotal < 1000 {
+            return (sysTotal, charging, adapterWatts, percent, rawPercent, chargeRate)
+        }
+        return (batteryWatts, charging, adapterWatts, percent, rawPercent, chargeRate)
+    }
+
+    /// The gas gauge publishes RemainingCapacity in batches, so polling it
+    /// faster still produces jumps such as .0 → .7. Integrate the measured
+    /// charge current between publications to expose intermediate decimals,
+    /// anchored to the same whole percentage macOS displays.
+    private func chargingPercentEstimate(systemPercent: Int?,
+                                         rawPercent: Double?,
+                                         chargeRatePerSecond: Double?,
+                                         charging: Bool) -> Double? {
+        guard charging else {
+            resetChargingPercentEstimate()
+            return rawPercent
+        }
+
+        // Apple's displayed CurrentCapacity includes reserve/smoothing and
+        // can be a full point above the raw cell ratio. Anchor to that same
+        // whole number so MSG never says 30.xx while macOS says 31%.
+        guard let wholePercent = systemPercent else { return rawPercent }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if estimatedChargeWholePercent != wholePercent {
+            let anchored = Double(wholePercent)
+            estimatedChargePercent = anchored
+            estimatedChargeTimestamp = now
+            estimatedChargeWholePercent = wholePercent
+            return anchored
+        }
+        guard let previous = estimatedChargePercent,
+              let timestamp = estimatedChargeTimestamp else {
+            let anchored = Double(wholePercent)
+            estimatedChargePercent = anchored
+            estimatedChargeTimestamp = now
+            estimatedChargeWholePercent = wholePercent
+            return anchored
+        }
+
+        // Cap elapsed time so wake-from-sleep cannot create a large invented
+        // jump before the battery controller publishes a fresh raw value.
+        let elapsed = max(0, min(5, now - timestamp))
+        var estimate = previous + max(0, chargeRatePerSecond ?? 0) * elapsed
+        estimate = max(Double(wholePercent), min(Double(wholePercent) + 0.999, estimate))
+        estimate = min(100, estimate)
+        estimatedChargePercent = estimate
+        estimatedChargeTimestamp = now
+        return estimate
+    }
+
+    private func resetChargingPercentEstimate() {
+        estimatedChargePercent = nil
+        estimatedChargeTimestamp = nil
+        estimatedChargeWholePercent = nil
+    }
+
+    // MARK: - Model max charge wattage
+
+    /// Highest charging wattage this Mac model supports, derived from the
+    /// device tree product name (e.g. "MacBook Pro (14-inch, M5 Pro)").
+    /// Fixed top of the power module's bar scale.
+    static let modelMaxChargeWatts: Double = {
+        let fallback = 100.0
+        let entry = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/product")
+        guard entry != 0 else { return fallback }
+        defer { IOObjectRelease(entry) }
+        guard let prop = IORegistryEntryCreateCFProperty(entry, "product-name" as CFString,
+                                                         kCFAllocatorDefault, 0)?.takeRetainedValue(),
+              let data = prop as? Data,
+              let raw = String(data: data, encoding: .utf8) else { return fallback }
+        let name = raw.lowercased()
+
+        if name.contains("macbook pro") {
+            if name.contains("16-inch") { return 140 }
+            if name.contains("14-inch") { return 96 }
+            if name.contains("13-inch") { return 67 }
+            return 96
+        }
+        if name.contains("macbook air") {
+            // The M1 Air tops out at its 30W brick; later Airs fast-charge at 70W.
+            if name.contains("m1,") || name.contains("m1)") { return 30 }
+            return 70
+        }
+        return fallback
+    }()
+
+    // MARK: - Energy mode (pmset powermode: 0 = automatic, 1 = low, 2 = high)
+
+    struct EnergyModes {
+        var battery: Int?
+        var ac: Int?
+        var supported: Bool { battery != nil || ac != nil }
+    }
+
+    /// Parses `pmset -g custom` (no privileges needed). nil fields mean the
+    /// powermode key is absent — energy modes unsupported on this Mac.
+    static func readEnergyModes() -> EnergyModes {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        p.arguments = ["-g", "custom"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return EnergyModes() }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let out = String(data: data, encoding: .utf8) else { return EnergyModes() }
+
+        var modes = EnergyModes()
+        var section = ""
+        for rawLine in out.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasSuffix(":") { section = line; continue }
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 2, parts[0] == "powermode", let v = Int(parts[1]) else { continue }
+            if section.hasPrefix("Battery") { modes.battery = v }
+            else if section.hasPrefix("AC") { modes.ac = v }
+        }
+        return modes
+    }
+
+    /// Sets the energy mode for both power sources (`pmset -a powermode N`)
+    /// via the privileged helper. May raise the one-time admin prompt if no
+    /// helper session is live. Completion fires on the main queue.
+    func setEnergyMode(_ mode: Int, completion: @escaping (Bool) -> Void) {
+        guard (0...2).contains(mode) else {
+            completion(false)
+            return
+        }
+        Self.fanHelperQueue.async {
+            let ok = Self.runFanHelper(arguments: ["powermode", String(mode)], allowPrompt: true)
+            NSLog("[HW] set powermode %d via helper: %@", mode, ok ? "OK" : "FAIL")
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
     // MARK: - Fans
 
     /// Per-fan SMC keys, indexed by fan number (F0…, F1…).
@@ -406,6 +816,7 @@ final class HardwareMonitor {
     private static let fnumKey = smcFourCC("FNum")
     private var fanLogOnce = false
     private var tempLogOnce = false
+    private var powerLogOnce = false
     private var fansForced = false
     private var lastHelperFanPercent: Double?
     private var lastHelperFanWriteAt: Date?
@@ -478,7 +889,7 @@ final class HardwareMonitor {
         fansForced = true
         fanControlUnlocking = true
         if !Self.shouldUseFSFanControl() {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            Self.fanHelperQueue.async { [weak self] in
                 guard let self else { return }
                 let helperOK = Self.runFanHelper(arguments: ["full"], allowPrompt: true)
                 NSLog("[HW] fanFullBlast privileged helper: %@", helperOK ? "OK" : "FAIL")
@@ -492,7 +903,7 @@ final class HardwareMonitor {
             }
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Self.fanHelperQueue.async { [weak self] in
             guard let self else { return }
 
             let directOK: Bool
@@ -567,7 +978,9 @@ final class HardwareMonitor {
     }
 
     /// Return all fans to automatic control and release Ftst.
-    func fanReset() {
+    /// `allowPrompt: false` is for poll-driven retries — they must never
+    /// raise the admin password dialog.
+    func fanReset(allowPrompt: Bool = true) {
         guard !fanControlUnlocking else {
             NSLog("[HW] fanReset ignored while another fan command is in flight")
             return
@@ -581,21 +994,27 @@ final class HardwareMonitor {
 
         if !Self.shouldUseFSFanControl() {
             fanControlUnlocking = true
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            Self.fanHelperQueue.async { [weak self] in
                 guard let self else { return }
-                let helperOK = Self.runFanHelper(arguments: ["auto"], allowPrompt: true)
+                let helperOK = Self.runFanHelper(arguments: ["auto"], allowPrompt: allowPrompt)
                 NSLog("[HW] fanReset privileged helper: %@", helperOK ? "OK" : "FAIL")
-                self.fansForced = false
-                self.helperFanControlActive = false
+                // Only forget ownership when the reset actually happened.
+                // Clearing the flags on failure left the fans stuck in manual
+                // mode with nothing ever retrying.
+                if helperOK {
+                    self.fansForced = false
+                    self.helperFanControlActive = false
+                    self.lastHelperFanPercent = nil
+                    self.lastHelperFanWriteAt = nil
+                }
                 self.fanControlUnlocking = false
-                self.lastHelperFanPercent = nil
-                self.lastHelperFanWriteAt = nil
                 DispatchQueue.main.async { self.readFans() }
             }
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        fanControlUnlocking = true
+        Self.fanHelperQueue.async { [weak self] in
             guard let self else { return }
             let directOK: Bool
             if Self.shouldUseFSFanControl() {
@@ -618,21 +1037,51 @@ final class HardwareMonitor {
                 NSLog("[HW] fanReset Ftst=0: %@", ftstOK ? "OK" : "FAIL")
                 directOK = modesOK && ftstOK
             }
+            var resetOK = directOK
             if !directOK {
-                let helperOK = Self.runFanHelper(arguments: ["auto"])
+                let helperOK = Self.runFanHelper(arguments: ["auto"], allowPrompt: allowPrompt)
                 NSLog("[HW] fanReset privileged helper: %@", helperOK ? "OK" : "FAIL")
+                resetOK = helperOK
             }
-            self.fansForced = false
-            self.helperFanControlActive = false
+            if resetOK {
+                self.fansForced = false
+                self.helperFanControlActive = false
+                self.lastHelperFanPercent = nil
+                self.lastHelperFanWriteAt = nil
+            }
             self.fanControlUnlocking = false
-            self.lastHelperFanPercent = nil
-            self.lastHelperFanWriteAt = nil
             DispatchQueue.main.async { self.readFans() }
         }
     }
 
     /// True while fans are being forced to full blast by us.
     var isFanFullBlast: Bool { fansForced }
+
+    /// True if any fan's SMC mode key currently reports manual control.
+    /// Readable without privileges — used to detect manual mode left over
+    /// from a previous run (the SMC keeps it across app relaunches).
+    private func anyFanManual() -> Bool {
+        for f in stats.fans {
+            let fk = FanKeys(f.index)
+            let v = SMCController.readUInt16(fk.mode) ?? SMCController.readUInt16(fk.modeLower)
+            if v == 1 { return true }
+        }
+        return false
+    }
+
+    /// Best-effort synchronous fan release at app termination. No prompt:
+    /// only works while the helper session is alive (the common case — curve
+    /// updates keep it warm). Startup reconciliation covers the rest.
+    func fanQuitCleanup() {
+        guard fansForced || helperFanControlActive || anyFanManual() else { return }
+        if case .success = Self.sendFanHelperCommand(arguments: ["auto"]) {
+            fansForced = false
+            helperFanControlActive = false
+            NSLog("[HW] fans released to auto at quit")
+        } else {
+            NSLog("[HW] could not release fans at quit (helper not running)")
+        }
+    }
 
     /// Guards against duplicate unlock attempts while the Ftst dance is in flight.
     private var fanControlUnlocking = false
@@ -645,11 +1094,7 @@ final class HardwareMonitor {
         _ = SMCController.open()
         readFans()
         let preset = AppSettings.shared.hardwareStatsFanPreset
-        if preset == "default" {
-            fanReset()
-            return
-        }
-        guard preset == "performance" else {
+        guard preset != "default" else {
             fanReset()
             return
         }
@@ -660,7 +1105,7 @@ final class HardwareMonitor {
         fanPresetApplyInFlight = true
         fanControlUnlocking = true
         fansForced = true
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Self.fanHelperQueue.async { [weak self] in
             guard let self else { return }
             let pct = String(format: "%.0f", max(0, min(100, rpmPct)))
             let helperOK = Self.runFanHelper(arguments: ["set", pct], allowPrompt: true)
@@ -669,6 +1114,10 @@ final class HardwareMonitor {
             if helperOK {
                 self.lastHelperFanPercent = rpmPct
                 self.lastHelperFanWriteAt = Date()
+            } else {
+                // Control was never taken — stay "forced" only if the fans
+                // really are in manual mode (leftover from an earlier run).
+                self.fansForced = self.anyFanManual()
             }
             self.fanPresetApplyInFlight = false
             self.fanControlUnlocking = false
@@ -684,6 +1133,8 @@ final class HardwareMonitor {
             return stored.map { ($0[0], $0[1]) }
         }
         switch preset {
+        case "silent":
+            return [(40, 0), (60, 20), (75, 40), (85, 60), (95, 80)]
         case "performance":
             return [(30, 30), (50, 50), (65, 70), (80, 85), (95, 100)]
         default:
@@ -712,8 +1163,8 @@ final class HardwareMonitor {
     /// When already in control: updates target RPM inline (fast).
     private func applyFanCurve() {
         let preset = AppSettings.shared.hardwareStatsFanPreset
-        guard preset == "performance" else {
-            if fansForced { fanReset() }
+        guard preset != "default" else {
+            if fansForced { fanReset(allowPrompt: false) }
             return
         }
         guard !stats.fans.isEmpty else { return }
@@ -757,7 +1208,7 @@ final class HardwareMonitor {
         let rpmPct = targetPct
         let fans = stats.fans  // snapshot
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Self.fanHelperQueue.async { [weak self] in
             guard let self else { return }
             _ = SMCController.open()
 
@@ -829,13 +1280,11 @@ final class HardwareMonitor {
         }
         lastHelperFanPercent = rpmPct
         lastHelperFanWriteAt = now
-        DispatchQueue.global(qos: .userInitiated).async {
+        Self.fanHelperQueue.async {
             let pct = String(format: "%.0f", max(0, min(100, rpmPct)))
             let helperOK = Self.runFanHelper(arguments: ["set", pct], allowPrompt: false)
             NSLog("[HW] fan curve privileged helper %@%%: %@", pct, helperOK ? "OK" : "FAIL")
-            if !helperOK {
-                self.helperFanControlActive = false
-            }
+            self.helperFanControlActive = helperOK
         }
     }
 
@@ -876,6 +1325,10 @@ final class HardwareMonitor {
         case success
         case commandFailed(Int32)
     }
+
+    /// All privileged fan helper work runs on this serial queue so a stale
+    /// "set" can never land after a later "auto" and re-force the fans.
+    private static let fanHelperQueue = DispatchQueue(label: "MSG.fanHelper", qos: .userInitiated)
 
     private static let fanHelperToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     private static let fanHelperSocketPath = FileManager.default.temporaryDirectory
@@ -994,7 +1447,7 @@ final class HardwareMonitor {
         return nil
     }
 
-    private static func shellQuote(_ s: String) -> String {
+    nonisolated private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
@@ -1234,4 +1687,239 @@ private struct SMCKeyData {
         0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0
     )
+}
+
+// ---------------------------------------------------------------------------
+// EnergyAppSampler — approximates "apps using significant energy"
+// ---------------------------------------------------------------------------
+
+/// Scores GUI apps by Apple's process POWER model plus GPU busy percent,
+/// aggregated onto the responsible app so browser/helper processes bill
+/// their parent. Apple's open-source `top` POWER formula is CPU busy time plus
+/// a 500 µs charge for every platform idle wakeup, normalized by elapsed
+/// time. GPU time comes from the accelerator's per-client AppUsage counters.
+final class EnergyAppSampler {
+
+    struct SignificantApp {
+        let name: String
+        let icon: NSImage?
+        let score: Double   // POWER base + GPU busy percent
+    }
+
+    /// Membership uses hysteresis so an app hovering near the boundary doesn't
+    /// flicker in and out: it must reach `enterThreshold` to appear and then
+    /// stays until it decays below `exitThreshold`. The score is Apple's
+    /// CPU/wakeup POWER base plus GPU busy percent.
+    private let enterThreshold: Double = 30.0
+    private let exitThreshold: Double = 16.0
+    /// Once listed, an app is held at least this long before a drop below the
+    /// exit threshold can remove it — smooths over brief lulls.
+    private let minListedSeconds: CFTimeInterval = 6.0
+    /// Gentler than a snappy EMA (was 0.45): scores move gradually so they
+    /// cross the thresholds less often. ~4s to cross enter under steady load.
+    private let emaAlpha: Double = 0.25
+    private let maxListed = 3
+
+    private var lastSampleAt: CFTimeInterval = 0
+    private struct ProcessEnergyCounters {
+        let cpuTime: UInt64
+        let idleWakeups: UInt64
+    }
+
+    private var lastProcessCounters: [pid_t: ProcessEnergyCounters] = [:]
+    private var lastGPUTime: [pid_t: UInt64] = [:]   // per pid
+    private var smoothedScore: [pid_t: Double] = [:] // per responsible pid
+
+    /// Currently displayed apps, in display order. Retained members keep their
+    /// slot (no per-tick re-sorting) so rows don't swap around; freed slots are
+    /// filled by the hottest newcomers. Parallel map tracks when each was added.
+    private var listedOrder: [pid_t] = []
+    private var listedSince: [pid_t: CFTimeInterval] = [:]
+
+    private static let ticksToNS: Double = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return Double(info.numer) / Double(info.denom)
+    }()
+
+    /// responsibility_get_pid_responsible_for_pid — private but stable
+    /// libsystem symbol; maps helper processes to the app that spawned them.
+    private typealias ResponsibleFn = @convention(c) (pid_t) -> pid_t
+    private static let responsiblePid: ResponsibleFn? = {
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2) /* RTLD_DEFAULT */,
+                              "responsibility_get_pid_responsible_for_pid") else { return nil }
+        return unsafeBitCast(sym, to: ResponsibleFn.self)
+    }()
+
+    func reset() {
+        lastSampleAt = 0
+        lastProcessCounters = [:]
+        lastGPUTime = [:]
+        smoothedScore = [:]
+        listedOrder = []
+        listedSince = [:]
+    }
+
+    /// Takes a sample and returns the current list. Needs two samples before
+    /// it can report anything, so the first call always returns [].
+    func sample() -> [SignificantApp] {
+        let now = CACurrentMediaTime()
+        let processCounters = Self.readProcessEnergyCounters()
+        let gpu = Self.readGPUTimes()
+        let previousAt = lastSampleAt
+        let previousProcessCounters = lastProcessCounters
+        let previousGPU = lastGPUTime
+        lastSampleAt = now
+        lastProcessCounters = processCounters
+        lastGPUTime = gpu
+
+        guard previousAt > 0 else { return [] }
+        let wallNS = (now - previousAt) * 1_000_000_000
+        guard wallNS > 100_000_000 else { return buildList() }
+
+        // Apple's open-source top POWER score is:
+        //   (CPU time + 500 µs per platform idle wakeup) / wall time × 100
+        // Add GPU busy percent because Apple documents graphics as a separate
+        // Energy Impact factor and top's process score does not include it.
+        var rawScore: [pid_t: Double] = [:]
+        for (pid, counters) in processCounters {
+            guard let previous = previousProcessCounters[pid],
+                  counters.cpuTime >= previous.cpuTime,
+                  counters.idleWakeups >= previous.idleWakeups else { continue }
+            let cpuNS = Double(counters.cpuTime - previous.cpuTime) * Self.ticksToNS
+            let wakePenaltyNS = Double(counters.idleWakeups - previous.idleWakeups) * 500_000.0
+            rawScore[pid, default: 0] += (cpuNS + wakePenaltyNS) / wallNS * 100
+        }
+        for (pid, t) in gpu {
+            guard let prev = previousGPU[pid], t >= prev else { continue }
+            rawScore[pid, default: 0] += Double(t - prev) * Self.ticksToNS / wallNS * 100
+        }
+
+        // Bill each process to its responsible app.
+        var appScore: [pid_t: Double] = [:]
+        for (pid, score) in rawScore where score > 0.5 {
+            var owner = Self.responsiblePid?(pid) ?? pid
+            if owner <= 0 { owner = pid }
+            appScore[owner, default: 0] += score
+        }
+
+        // Smooth per responsible pid; drop entries that went quiet.
+        var next: [pid_t: Double] = [:]
+        for pid in Set(appScore.keys).union(smoothedScore.keys) {
+            let raw = appScore[pid] ?? 0
+            let prev = smoothedScore[pid] ?? raw
+            let ema = prev + (raw - prev) * emaAlpha
+            if ema > 1 { next[pid] = ema }
+        }
+        smoothedScore = next
+        updateMembership(now: now)
+        return buildList()
+    }
+
+    /// Applies hysteresis + dwell to decide which apps are shown, mutating
+    /// `listedOrder`/`listedSince`. Retained apps keep their position; only
+    /// vacated slots are refilled, so the list stays put across ticks.
+    private func updateMembership(now: CFTimeInterval) {
+        // Drop apps that quit/backgrounded, or that decayed below the exit
+        // threshold after their minimum dwell.
+        listedOrder.removeAll { pid in
+            if !isListable(pid) { return true }
+            if (smoothedScore[pid] ?? 0) < exitThreshold {
+                return now - (listedSince[pid] ?? now) >= minListedSeconds
+            }
+            return false
+        }
+        // Fill free slots with the hottest apps over the enter threshold, so a
+        // momentary spike can't displace an app that's already shown.
+        if listedOrder.count < maxListed {
+            let candidates = smoothedScore
+                .filter { $0.value >= enterThreshold && !listedOrder.contains($0.key) && isListable($0.key) }
+                .sorted { $0.value > $1.value }
+            for (pid, _) in candidates where listedOrder.count < maxListed {
+                listedOrder.append(pid)
+                listedSince[pid] = now
+            }
+        }
+        listedSince = listedSince.filter { listedOrder.contains($0.key) }
+    }
+
+    /// A foreground (Dock) app we can name and show an icon for.
+    private func isListable(_ pid: pid_t) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        return app.activationPolicy == .regular && app.localizedName != nil
+    }
+
+    private func buildList() -> [SignificantApp] {
+        listedOrder.compactMap { pid in
+            guard let app = NSRunningApplication(processIdentifier: pid),
+                  app.activationPolicy == .regular,
+                  let name = app.localizedName else { return nil }
+            return SignificantApp(name: name, icon: app.icon, score: smoothedScore[pid] ?? 0)
+        }
+    }
+
+    /// CPU time and package-idle wakeups for every process. `ri_pkg_idle_wkups`
+    /// is the proc-rusage counterpart of top's task_platform_idle_wakeups.
+    private static func readProcessEnergyCounters() -> [pid_t: ProcessEnergyCounters] {
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        guard count > 0 else { return [:] }
+        var result: [pid_t: ProcessEnergyCounters] = [:]
+        result.reserveCapacity(count)
+        for i in 0..<min(count, pids.count) {
+            let pid = pids[i]
+            guard pid > 0 else { continue }
+            var info = rusage_info_current()
+            let ok = withUnsafeMutablePointer(to: &info) { ptr in
+                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                    proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, $0) == 0
+                }
+            }
+            if ok {
+                result[pid] = ProcessEnergyCounters(
+                    cpuTime: info.ri_user_time + info.ri_system_time,
+                    idleWakeups: info.ri_pkg_idle_wkups)
+            }
+        }
+        return result
+    }
+
+    /// Accumulated GPU time (mach units) per creating pid, summed across each
+    /// process's accelerator user clients ("IOUserClientCreator" = "pid N, name").
+    private static func readGPUTimes() -> [pid_t: UInt64] {
+        var result: [pid_t: UInt64] = [:]
+        var iter: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                           IOServiceMatching("IOAccelerator"),
+                                           &iter) == KERN_SUCCESS else { return [:] }
+        var accel = IOIteratorNext(iter)
+        while accel != 0 {
+            var children: io_iterator_t = 0
+            if IORegistryEntryGetChildIterator(accel, kIOServicePlane, &children) == KERN_SUCCESS {
+                var child = IOIteratorNext(children)
+                while child != 0 {
+                    var propsRef: Unmanaged<CFMutableDictionary>?
+                    if IORegistryEntryCreateCFProperties(child, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                       let props = propsRef?.takeRetainedValue() as? [String: Any],
+                       let creator = props["IOUserClientCreator"] as? String,
+                       let usage = props["AppUsage"] as? [[String: Any]] {
+                        let pidStr = creator.dropFirst(4).prefix(while: { $0.isNumber })
+                        if let pid = pid_t(pidStr) {
+                            let total = usage.reduce(UInt64(0)) { acc, entry in
+                                acc + ((entry["accumulatedGPUTime"] as? NSNumber)?.uint64Value ?? 0)
+                            }
+                            if total > 0 { result[pid, default: 0] += total }
+                        }
+                    }
+                    IOObjectRelease(child)
+                    child = IOIteratorNext(children)
+                }
+                IOObjectRelease(children)
+            }
+            IOObjectRelease(accel)
+            accel = IOIteratorNext(iter)
+        }
+        IOObjectRelease(iter)
+        return result
+    }
 }

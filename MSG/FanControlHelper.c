@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -282,6 +283,24 @@ static int reset_auto(void) {
     return 0;
 }
 
+/* Set the energy mode for both power sources: pmset -a powermode <0|1|2>. */
+static int set_powermode(const char *arg) {
+    int mode = atoi(arg);
+    if (mode < 0 || mode > 2) return 64;
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%d", mode);
+
+    pid_t pid = fork();
+    if (pid < 0) return 3;
+    if (pid == 0) {
+        execl("/usr/bin/pmset", "pmset", "-a", "powermode", buf, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return 3;
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 3;
+}
+
 static int run_command(const char *command, const char *arg) {
     if (strcmp(command, "full") == 0) {
         return set_percent(100.0);
@@ -294,6 +313,9 @@ static int run_command(const char *command, const char *arg) {
     }
     if (strcmp(command, "auto") == 0) {
         return reset_auto();
+    }
+    if (strcmp(command, "powermode") == 0 && arg != NULL) {
+        return set_powermode(arg);
     }
     return 64;
 }

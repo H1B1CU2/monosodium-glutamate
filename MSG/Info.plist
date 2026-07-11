@@ -8,5 +8,7 @@
 	<string>14.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>MSG needs to check Music.app playback state to show now-playing track in the menu bar.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>MSG scans nearby Bluetooth broadcasts to show the correct AirPods icon in the volume HUD, even if the device has been renamed.</string>
 </dict>
 </plist>

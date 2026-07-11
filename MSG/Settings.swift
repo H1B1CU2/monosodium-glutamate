@@ -74,6 +74,7 @@ final class AppSettings {
         static let topCornersEnabled        = "topCornersEnabled"
         static let bottomCornersEnabled     = "bottomCornersEnabled"
         static let topCornersUnderMenuBar   = "topCornersUnderMenuBar"
+        static let cornerGrowEnabled        = "cornerGrowEnabled"
         static let extCornerRadius          = "extCornerRadius"
         static let extTopCornersEnabled     = "extTopCornersEnabled"
         static let extBottomCornersEnabled  = "extBottomCornersEnabled"
@@ -119,6 +120,9 @@ final class AppSettings {
         static let hardwareStatsShowTemp       = "hardwareStatsShowTemp"
         static let hardwareStatsShowFPS        = "hardwareStatsShowFPS"
         static let hardwareStatsShowFan         = "hardwareStatsShowFan"
+        static let hardwareStatsShowPower       = "hardwareStatsShowPower"
+        static let hardwareStatsShowBattery     = "hardwareStatsShowBattery"
+        static let hardwareStatsBatterySeparate = "hardwareStatsBatterySeparate"
         static let hardwareStatsFanPreset      = "hardwareStatsFanPreset"
         static let hardwareStatsFanCurves      = "hardwareStatsFanCurves"
         static let hardwareStatsBarStyle       = "hardwareStatsBarStyle"
@@ -129,6 +133,15 @@ final class AppSettings {
         static let hardwareStatsMemMode        = "hardwareStatsMemMode"
         static let hardwareStatsTempMin        = "hardwareStatsTempMin"
         static let hardwareStatsTempMax        = "hardwareStatsTempMax"
+        static let hardwareStatsCPURaw         = "hardwareStatsCPURaw"
+        static let hardwareStatsGPURaw         = "hardwareStatsGPURaw"
+        static let hardwareStatsMemoryRaw      = "hardwareStatsMemoryRaw"
+        static let hardwareStatsTempRaw        = "hardwareStatsTempRaw"
+        static let hardwareStatsFanRaw         = "hardwareStatsFanRaw"
+        static let hardwareStatsPowerRaw       = "hardwareStatsPowerRaw"
+        static let hardwareStatsBatteryStyle   = "hardwareStatsBatteryStyle"
+        static let hardwareStatsModuleOrder    = "hardwareStatsModuleOrder"
+        static let hardwareStatsHiddenCards    = "hardwareStatsHiddenCards"
         static let systemHUDEnabled            = "systemHUDEnabled"
         static let systemHUDVolume             = "systemHUDVolume"
         static let systemHUDBrightness         = "systemHUDBrightness"
@@ -153,6 +166,11 @@ final class AppSettings {
     }
     var topCornersUnderMenuBar: Bool {
         didSet { save(); if mirrorMainDisplay { extTopCornersUnderMenuBar = topCornersUnderMenuBar }; onChange?(.corners) }
+    }
+    /// Grow-in animation for corners (space switch, Mission Control exit).
+    /// Behavioral (all displays), so no ext-mirroring.
+    var cornerGrowEnabled: Bool {
+        didSet { save(); onChange?(.corners) }
     }
 
     // MARK: External corners (per-display via UUID)
@@ -254,6 +272,9 @@ final class AppSettings {
     var hardwareStatsShowTemp: Bool        { didSet { save(); onChange?(.structural) } }
     var hardwareStatsShowFPS: Bool         { didSet { save(); onChange?(.structural) } }
     var hardwareStatsShowFan: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowPower: Bool       { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsShowBattery: Bool     { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsBatterySeparate: Bool { didSet { save(); onChange?(.structural) } }
     var hardwareStatsBarStyle: String      { didSet { save(); onChange?(.structural) } }
     var hardwareStatsLabelPos: String      { didSet { save(); onChange?(.structural) } }
     var hardwareStatsColorScale: String    { didSet { save(); onChange?(.structural) } }
@@ -264,6 +285,21 @@ final class AppSettings {
     var hardwareStatsFanCurves: [String: [[Double]]] { didSet { save(); onChange?(.structural) } }
     var hardwareStatsTempMin: Double       { didSet { save(); onChange?(.structural) } }
     var hardwareStatsTempMax: Double       { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsCPURaw: Bool          { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsGPURaw: Bool          { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsMemoryRaw: Bool       { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsTempRaw: Bool         { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsFanRaw: Bool          { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsPowerRaw: Bool        { didSet { save(); onChange?(.structural) } }
+    /// "bar" | "number" | "icon" (native-style battery glyph)
+    var hardwareStatsBatteryStyle: String  { didSet { save(); onChange?(.structural) } }
+    /// Canonical module ids in their default order.
+    static let hardwareModuleIDs = ["cpu", "gpu", "memory", "temp", "fan", "power", "battery", "fps"]
+    /// Order the modules render in, left→right. Sanitized on load to always
+    /// hold exactly the known ids (see `hardwareModuleIDs`).
+    var hardwareStatsModuleOrder: [String] { didSet { save(); onChange?(.structural) } }
+    /// Module ids whose popover detail card is hidden (empty = all shown).
+    var hardwareStatsHiddenCards: [String] { didSet { save(); onChange?(.structural) } }
 
     // System HUD (replace native volume/brightness OSD)
     var systemHUDEnabled: Bool    { didSet { save(); onChange?(.structural) } }
@@ -283,6 +319,7 @@ final class AppSettings {
             Key.topCornersEnabled:      true,
             Key.bottomCornersEnabled:   true,
             Key.topCornersUnderMenuBar: false,
+            Key.cornerGrowEnabled:      true,
             Key.extCornerRadius:        CGFloat(10),
             Key.extTopCornersEnabled:    true,
             Key.extBottomCornersEnabled: true,
@@ -328,6 +365,9 @@ final class AppSettings {
             Key.hardwareStatsShowTemp:      true,
             Key.hardwareStatsShowFPS:       false,
             Key.hardwareStatsShowFan:       false,
+            Key.hardwareStatsShowPower:     false,
+            Key.hardwareStatsShowBattery:   false,
+            Key.hardwareStatsBatterySeparate: false,
             Key.hardwareStatsBarStyle:      "vertical",
             Key.hardwareStatsLabelPos:      "vertical",
             Key.hardwareStatsColorScale:    "white",
@@ -337,9 +377,17 @@ final class AppSettings {
             Key.hardwareStatsFanPreset:    "default",
             Key.hardwareStatsFanCurves:    [
                 "performance": [[30.0, 30.0], [50.0, 50.0], [65.0, 70.0], [80.0, 85.0], [95.0, 100.0]],
+                "silent":      [[40.0, 0.0], [60.0, 20.0], [75.0, 40.0], [85.0, 60.0], [95.0, 80.0]],
             ],
             Key.hardwareStatsTempMin:      30.0,
             Key.hardwareStatsTempMax:      100.0,
+            Key.hardwareStatsCPURaw:       false,
+            Key.hardwareStatsGPURaw:       false,
+            Key.hardwareStatsMemoryRaw:    false,
+            Key.hardwareStatsTempRaw:      false,
+            Key.hardwareStatsFanRaw:       false,
+            Key.hardwareStatsPowerRaw:     false,
+            Key.hardwareStatsBatteryStyle: "bar",
             Key.systemHUDEnabled:        false,
             Key.systemHUDVolume:         true,
             Key.systemHUDBrightness:     true,
@@ -351,6 +399,7 @@ final class AppSettings {
         topCornersEnabled        = d.bool(forKey: Key.topCornersEnabled)
         bottomCornersEnabled     = d.bool(forKey: Key.bottomCornersEnabled)
         topCornersUnderMenuBar   = d.bool(forKey: Key.topCornersUnderMenuBar)
+        cornerGrowEnabled        = d.bool(forKey: Key.cornerGrowEnabled)
         extCornerRadius          = CGFloat(d.float(forKey: Key.extCornerRadius))
         extTopCornersEnabled     = d.bool(forKey: Key.extTopCornersEnabled)
         extBottomCornersEnabled  = d.bool(forKey: Key.extBottomCornersEnabled)
@@ -399,6 +448,9 @@ final class AppSettings {
         hardwareStatsShowTemp     = d.object(forKey: Key.hardwareStatsShowTemp) as? Bool ?? true
         hardwareStatsShowFPS      = d.object(forKey: Key.hardwareStatsShowFPS) as? Bool ?? false
         hardwareStatsShowFan      = d.object(forKey: Key.hardwareStatsShowFan) as? Bool ?? false
+        hardwareStatsShowPower    = d.object(forKey: Key.hardwareStatsShowPower) as? Bool ?? false
+        hardwareStatsShowBattery  = d.object(forKey: Key.hardwareStatsShowBattery) as? Bool ?? false
+        hardwareStatsBatterySeparate = d.object(forKey: Key.hardwareStatsBatterySeparate) as? Bool ?? false
         hardwareStatsBarStyle     = d.string(forKey: Key.hardwareStatsBarStyle) ?? "vertical"
         hardwareStatsLabelPos     = d.string(forKey: Key.hardwareStatsLabelPos) ?? "vertical"
         hardwareStatsColorScale   = d.string(forKey: Key.hardwareStatsColorScale) ?? "white"
@@ -407,12 +459,27 @@ final class AppSettings {
         hardwareStatsMemMode      = d.string(forKey: Key.hardwareStatsMemMode) ?? "pressure"
         hardwareStatsTempMin      = d.object(forKey: Key.hardwareStatsTempMin) as? Double ?? 30.0
         hardwareStatsTempMax      = d.object(forKey: Key.hardwareStatsTempMax) as? Double ?? 100.0
+        hardwareStatsCPURaw       = d.object(forKey: Key.hardwareStatsCPURaw) as? Bool ?? false
+        hardwareStatsGPURaw       = d.object(forKey: Key.hardwareStatsGPURaw) as? Bool ?? false
+        hardwareStatsMemoryRaw    = d.object(forKey: Key.hardwareStatsMemoryRaw) as? Bool ?? false
+        hardwareStatsTempRaw      = d.object(forKey: Key.hardwareStatsTempRaw) as? Bool ?? false
+        hardwareStatsFanRaw       = d.object(forKey: Key.hardwareStatsFanRaw) as? Bool ?? false
+        hardwareStatsPowerRaw     = d.object(forKey: Key.hardwareStatsPowerRaw) as? Bool ?? false
+        hardwareStatsBatteryStyle = d.string(forKey: Key.hardwareStatsBatteryStyle) ?? "bar"
+        // Keep known ids in the saved order, then append any known id that's
+        // missing (e.g. after adding a module) and drop anything unrecognized.
+        let savedOrder = (d.stringArray(forKey: Key.hardwareStatsModuleOrder) ?? [])
+            .filter { AppSettings.hardwareModuleIDs.contains($0) }
+        hardwareStatsModuleOrder = savedOrder + AppSettings.hardwareModuleIDs.filter { !savedOrder.contains($0) }
+        hardwareStatsHiddenCards = (d.stringArray(forKey: Key.hardwareStatsHiddenCards) ?? [])
+            .filter { AppSettings.hardwareModuleIDs.contains($0) }
         let savedFanPreset = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
-        hardwareStatsFanPreset = savedFanPreset == "performance" ? "performance" : "default"
+        hardwareStatsFanPreset = ["performance", "silent"].contains(savedFanPreset) ? savedFanPreset : "default"
         let decodedFanCurves = (try? JSONDecoder().decode([String: [[Double]]].self,
                                        from: d.data(forKey: Key.hardwareStatsFanCurves) ?? Data())) ?? [:]
         hardwareStatsFanCurves = [
             "performance": decodedFanCurves["performance"] ?? [[30, 30], [50, 50], [65, 70], [80, 85], [95, 100]],
+            "silent":      decodedFanCurves["silent"] ?? [[40, 0], [60, 20], [75, 40], [85, 60], [95, 80]],
         ]
         if let data = d.data(forKey: Key.fakeDisplays),
            let decoded = try? JSONDecoder().decode([FakeDisplay].self, from: data) {
@@ -432,6 +499,7 @@ final class AppSettings {
         d.set(topCornersEnabled,            forKey: Key.topCornersEnabled)
         d.set(bottomCornersEnabled,         forKey: Key.bottomCornersEnabled)
         d.set(topCornersUnderMenuBar,       forKey: Key.topCornersUnderMenuBar)
+        d.set(cornerGrowEnabled,            forKey: Key.cornerGrowEnabled)
         d.set(Float(extCornerRadius),       forKey: Key.extCornerRadius)
         d.set(extTopCornersEnabled,         forKey: Key.extTopCornersEnabled)
         d.set(extBottomCornersEnabled,      forKey: Key.extBottomCornersEnabled)
@@ -475,6 +543,9 @@ final class AppSettings {
         d.set(hardwareStatsShowTemp,         forKey: Key.hardwareStatsShowTemp)
         d.set(hardwareStatsShowFPS,          forKey: Key.hardwareStatsShowFPS)
         d.set(hardwareStatsShowFan,          forKey: Key.hardwareStatsShowFan)
+        d.set(hardwareStatsShowPower,        forKey: Key.hardwareStatsShowPower)
+        d.set(hardwareStatsShowBattery,      forKey: Key.hardwareStatsShowBattery)
+        d.set(hardwareStatsBatterySeparate,  forKey: Key.hardwareStatsBatterySeparate)
         d.set(hardwareStatsBarStyle,         forKey: Key.hardwareStatsBarStyle)
         d.set(hardwareStatsLabelPos,         forKey: Key.hardwareStatsLabelPos)
         d.set(hardwareStatsColorScale,       forKey: Key.hardwareStatsColorScale)
@@ -483,6 +554,15 @@ final class AppSettings {
         d.set(hardwareStatsMemMode,          forKey: Key.hardwareStatsMemMode)
         d.set(hardwareStatsTempMin,          forKey: Key.hardwareStatsTempMin)
         d.set(hardwareStatsTempMax,          forKey: Key.hardwareStatsTempMax)
+        d.set(hardwareStatsCPURaw,           forKey: Key.hardwareStatsCPURaw)
+        d.set(hardwareStatsGPURaw,           forKey: Key.hardwareStatsGPURaw)
+        d.set(hardwareStatsMemoryRaw,        forKey: Key.hardwareStatsMemoryRaw)
+        d.set(hardwareStatsTempRaw,          forKey: Key.hardwareStatsTempRaw)
+        d.set(hardwareStatsFanRaw,           forKey: Key.hardwareStatsFanRaw)
+        d.set(hardwareStatsPowerRaw,         forKey: Key.hardwareStatsPowerRaw)
+        d.set(hardwareStatsBatteryStyle,     forKey: Key.hardwareStatsBatteryStyle)
+        d.set(hardwareStatsModuleOrder,      forKey: Key.hardwareStatsModuleOrder)
+        d.set(hardwareStatsHiddenCards,      forKey: Key.hardwareStatsHiddenCards)
         d.set(hardwareStatsFanPreset,       forKey: Key.hardwareStatsFanPreset)
         if let data = try? JSONEncoder().encode(hardwareStatsFanCurves) {
             d.set(data, forKey: Key.hardwareStatsFanCurves)

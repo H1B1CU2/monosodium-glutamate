@@ -642,8 +642,16 @@ final class IndicatorRenderer {
 
         return NSImage(size: NSSize(width: finalW, height: imgH), flipped: false) { _ in
             if let icon {
-                let ix = pad + (iconSlotW - icon.size.width) / 2
-                let iy = (imgH - icon.size.height) / 2
+                // Fixed anchor rather than centering on this icon's own reported
+                // width/height. SF Symbol variants within a family (speaker.fill →
+                // wave.1/2/3, sun.min → sun.max) share consistent leading/bottom
+                // bearings by design — centering per-icon instead made the
+                // recognizable glyph shape visibly drift as the symbol swapped,
+                // since narrower variants report extra invisible padding reserved
+                // for the wider ones (e.g. speaker.fill leaves room for the waves).
+                let referenceIconHeight: CGFloat = 14
+                let ix = pad + 1
+                let iy = (imgH - referenceIconHeight) / 2
                 icon.draw(in: NSRect(x: ix, y: iy, width: icon.size.width, height: icon.size.height))
             }
             let tx = pad + iconSlotW + gap

@@ -135,6 +135,183 @@ struct SpacerPreviewScene: View {
     }
 }
 
+// MARK: - System HUD Preview Scene (top-right crop, mirrors SpacerPreviewScene)
+
+@available(macOS 14.0, *)
+struct SystemHUDPreviewScene: View {
+    let presentationMode: SystemHUDPresentationMode
+    let volumeEnabled: Bool
+    let brightnessEnabled: Bool
+    var wallpaperImage: NSImage? = nil
+
+    private let menuBarHeight: CGFloat = 30
+    private let trailingPad: CGFloat = 16
+    private let cycle: Double = 5.5
+
+    // Timings mirror the real HUD: 0.18s fade-in, 0.18s outQuart fill per key
+    // press, 1.5s hold after the last change, 0.2s fade-out, 0.2s restore.
+    private let appearAt: Double = 0.4
+    private let appearDur: Double = 0.18
+    private let presses: [Double] = [0.9, 1.25, 1.6]
+    private let holdAfterLast: Double = 1.5
+    private let fadeOutDur: Double = 0.2
+    private let restoreDur: Double = 0.2
+
+    private var screenRatio: CGFloat {
+        guard let s = NSScreen.main else { return 1.6 }
+        return s.frame.width / s.frame.height
+    }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(screenRatio, contentMode: .fit)
+            .overlay(sceneContent)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.15), lineWidth: 1))
+    }
+
+    private var sceneContent: some View {
+        ZStack(alignment: .topTrailing) {
+            if let wp = wallpaperImage {
+                Image(nsImage: wp).resizable().aspectRatio(contentMode: .fill)
+                    .scaleEffect(2.0, anchor: .topTrailing)
+            } else {
+                LinearGradient(
+                    stops: [
+                        .init(color: Color(hex: 0x5b8def), location: 0),
+                        .init(color: Color(hex: 0x8a6df3), location: 0.5),
+                        .init(color: Color(hex: 0xd660b4), location: 1),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            }
+            VStack(spacing: 0) {
+                TimelineView(.animation) { timeline in
+                    let anim = hudAnim(at: timeline.date)
+                    HStack(spacing: 12) {
+                        Spacer()
+                        if presentationMode == .separate {
+                            if anim.hudOpacity > 0 {
+                                hudBar(kind: anim.kind, value: anim.value)
+                                    .opacity(anim.hudOpacity)
+                            }
+                            PreviewSpaceIndicator(
+                                stackMode: .inline,
+                                spaceCount: 5, activeSpace: 2,
+                                screenCount: 1,
+                                scale: 2.0
+                            )
+                        } else {
+                            // Dynamic: the HUD owns the indicator's slot while up,
+                            // matching the real image swap + whole-button fades.
+                            if anim.hudVisible {
+                                hudBar(kind: anim.kind, value: anim.value)
+                                    .opacity(anim.hudOpacity)
+                            } else {
+                                PreviewSpaceIndicator(
+                                    stackMode: .inline,
+                                    spaceCount: 5, activeSpace: 2,
+                                    screenCount: 1,
+                                    scale: 2.0
+                                )
+                                .opacity(anim.indicatorOpacity)
+                            }
+                        }
+                        Image(systemName: "switch.2")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundColor(Color.black.opacity(0.85))
+                        Text("10:00")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.black.opacity(0.85))
+                    }
+                    .padding(.horizontal, trailingPad)
+                    .frame(height: menuBarHeight)
+                    .background(Color.white.opacity(0.65))
+                }
+                Spacer()
+            }
+        }
+    }
+
+    // Geometry mirrors IndicatorRenderer.makeSystemHUDFrame: fixed-width icon
+    // slot so the bar never shifts as the symbol swaps, 6pt gap, 70×4 track.
+    private func hudBar(kind: SystemHUDKind, value: CGFloat) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: hudSymbolName(kind: kind, value: value))
+                .font(.system(size: 12, weight: .semibold))
+                // Leading-aligned, not centered: SF Symbol variants in this family
+                // (speaker.fill → wave.1/2/3) share a consistent left bearing by
+                // design, so a fixed edge keeps the glyph steady as it swaps —
+                // centering in the frame instead made it visibly drift.
+                .frame(width: 18, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(width: 70, height: 4)
+                Capsule()
+                    .fill(Color.black.opacity(0.85))
+                    .frame(width: max(4, 70 * max(0, min(1, value))), height: 4)
+            }
+        }
+        .foregroundColor(Color.black.opacity(0.85))
+    }
+
+    private func hudSymbolName(kind: SystemHUDKind, value: CGFloat) -> String {
+        switch kind {
+        case .brightness:
+            return value < 0.5 ? "sun.min.fill" : "sun.max.fill"
+        case .volume:
+            if value <= 0.001 { return "speaker.fill" }
+            if value < 0.33   { return "speaker.wave.1.fill" }
+            if value < 0.66   { return "speaker.wave.2.fill" }
+            return "speaker.wave.3.fill"
+        }
+    }
+
+    private struct HUDAnim {
+        var hudVisible: Bool
+        var hudOpacity: Double
+        var indicatorOpacity: Double
+        var value: CGFloat
+        var kind: SystemHUDKind
+    }
+
+    private func hudAnim(at date: Date) -> HUDAnim {
+        let now = date.timeIntervalSinceReferenceDate
+        let t = now.truncatingRemainder(dividingBy: cycle)
+
+        let kind: SystemHUDKind
+        if volumeEnabled && brightnessEnabled {
+            kind = Int(now / cycle) % 2 == 0 ? .volume : .brightness
+        } else {
+            kind = (brightnessEnabled && !volumeEnabled) ? .brightness : .volume
+        }
+
+        // Starts at wave.1 territory and crosses the renderer's icon thresholds
+        // (0.33 / 0.66, or 0.5 for brightness) as the presses land.
+        var value: CGFloat = 0.28
+        for press in presses where t >= press {
+            value += 0.15 * applyEasing(CGFloat(min(1, (t - press) / 0.18)))
+        }
+
+        let fadeOutAt = presses[presses.count - 1] + holdAfterLast
+
+        if t < appearAt {
+            return HUDAnim(hudVisible: false, hudOpacity: 0, indicatorOpacity: 1, value: value, kind: kind)
+        }
+        if t < fadeOutAt {
+            let opacity = min(1, (t - appearAt) / appearDur)
+            return HUDAnim(hudVisible: true, hudOpacity: opacity, indicatorOpacity: 0, value: value, kind: kind)
+        }
+        if t < fadeOutAt + fadeOutDur {
+            let opacity = 1 - (t - fadeOutAt) / fadeOutDur
+            return HUDAnim(hudVisible: true, hudOpacity: opacity, indicatorOpacity: 0, value: value, kind: kind)
+        }
+        let opacity = min(1, (t - fadeOutAt - fadeOutDur) / restoreDur)
+        return HUDAnim(hudVisible: false, hudOpacity: 0, indicatorOpacity: opacity, value: value, kind: kind)
+    }
+}
+
 // MARK: - Music Popover Preview
 
 @available(macOS 14.0, *)

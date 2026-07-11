@@ -40,6 +40,8 @@
 		BB000022 /* SystemHUDMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000122 /* SystemHUDMonitor.swift */; };
 		BB000023 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000123 /* CoreAudio.framework */; };
 		BB000024 /* SystemHUDStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000125 /* SystemHUDStatusItem.swift */; };
+		BB000026 /* AirPodsBLEDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000127 /* AirPodsBLEDetector.swift */; };
+		BB000028 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000129 /* CoreBluetooth.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +83,8 @@
 		BB000123 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
 		BB000124 /* FanControlHelper.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = FanControlHelper.c; sourceTree = "<group>"; };
 		BB000125 /* SystemHUDStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDStatusItem.swift; sourceTree = "<group>"; };
+		BB000127 /* AirPodsBLEDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirPodsBLEDetector.swift; sourceTree = "<group>"; };
+		BB000129 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,6 +94,7 @@
 			files = (
 				BB000021 /* IOKit.framework in Frameworks */,
 				BB000023 /* CoreAudio.framework in Frameworks */,
+				BB000028 /* CoreBluetooth.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,6 +125,7 @@
 			children = (
 				189478582FADD198007A7799 /* MSG */,
 				18BF1F2F2FABA7B4004E29FE /* Products */,
+				18E9FC242FF8500F0000142C /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -129,6 +135,16 @@
 				187F0E772FADD2900059B374 /* MSG.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		18E9FC242FF8500F0000142C /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				BB000121 /* IOKit.framework */,
+				BB000123 /* CoreAudio.framework */,
+				BB000129 /* CoreBluetooth.framework */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 		BBA00001 /* Core */ = {
@@ -152,6 +168,7 @@
 				BB00010F /* MissionControlDetector.swift */,
 				BB000122 /* SystemHUDMonitor.swift */,
 				BB000125 /* SystemHUDStatusItem.swift */,
+				BB000127 /* AirPodsBLEDetector.swift */,
 			);
 			name = Spacer;
 			sourceTree = "<group>";
@@ -351,6 +368,7 @@
 				BB00001F /* HardwareStatusItem.swift in Sources */,
 				BB000022 /* SystemHUDMonitor.swift in Sources */,
 				BB000024 /* SystemHUDStatusItem.swift in Sources */,
+				BB000026 /* AirPodsBLEDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -488,10 +506,12 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODESIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;
 				CODE_SIGN_ENTITLEMENTS = MSG/MSG.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 47TAK6TXPB;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -540,6 +560,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 47TAK6TXPB;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;

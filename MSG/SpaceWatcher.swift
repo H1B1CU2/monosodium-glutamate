@@ -14,6 +14,9 @@ private func CGSCopyManagedDisplaySpaces(_ cid: CGSConnectionID) -> CFArray?
 @_silgen_name("CGSGetActiveSpace")
 private func CGSGetActiveSpace(_ cid: CGSConnectionID) -> Int
 
+@_silgen_name("CGSManagedDisplayIsAnimating")
+private func CGSManagedDisplayIsAnimating(_ cid: CGSConnectionID, _ display: CFString) -> Bool
+
 // MARK: - Data
 
 struct SpaceInfo: Equatable {
@@ -125,6 +128,20 @@ final class SpaceWatcher {
         }
         currentInfo = newInfo
         onChange?()
+    }
+
+    /// Whether WindowServer is currently running a space-switch slide on the
+    /// given display. Flips true at the start of the slide — measured ~500ms
+    /// before CGSGetActiveSpace / activeSpaceDidChangeNotification, which only
+    /// fire at landing. Caveat (measured): only desktop↔desktop slides set
+    /// this; transitions to/from fullscreen-app spaces (type 4) never do.
+    static func isDisplayAnimating(uuid: String) -> Bool {
+        CGSManagedDisplayIsAnimating(CGSMainConnectionID(), uuid as CFString)
+    }
+
+    /// Current active space ID (cheap scalar read; safe to poll).
+    static func activeSpaceID() -> Int {
+        CGSGetActiveSpace(CGSMainConnectionID())
     }
 
     // MARK: - CGS read

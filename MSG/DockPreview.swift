@@ -314,7 +314,7 @@ final class DockHoverController {
     private func raiseWindow(pid: pid_t, windowID: CGWindowID, matching target: CGRect, at index: Int) {
         // Activate process first (matching DockDoor's bringToFront)
         if let app = NSRunningApplication(processIdentifier: pid) {
-            app.activate(options: [.activateIgnoringOtherApps])
+            app.activate(options: [])
         }
 
         // Try to find the exact AX window (including brute force remote search across Spaces)

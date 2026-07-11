@@ -11,27 +11,26 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private override init() {}
 
-    func show() {
+    func show(pane: SettingsSection? = nil) {
+        if let pane { SettingsViewModel.shared.selectedSection = pane }
         if let w = window {
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: SettingsWindow())
-        let darkAppearance = NSAppearance(named: .darkAqua)
-        hosting.view.appearance = darkAppearance
-        let effect = NSVisualEffectView()
-        effect.material = .underWindowBackground
-        effect.blendingMode = .behindWindow
-        effect.state = .followsWindowActiveState
-        effect.appearance = darkAppearance
-        effect.autoresizingMask = [.width, .height]
-        effect.addSubview(hosting.view)
-        hosting.view.frame = effect.bounds
-        hosting.view.autoresizingMask = [.width, .height]
+        let hosting = NSHostingView(rootView: SettingsWindow())
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        hosting.wantsLayer = true
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
+        // No titlebar safe-area inset: all top spacing is explicit in SwiftUI.
+        hosting.safeAreaRegions = []
         let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
-        w.contentView = effect
+        // The glass lives in the SwiftUI layer (behind-window .sidebar
+        // material on the root view); the window itself must stay clear
+        // (isOpaque = false, backgroundColor = .clear below) so that material
+        // can blend with the desktop. The content card is opaque on top of it.
+        w.contentView = hosting
         w.title = ""
         w.setContentSize(NSSize(width: 860, height: 746))
         w.minSize = NSSize(width: 860, height: 746)
@@ -96,6 +95,10 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Transient UI state (not persisted) so AppKit callers outside SwiftUI —
+    /// e.g. the hardware stats popover — can open Settings on a specific pane.
+    @Published var selectedSection: SettingsSection = .spacer
+
     var stackMode: StackMode               { get { s.stackMode }            set { s.stackMode = newValue;            objectWillChange.send() } }
     var animationStyle: AnimationStyle     { get { s.animationStyle }       set { s.animationStyle = newValue;       objectWillChange.send() } }
     var focusDetectionMode: FocusDetectionMode { get { s.focusDetectionMode } set { s.focusDetectionMode = newValue; objectWillChange.send() } }
@@ -109,6 +112,7 @@ final class SettingsViewModel: ObservableObject {
     var topCornersEnabled: Bool            { get { s.topCornersEnabled }    set { s.topCornersEnabled = newValue;    objectWillChange.send() } }
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
+    var cornerGrowEnabled: Bool            { get { s.cornerGrowEnabled }     set { s.cornerGrowEnabled = newValue;     objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var brightFocusAlpha: CGFloat          { get { s.brightFocusAlpha }     set { s.brightFocusAlpha = newValue;     objectWillChange.send() } }
     var dimFocusAlpha: CGFloat             { get { s.dimFocusAlpha }        set { s.dimFocusAlpha = newValue;        objectWillChange.send() } }
@@ -144,6 +148,18 @@ final class SettingsViewModel: ObservableObject {
     var hardwareStatsShowTemp: Bool       { get { s.hardwareStatsShowTemp }     set { s.hardwareStatsShowTemp = newValue;     objectWillChange.send() } }
     var hardwareStatsShowFPS: Bool        { get { s.hardwareStatsShowFPS }      set { s.hardwareStatsShowFPS = newValue;      objectWillChange.send() } }
     var hardwareStatsShowFan: Bool        { get { s.hardwareStatsShowFan }      set { s.hardwareStatsShowFan = newValue;      objectWillChange.send() } }
+    var hardwareStatsShowPower: Bool      { get { s.hardwareStatsShowPower }    set { s.hardwareStatsShowPower = newValue;    objectWillChange.send() } }
+    var hardwareStatsShowBattery: Bool    { get { s.hardwareStatsShowBattery }  set { s.hardwareStatsShowBattery = newValue;  objectWillChange.send() } }
+    var hardwareStatsBatterySeparate: Bool { get { s.hardwareStatsBatterySeparate } set { s.hardwareStatsBatterySeparate = newValue; objectWillChange.send() } }
+    var hardwareStatsCPURaw: Bool         { get { s.hardwareStatsCPURaw }       set { s.hardwareStatsCPURaw = newValue;       objectWillChange.send() } }
+    var hardwareStatsGPURaw: Bool         { get { s.hardwareStatsGPURaw }       set { s.hardwareStatsGPURaw = newValue;       objectWillChange.send() } }
+    var hardwareStatsMemoryRaw: Bool      { get { s.hardwareStatsMemoryRaw }    set { s.hardwareStatsMemoryRaw = newValue;    objectWillChange.send() } }
+    var hardwareStatsTempRaw: Bool        { get { s.hardwareStatsTempRaw }      set { s.hardwareStatsTempRaw = newValue;      objectWillChange.send() } }
+    var hardwareStatsFanRaw: Bool         { get { s.hardwareStatsFanRaw }       set { s.hardwareStatsFanRaw = newValue;       objectWillChange.send() } }
+    var hardwareStatsPowerRaw: Bool       { get { s.hardwareStatsPowerRaw }     set { s.hardwareStatsPowerRaw = newValue;     objectWillChange.send() } }
+    var hardwareStatsBatteryStyle: String { get { s.hardwareStatsBatteryStyle } set { s.hardwareStatsBatteryStyle = newValue; objectWillChange.send() } }
+    var hardwareStatsModuleOrder: [String] { get { s.hardwareStatsModuleOrder } set { s.hardwareStatsModuleOrder = newValue; objectWillChange.send() } }
+    var hardwareStatsHiddenCards: [String] { get { s.hardwareStatsHiddenCards } set { s.hardwareStatsHiddenCards = newValue; objectWillChange.send() } }
     var hardwareStatsBarStyle: String     { get { s.hardwareStatsBarStyle }     set { s.hardwareStatsBarStyle = newValue;     objectWillChange.send() } }
     var hardwareStatsLabelPos: String     { get { s.hardwareStatsLabelPos }     set { s.hardwareStatsLabelPos = newValue;     objectWillChange.send() } }
     var hardwareStatsColorScale: String   { get { s.hardwareStatsColorScale }   set { s.hardwareStatsColorScale = newValue;   objectWillChange.send() } }
@@ -369,8 +385,8 @@ struct PaneContainer<Content: View>: View {
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListHeaderHeight, 0)
-                .contentMargins(.top, headerHeight - 36, for: .scrollContent)
-                .padding(.top, -36)
+                .contentMargins(.top, headerHeight, for: .scrollContent)
+                .contentMargins(.top, headerHeight, for: .scrollIndicators)
                 .mask(
                     LinearGradient(stops: [
                         .init(color: .clear,                location: 0.00),
@@ -381,8 +397,9 @@ struct PaneContainer<Content: View>: View {
                     ], startPoint: .top, endPoint: .bottom)
                 )
             PaneHeader(section: section, toggle: headerToggle)
-                .padding(.horizontal, 20).padding(.vertical, 14)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 28)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     GeometryReader { geo in
@@ -399,7 +416,6 @@ struct PaneContainer<Content: View>: View {
                             .init(color: .clear, location: 1.00),
                         ], startPoint: .top, endPoint: .bottom))
                 )
-                .ignoresSafeArea(.container, edges: .top)
         }
         .onPreferenceChange(HeaderHeightKey.self) { headerHeight = $0 }
     }
@@ -436,33 +452,60 @@ private struct SidebarRowView: View {
 @available(macOS 14.0, *)
 struct SettingsWindow: View {
     @StateObject private var vm = SettingsViewModel.shared
-    @State private var selection: SettingsSection = .spacer
+
+    /// Concentric corner math: inner card radius = window radius − gutter.
+    private let windowRadius: CGFloat = 26   // macOS 26 window corner radius
+    private let gutter: CGFloat = 8
+    private var cardRadius: CGFloat { windowRadius - gutter }
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
+            // Sidebar: no background of its own — the root view's glass shows through.
             ScrollView {
                 VStack(spacing: 2) {
                     sidebarRow(.general)
                     Color.clear.frame(height: 8)
-                    sidebarRow(.menubar)
                     sidebarRow(.corner)
-                    sidebarRow(.spacer)
+                    sidebarRow(.displaplacer)
+                    sidebarRow(.dock)
+                    sidebarRow(.hardware)
                     sidebarRow(.hud)
                     sidebarRow(.music)
+                    sidebarRow(.spacer)
+                    sidebarRow(.menubar)
                     sidebarRow(.tray)
-                    sidebarRow(.dock)
-                    sidebarRow(.displaplacer)
-                    sidebarRow(.hardware)
                     if vm.showDeveloper {
                         sidebarRow(.developer)
                     }
                 }
-                .padding(.top, 8)
+                .padding(.top, 44)   // explicit clearance under the traffic lights
             }
-            .frame(minWidth: 220, idealWidth: 240, maxWidth: 260)
-        } detail: {
-            pane(for: selection)
-                .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(width: 260)
+
+            // Floating content card: opaque body tint so the form stays
+            // readable, inset by the gutter so the sidebar chrome shows on
+            // all four sides.
+            pane(for: vm.selectedSection)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background {
+                    Color(nsColor: .controlBackgroundColor)
+                }
+                .compositingGroup()
+                .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                        .inset(by: 0.5)
+                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                }
+                .padding(gutter)
+        }
+        // Window chrome glass: the behind-window .sidebar material blends with
+        // the desktop (Liquid Glass on macOS 26+) and renders opaque under
+        // Reduce Transparency. Requires the window to be clear, which the
+        // controller sets up.
+        .background {
+            VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow, state: .active)
+                .overlay(Color.black.opacity(0.10))
         }
         .frame(minWidth: 720, minHeight: 560)
         .preferredColorScheme(.dark)
@@ -470,7 +513,7 @@ struct SettingsWindow: View {
     }
 
     private func sidebarRow(_ s: SettingsSection) -> some View {
-        SidebarRowView(section: s, isSelected: selection == s) { selection = s }
+        SidebarRowView(section: s, isSelected: vm.selectedSection == s) { vm.selectedSection = s }
     }
 
     @ViewBuilder

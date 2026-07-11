@@ -122,6 +122,14 @@ final class Indicator {
         self.musicPopover = MusicPopover(monitor: musicMonitor)
     }
 
+    /// Pull the status item out of the menu bar. Must happen before the app
+    /// terminates: on macOS 26 the item is a MenuBarAgent-owned scene, and if
+    /// the process exits while the scene is still registered, MenuBarAgent
+    /// relaunches the app to restore it.
+    func removeFromMenuBar() {
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
     func start() {
         statusItem.isVisible = true
         statusItem.button?.target = self
@@ -365,6 +373,7 @@ final class Indicator {
     // MARK: - Public hooks
 
     var isMissionControl: Bool { systemState.isMissionControl }
+    var isFullscreen: Bool { systemState.isFullscreen }
 
     func applySettings() {
         spaceWatcher.customOrder = settings.displayOrderMode == .prioritizeMain ? [] : settings.displayOrder
