@@ -35,7 +35,7 @@ final class CornerWindow: NSWindow {
         // The view arms a grow-in when the top corners go hidden→shown (Mission
         // Control closed, or left a fullscreen space). Detection happens at render
         // time off the `skipTopCorners` flag, which AppDelegate drives from the
-        // reliable isMissionControl / isFullscreen state.
+        // reliable isMissionControl state.
         view.onTopGrowInNeeded = { [weak self] in self?.startGrowIn() }
     }
 

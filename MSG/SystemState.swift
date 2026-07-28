@@ -28,17 +28,30 @@ final class SystemState {
     private let quiesceWindowSec: TimeInterval = 0
     private let detectionQueue = DispatchQueue(label: "msg.sysstate.detect", qos: .userInteractive)
 
+    private var fsObservers: [NSObjectProtocol] = []
+
     func start() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
             self?.refreshState()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
+        
+        fsObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshFullscreen() })
+        fsObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshFullscreen() })
+
         refreshState()
+        refreshFullscreen()
     }
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
         quiesceWorkItem?.cancel(); quiesceWorkItem = nil
+        fsObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        fsObservers.removeAll()
     }
 
     deinit { stop() }
@@ -48,14 +61,26 @@ final class SystemState {
     private func refreshState() {
         detectionQueue.async { [weak self] in
             let mc = MissionControlDetector.isActive()
-            let fs = Self.detectFullscreen()
             DispatchQueue.main.async { [weak self] in
-                self?.applyDetectedState(mc: mc, fs: fs)
+                self?.applyDetectedState(mc: mc)
             }
         }
     }
 
-    private func applyDetectedState(mc: Bool, fs: Bool) {
+    private func refreshFullscreen() {
+        detectionQueue.async { [weak self] in
+            let fs = Self.detectFullscreen()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if fs != self.isFullscreen {
+                    self.isFullscreen = fs
+                    self.onChange?()
+                }
+            }
+        }
+    }
+
+    private func applyDetectedState(mc: Bool) {
         let wasStable = isStable
 
         if mc != isMissionControl {
@@ -69,11 +94,6 @@ final class SystemState {
                 // Exiting MC — quiesce before declaring stable
                 scheduleStabilize()
             }
-            onChange?()
-        }
-
-        if fs != isFullscreen {
-            isFullscreen = fs
             onChange?()
         }
     }
