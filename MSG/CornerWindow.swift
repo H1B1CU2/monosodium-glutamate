@@ -127,18 +127,31 @@ final class CornerView: NSView {
     /// Whether the top corners were shown on the previous draw (transition detection).
     private var wasTopShown = true
 
+    private let topLeftView = SingleCornerView()
+    private let topRightView = SingleCornerView()
+    private let bottomLeftView = SingleCornerView()
+    private let bottomRightView = SingleCornerView()
+
     init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
         self.settings = settings
         super.init(frame: .zero)
         displayUUID = screen.uuid
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+
+        addSubview(topLeftView)
+        addSubview(topRightView)
+        addSubview(bottomLeftView)
+        addSubview(bottomRightView)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-    override func draw(_ dirtyRect: NSRect) {
+    func updateCorners() {
         let W = bounds.width
         let H = bounds.height
+        guard W > 0, H > 0 else { return }
         let screen = targetScreen
         let isBuiltin = screen.isBuiltin
 
@@ -147,8 +160,6 @@ final class CornerView: NSView {
         let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)
-
-        NSColor.black.setFill()
 
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
         let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
@@ -169,42 +180,98 @@ final class CornerView: NSView {
         }
         wasTopShown = topShown
 
-        if topShown {
-            let topR = r * Easing.outQuart(min(1, max(0, topGrowProgress)))
-            drawCorner(at: NSPoint(x: 0, y: H - topY), radius: topR, kind: .topLeft)
-            drawCorner(at: NSPoint(x: W, y: H - topY), radius: topR, kind: .topRight)
-        }
-        if bottomEnabled {
-            let bottomR = r * Easing.outQuart(min(1, max(0, bottomGrowProgress)))
-            drawCorner(at: NSPoint(x: 0, y: 0), radius: bottomR, kind: .bottomLeft)
-            drawCorner(at: NSPoint(x: W, y: 0), radius: bottomR, kind: .bottomRight)
-        }
+        let topR = topShown ? r * Easing.outQuart(min(1, max(0, topGrowProgress))) : 0
+        let bottomR = bottomEnabled ? r * Easing.outQuart(min(1, max(0, bottomGrowProgress))) : 0
+
+        let sizeR = ceil(max(r, 64)) + 1
+
+        topLeftView.frame = NSRect(x: 0, y: H - topY - sizeR, width: sizeR, height: sizeR)
+        topLeftView.corner(radius: topR, kind: .topLeft)
+        topLeftView.isHidden = !topShown || topR <= 0
+
+        topRightView.frame = NSRect(x: W - sizeR, y: H - topY - sizeR, width: sizeR, height: sizeR)
+        topRightView.corner(radius: topR, kind: .topRight)
+        topRightView.isHidden = !topShown || topR <= 0
+
+        bottomLeftView.frame = NSRect(x: 0, y: 0, width: sizeR, height: sizeR)
+        bottomLeftView.corner(radius: bottomR, kind: .bottomLeft)
+        bottomLeftView.isHidden = !bottomEnabled || bottomR <= 0
+
+        bottomRightView.frame = NSRect(x: W - sizeR, y: 0, width: sizeR, height: sizeR)
+        bottomRightView.corner(radius: bottomR, kind: .bottomRight)
+        bottomRightView.isHidden = !bottomEnabled || bottomR <= 0
     }
 
-    private enum CornerKind { case topLeft, topRight, bottomLeft, bottomRight }
+    override func layout() {
+        super.layout()
+        updateCorners()
+    }
 
-    private func drawCorner(at p: NSPoint, radius r: CGFloat, kind: CornerKind) {
+    override func display() {
+        updateCorners()
+        super.display()
+        if !topLeftView.isHidden { topLeftView.display() }
+        if !topRightView.isHidden { topRightView.display() }
+        if !bottomLeftView.isHidden { bottomLeftView.display() }
+        if !bottomRightView.isHidden { bottomRightView.display() }
+    }
+}
+
+// MARK: - SingleCornerView
+
+final class SingleCornerView: NSView {
+    enum CornerKind { case topLeft, topRight, bottomLeft, bottomRight }
+
+    private(set) var radius: CGFloat = 0
+    private(set) var kind: CornerKind = .topLeft
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    func corner(radius r: CGFloat, kind k: CornerKind) {
+        let changed = radius != r || kind != k
+        radius = r
+        kind = k
+        if changed { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard radius > 0 else { return }
+        NSColor.black.setFill()
         let path = NSBezierPath()
+        let r = radius
+        let w = bounds.width
+        let h = bounds.height
+
         switch kind {
         case .topLeft:
+            let p = NSPoint(x: 0, y: h)
             path.move(to: p)
             path.line(to: NSPoint(x: p.x + r, y: p.y))
             path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y - r),
                            radius: r, startAngle: 90, endAngle: 180)
             path.line(to: p)
         case .topRight:
+            let p = NSPoint(x: w, y: h)
             path.move(to: p)
             path.line(to: NSPoint(x: p.x - r, y: p.y))
             path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y - r),
                            radius: r, startAngle: 90, endAngle: 0, clockwise: true)
             path.line(to: p)
         case .bottomLeft:
+            let p = NSPoint(x: 0, y: 0)
             path.move(to: p)
             path.line(to: NSPoint(x: p.x + r, y: p.y))
             path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y + r),
                            radius: r, startAngle: 270, endAngle: 180, clockwise: true)
             path.line(to: p)
         case .bottomRight:
+            let p = NSPoint(x: w, y: 0)
             path.move(to: p)
             path.line(to: NSPoint(x: p.x - r, y: p.y))
             path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y + r),
