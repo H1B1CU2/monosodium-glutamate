@@ -509,23 +509,89 @@ final class IndicatorRenderer {
 
     // MARK: - Music display
 
-    func makeMusicFrame(title: String?, artist: String?, barHeights: [CGFloat], marqueeOffset: CGFloat = 0, barToDots: CGFloat = 0) -> NSImage {
-        let t = title ?? "—"
-        let a = artist ?? "—"
+    /// Shared text line for the music display; also used to measure marquee need.
+    private func musicAttributedString(title: String?, artist: String?, titleColor: NSColor, subColor: NSColor) -> NSAttributedString {
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let attr = NSMutableAttributedString()
+        attr.append(NSAttributedString(string: title ?? "—", attributes: [.font: font, .foregroundColor: titleColor]))
+        attr.append(NSAttributedString(string: " — ", attributes: [.font: dimFont, .foregroundColor: subColor]))
+        attr.append(NSAttributedString(string: artist ?? "—", attributes: [.font: dimFont, .foregroundColor: subColor]))
+        return attr
+    }
+
+    private static let musicMaxTextWidth: CGFloat = 200
+
+    private struct MusicTextKey: Equatable {
+        let title: String?
+        let artist: String?
+        let titleAlphaKey: Int
+        let fadeKey: Int
+        let appearanceIsDark: Bool
+    }
+    private var musicTextKey: MusicTextKey?
+    private var musicTextAttr: NSAttributedString?
+    private var musicTextSize: NSSize = .zero
+
+    /// True when the title/artist line overflows and marquee-scrolls.
+    func musicMarqueeActive(title: String?, artist: String?) -> Bool {
+        let isDark = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let key = MusicTextKey(
+            title: title,
+            artist: artist,
+            titleAlphaKey: 255,
+            fadeKey: 255,
+            appearanceIsDark: isDark
+        )
+        if musicTextKey == key {
+            return musicTextSize.width > IndicatorRenderer.musicMaxTextWidth
+        }
+        let attr = musicAttributedString(title: title, artist: artist, titleColor: .labelColor, subColor: .labelColor)
+        return attr.size().width > IndicatorRenderer.musicMaxTextWidth
+    }
+
+    func makeMusicFrame(title: String?, artist: String?, barHeights: [CGFloat], marqueeOffset: CGFloat = 0, pauseMorph: CGFloat = 0, textAlpha: CGFloat = 1) -> NSImage {
         let imgH: CGFloat = 22
 
         let textColor = menuBarTextColor
         let dimColor = menuBarDimColor
-        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        let dimFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        // Paused: the title settles to the dim (artist) color as the bars morph
+        // into the pause glyph; textAlpha dips the line during the marquee reset.
+        let t01 = max(0, min(1, pauseMorph))
+        let fade = max(0, min(1, textAlpha))
+        let titleAlpha = (1 + (dimColor.alphaComponent - 1) * t01) * fade
+        let isDark = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
-        let attr = NSMutableAttributedString()
-        attr.append(NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: textColor]))
-        attr.append(NSAttributedString(string: " — ", attributes: [.font: dimFont, .foregroundColor: dimColor]))
-        attr.append(NSAttributedString(string: a, attributes: [.font: dimFont, .foregroundColor: dimColor]))
+        let key = MusicTextKey(
+            title: title,
+            artist: artist,
+            titleAlphaKey: Int((titleAlpha * 255.0).rounded()),
+            fadeKey: Int((fade * 255.0).rounded()),
+            appearanceIsDark: isDark
+        )
 
-        let fullTextW = attr.size().width
-        let maxTextW: CGFloat = 200
+        let attr: NSAttributedString
+        let textSize: NSSize
+
+        if musicTextKey == key, let cachedAttr = musicTextAttr {
+            attr = cachedAttr
+            textSize = musicTextSize
+        } else {
+            let newAttr = musicAttributedString(
+                title: title, artist: artist,
+                titleColor: textColor.withAlphaComponent(titleAlpha),
+                subColor: dimColor.withAlphaComponent(dimColor.alphaComponent * fade))
+            let newSize = newAttr.size()
+            musicTextKey = key
+            musicTextAttr = newAttr
+            musicTextSize = newSize
+            attr = newAttr
+            textSize = newSize
+        }
+
+        let fullTextW = textSize.width
+        let textH = textSize.height
+        let maxTextW = IndicatorRenderer.musicMaxTextWidth
         let needsMarquee = fullTextW > maxTextW
         let textW = needsMarquee ? maxTextW : fullTextW
 
@@ -534,9 +600,9 @@ final class IndicatorRenderer {
         let scrollOffset: CGFloat = needsMarquee ? marqueeOffset.truncatingRemainder(dividingBy: overflow) : 0
 
         // Visualizer bars
-        let barCount = 4
-        let barW: CGFloat = 2.5
-        let barGap: CGFloat = 3
+        let barCount = audioVisualizerBandCount
+        let barW: CGFloat = 2
+        let barGap: CGFloat = 2
         let barAreaW = CGFloat(barCount) * barW + CGFloat(barCount - 1) * barGap
         let barMaxH: CGFloat = 12
         let barMinH: CGFloat = 3
@@ -554,38 +620,42 @@ final class IndicatorRenderer {
                 textRect.clip()
 
                 // Draw text with scroll offset
-                let textY = (imgH - attr.size().height) / 2
+                let textY = (imgH - textH) / 2
                 let drawX = pad - scrollOffset
-                attr.draw(in: NSRect(x: drawX, y: textY, width: fullTextW, height: attr.size().height))
+                attr.draw(in: NSRect(x: drawX, y: textY, width: fullTextW, height: textH))
 
                 // If marquee, draw second copy at the end for seamless loop
                 if needsMarquee {
-                    attr.draw(in: NSRect(x: drawX + overflow, y: textY, width: fullTextW, height: attr.size().height))
+                    attr.draw(in: NSRect(x: drawX + overflow, y: textY, width: fullTextW, height: textH))
                 }
 
                 ctx.restoreGraphicsState()
             }
 
-            // Draw bars interpolating into dots (barToDots: 0 = bars, 1 = dots)
-            let t = barToDots
-            let dotDiam: CGFloat = 4
+            // Bars converge pairwise into a ⏸ glyph (pauseMorph: 0 = bars, 1 = paused)
+            let pillarW: CGFloat = 2.5
+            let pillarH: CGFloat = 10
+            let pillarGap: CGFloat = 4
             let barBaseY: CGFloat = (imgH - barMaxH) / 2
             let barCenterY = barBaseY + barMaxH / 2
             let barOriginX = pad + textW + barGapToText
-            let morphColor = textColor
-            morphColor.setFill()
+            let areaCenterX = barOriginX + barAreaW / 2
+            // One path + nonzero winding fills the union, so converging pairs
+            // don't double-darken where they overlap mid-morph.
+            let glyph = NSBezierPath()
             for i in 0..<barCount {
                 let barH = i < barHeights.count ? barMinH + (barMaxH - barMinH) * barHeights[i] : 0
-                let h = barH + (dotDiam - barH) * t
-                let w = barW + (dotDiam - barW) * t
-                let cx = barOriginX + CGFloat(i) * (barW + barGap) + barW / 2
-                let x = cx - w / 2
-                let y = barCenterY - h / 2
-                let radius = w / 2
-                let rect = NSRect(x: x, y: y, width: w, height: h)
-                let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-                path.fill()
+                let side: CGFloat = i < barCount / 2 ? -1 : 1
+                let pillarCx = areaCenterX + side * (pillarW + pillarGap) / 2
+                let barCx = barOriginX + CGFloat(i) * (barW + barGap) + barW / 2
+                let cx = barCx + (pillarCx - barCx) * t01
+                let h = barH + (pillarH - barH) * t01
+                let w = barW + (pillarW - barW) * t01
+                let rect = NSRect(x: cx - w / 2, y: barCenterY - h / 2, width: w, height: h)
+                glyph.append(NSBezierPath(roundedRect: rect, xRadius: w / 2, yRadius: w / 2))
             }
+            textColor.setFill()
+            glyph.fill()
             return true
         }
     }
@@ -666,6 +736,45 @@ final class IndicatorRenderer {
                 let fill = NSBezierPath(roundedRect: NSRect(x: tx, y: ty, width: fillW, height: trackH),
                                         xRadius: trackH / 2, yRadius: trackH / 2)
                 fillColor.setFill(); fill.fill()
+            }
+            return true
+        }
+    }
+
+    // MARK: - Input Source (keyboard language) Frame
+
+    /// Globe icon + input source name, shown when the keyboard layout changes.
+    /// Same visual language as the system HUD frame: fixed icon slot on the
+    /// left, content to the right, 22pt tall.
+    func makeInputSourceHUDFrame(name: String) -> NSImage {
+        let imgH: CGFloat = 22
+        let color = menuBarTextColor
+        let icon = systemSymbol("globe", pointSize: 12, color: color)
+
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let attr = NSAttributedString(string: name, attributes: [.font: font, .foregroundColor: color])
+        let maxTextW: CGFloat = 160
+        let textW = min(attr.size().width, maxTextW)
+
+        let iconSlotW: CGFloat = 18
+        let gap: CGFloat = 4
+        let pad: CGFloat = 4
+        let finalW = pad + iconSlotW + gap + textW + pad
+
+        return NSImage(size: NSSize(width: finalW, height: imgH), flipped: false) { _ in
+            if let icon {
+                let referenceIconHeight: CGFloat = 14
+                let ix = pad + 1
+                let iy = (imgH - referenceIconHeight) / 2
+                icon.draw(in: NSRect(x: ix, y: iy, width: icon.size.width, height: icon.size.height))
+            }
+            if let ctx = NSGraphicsContext.current {
+                ctx.saveGraphicsState()
+                let textX = pad + iconSlotW + gap
+                NSRect(x: textX, y: 0, width: textW, height: imgH).clip()
+                let textY = (imgH - attr.size().height) / 2
+                attr.draw(at: NSPoint(x: textX, y: textY))
+                ctx.restoreGraphicsState()
             }
             return true
         }
