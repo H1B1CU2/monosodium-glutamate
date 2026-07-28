@@ -296,6 +296,7 @@ final class HardwareMonitor {
                 self.updateBatteryPollingState()
                 self.notify()
             }
+            t.tolerance = 0.15 // sampling - let kernel coalesce
             RunLoop.current.add(t, forMode: .common)
             batteryTimer = t
         } else if !needsDedicatedTimer, batteryTimer != nil {

@@ -611,7 +611,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startArrangementPolling() {
         guard arrangementPollSource == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now(), repeating: 0.5)
+        t.schedule(deadline: .now(), repeating: 0.5, leeway: .milliseconds(100))
         t.setEventHandler { [weak self] in self?.checkScreenArrangement() }
         t.resume()
         arrangementPollSource = t

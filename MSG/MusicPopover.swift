@@ -80,10 +80,12 @@ final class MusicPopover {
             DispatchQueue.main.async { self.close() }
         }
 
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             self?.pollTick()
         }
-        if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
+        t.tolerance = 0.05 // sampling, not animation — let kernel coalesce
+        RunLoop.main.add(t, forMode: .common)
+        pollTimer = t
     }
 
     func close() {

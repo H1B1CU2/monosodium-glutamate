@@ -114,8 +114,7 @@ final class TrayPanel {
     }
 
     private func startHealthTimer() {
-        healthTimer?.invalidate()
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self, let tap = self.eventTap else { return }
             if !CGEvent.tapIsEnabled(tap: tap) {
                 NSLog("Tray: tap disabled — attempting re-enable")
@@ -128,7 +127,9 @@ final class TrayPanel {
                 }
             }
         }
-        if let t = healthTimer { RunLoop.current.add(t, forMode: .common) }
+        t.tolerance = 1.0 // sampling, not animation — let kernel coalesce
+        RunLoop.main.add(t, forMode: .common)
+        healthTimer = t
     }
 
     private func tearDownTap() {
