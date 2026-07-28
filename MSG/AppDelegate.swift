@@ -440,15 +440,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var slideTicks = 0
     private var slideHeartbeatAt: TimeInterval = 0
 
+    private static let slideDebugEnabled =
+        UserDefaults.standard.bool(forKey: "MSGSlideDebug")
+
     // Temporary diagnostics for the "stops working after a while" report.
     // Rotates at 512KB so it can run for hours.
-    private func slideLog(_ s: String) {
+    private func slideLog(_ s: @autoclosure () -> String) {
+        guard Self.slideDebugEnabled else { return }
         let url = URL(fileURLWithPath: "/tmp/msg_slide_debug.log")
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
            (attrs[.size] as? Int ?? 0) > 512_000 {
             try? FileManager.default.removeItem(at: url)
         }
-        let line = "\(Date()) \(s)\n"
+        let line = "\(Date()) \(s())\n"
         if let h = try? FileHandle(forWritingTo: url) {
             h.seekToEndOfFile()
             h.write(line.data(using: .utf8)!)
@@ -501,14 +505,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pollSlideState() {
         let now = ProcessInfo.processInfo.systemUptime
-        slideTicks += 1
-
-        // Diagnostics heartbeat every 30s: tick rate exposes timer throttling,
-        // the rest exposes stuck state.
-        if now - slideHeartbeatAt > 30 {
-            slideHeartbeatAt = now
-            slideLog("heartbeat ticks=\(slideTicks) mc=\(indicator.isMissionControl) pair=\(menuBarPairActive) lastCount=\(lastScanCount) windows=\(cornerWindows.count)")
-            slideTicks = 0
+        if Self.slideDebugEnabled {
+            slideTicks += 1
+            if now - slideHeartbeatAt > 30 {
+                slideHeartbeatAt = now
+                slideLog("heartbeat ticks=\(slideTicks) mc=\(indicator.isMissionControl) pair=\(menuBarPairActive) lastCount=\(lastScanCount) windows=\(cornerWindows.count)")
+                slideTicks = 0
+            }
         }
 
         // MC's own transitions also animate; the MC exit path handles those.
