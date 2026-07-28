@@ -804,25 +804,37 @@ final class IndicatorRenderer {
 
     // MARK: - Colors
 
+    private struct ColorCacheKey: Equatable {
+        let appearanceName: NSAppearance.Name?
+    }
+    private var colorCacheKey: ColorCacheKey?
+    private var cachedTextColor: NSColor?
+    private var cachedDimColor: NSColor?
+
     /// Adapts text/pill color to the menu bar's actual translucency
     /// background. labelColor stays white on a light translucent menu bar
     /// → invisible. Reading effectiveAppearance gives the real answer.
     var menuBarTextColor: NSColor {
-        guard let button = statusItem?.button else { return .labelColor }
-        let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
-        switch name {
-        case .darkAqua, .vibrantDark:  return NSColor(white: 0.90, alpha: 1)
-        default:                        return NSColor(white: 0.15, alpha: 1)
+        let currentMatch = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+        let key = ColorCacheKey(appearanceName: currentMatch)
+        if colorCacheKey == key, let c = cachedTextColor { return c }
+
+        let color: NSColor
+        switch currentMatch {
+        case .darkAqua, .vibrantDark:  color = NSColor(white: 0.90, alpha: 1)
+        default:                        color = NSColor(white: 0.15, alpha: 1)
         }
+        colorCacheKey = key
+        cachedTextColor = color
+        cachedDimColor = (currentMatch == .darkAqua || currentMatch == .vibrantDark)
+            ? color.withAlphaComponent(0.55)
+            : color.withAlphaComponent(0.60)
+        return color
     }
+
     var menuBarDimColor: NSColor {
-        let bright = menuBarTextColor
-        guard let button = statusItem?.button else { return .secondaryLabelColor }
-        let name = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
-        switch name {
-        case .darkAqua, .vibrantDark:  return bright.withAlphaComponent(0.55)
-        default:                        return bright.withAlphaComponent(0.60)
-        }
+        _ = menuBarTextColor // populates cache for current appearance
+        return cachedDimColor ?? NSColor(white: 0.5, alpha: 1)
     }
 
 }
