@@ -116,6 +116,7 @@ final class WallpaperEngine {
             // — calling setDesktopImageURL forces WindowServer to re-render it,
             // causing a visible hitch in the MC animation.
             guard !self.isMissionControlActive else { return }
+            self.checkForExternalChange()
             self.reapplyToAllSpaces()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05)  { [weak self] in
                 guard let self, !self.isMissionControlActive else { return }
@@ -445,14 +446,16 @@ final class WallpaperEngine {
     // MARK: - Polling
 
     private func beginPolling() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.checkForExternalChange()
         }
+        pollTimer?.tolerance = 1.0 // sampling - let kernel coalesce
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
     }
 
     private func checkForExternalChange() {
         guard !isMissionControlActive else { return }
+        guard !screens.isEmpty else { return }
 
         // A pending change left over from the pane (closed without resolving,
         // or detected while it was open) gets adopted as soon as editing ends.
