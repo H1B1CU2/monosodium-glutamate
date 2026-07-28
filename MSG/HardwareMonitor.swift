@@ -181,9 +181,34 @@ final class HardwareMonitor {
     func addObserver(_ cb: @escaping () -> Void) { observers.append(cb) }
     private func notify() { observers.forEach { $0() } }
 
-    // MARK: - Lifecycle
+    // MARK: - Demand Gating & Lifecycle
+
+    private var demandTokens = 0
+
+    func retainPolling() {
+        demandTokens += 1
+        if demandTokens == 1 { restartPollingIfNeeded() }
+    }
+
+    func releasePolling() {
+        demandTokens = max(0, demandTokens - 1)
+        if demandTokens == 0 { restartPollingIfNeeded() }
+    }
+
+    private var wantsPolling: Bool {
+        AppSettings.shared.hardwareStatsEnabled || demandTokens > 0
+    }
+
+    private func restartPollingIfNeeded() {
+        if wantsPolling {
+            start()
+        } else {
+            stop()
+        }
+    }
 
     func start() {
+        guard timer == nil else { return }
         // Open the SMC connection for temperature / fan reads.
         _ = SMCController.open()
         stats.memoryTotalGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
@@ -195,13 +220,15 @@ final class HardwareMonitor {
         }
         if cpuCount < 1 { cpuCount = Int32(ProcessInfo.processInfo.activeProcessorCount) }
 
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: hardwarePollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        timer?.tolerance = hardwarePollInterval * 0.15
         if let t = timer { RunLoop.current.add(t, forMode: .common) }
         fpsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.pollFPS()
         }
+        fpsTimer?.tolerance = 0.15
         if let t = fpsTimer { RunLoop.current.add(t, forMode: .common) }
         poll()
         pollFPS()
@@ -235,6 +262,7 @@ final class HardwareMonitor {
         timer = Timer.scheduledTimer(withTimeInterval: clamped, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        timer?.tolerance = clamped * 0.15
         if let t = timer { RunLoop.current.add(t, forMode: .common) }
         updateBatteryPollingState()
     }
@@ -445,20 +473,42 @@ final class HardwareMonitor {
     private static let cpuSensorKeys: [UInt32] = cpuSensorNames.map(smcFourCC)
     private static let gpuSensorKeys: [UInt32] = gpuSensorNames.map(smcFourCC)
 
+    private var liveCPUSensorKeys: [UInt32]?
+    private var liveGPUSensorKeys: [UInt32]?
+    private var lastSensorProbeAt: TimeInterval = 0
+
     private func readTemps() {
-        stats.cpuTemp = averageTemp(Self.cpuSensorKeys)
-        stats.gpuTemp = averageTemp(Self.gpuSensorKeys)
-        if !tempLogOnce {
-            var found: [String] = []
-            for (name, key) in zip(Self.cpuSensorNames + Self.gpuSensorNames,
-                                    Self.cpuSensorKeys + Self.gpuSensorKeys) {
-                if let v = SMCController.read(key), v > 0, v < 130 {
-                    found.append("\(name)=\(String(format: "%.1f", v))")
-                }
+        let now = ProcessInfo.processInfo.systemUptime
+        let bothEmpty = (liveCPUSensorKeys?.isEmpty == true) && (liveGPUSensorKeys?.isEmpty == true)
+        if liveCPUSensorKeys == nil || (bothEmpty && now - lastSensorProbeAt > 60) {
+            lastSensorProbeAt = now
+            liveCPUSensorKeys = Self.cpuSensorKeys.filter { k in
+                if let v = SMCController.read(k), v > 0, v < 130 { return true }
+                return false
             }
-            NSLog("[HW] Valid temp sensors: %@", found.isEmpty ? "none" : found.joined(separator: ", "))
-            tempLogOnce = true
+            liveGPUSensorKeys = Self.gpuSensorKeys.filter { k in
+                if let v = SMCController.read(k), v > 0, v < 130 { return true }
+                return false
+            }
+            if !tempLogOnce {
+                logDiscoveredSensors()
+                tempLogOnce = true
+            }
         }
+        stats.cpuTemp = averageTemp(liveCPUSensorKeys ?? [])
+        stats.gpuTemp = averageTemp(liveGPUSensorKeys ?? [])
+    }
+
+    private func logDiscoveredSensors() {
+        var found: [String] = []
+        let liveSet = Set((liveCPUSensorKeys ?? []) + (liveGPUSensorKeys ?? []))
+        for (name, key) in zip(Self.cpuSensorNames + Self.gpuSensorNames,
+                                Self.cpuSensorKeys + Self.gpuSensorKeys) {
+            if liveSet.contains(key), let v = SMCController.read(key), v > 0, v < 130 {
+                found.append("\(name)=\(String(format: "%.1f", v))")
+            }
+        }
+        NSLog("[HW] Valid temp sensors: %@", found.isEmpty ? "none" : found.joined(separator: ", "))
     }
 
     /// Average all valid readings (0 < v < 110°C). Mirrors how Stats reports a
@@ -511,8 +561,16 @@ final class HardwareMonitor {
         return (pct > 0 && pct <= 100) ? pct : nil
     }
 
+    private var lastChargeLimitReadAt: TimeInterval = 0
+    private var cachedChargeLimit: Int?
+
     private func readPower() {
-        stats.chargeLimitPercent = Self.readChargeLimitPercent()
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastChargeLimitReadAt > 30 || lastChargeLimitReadAt == 0 {
+            lastChargeLimitReadAt = now
+            cachedChargeLimit = Self.readChargeLimitPercent()
+        }
+        stats.chargeLimitPercent = cachedChargeLimit
         if let (watts, charging, adapterWatts, percent, rawPercent, chargeRate) = readPowerFromBattery() {
             stats.powerWatts = watts
             stats.isCharging = charging
@@ -1485,6 +1543,9 @@ final class SMCController {
         guard conn != 0 else { return }
         IOServiceClose(conn)
         conn = 0
+        cacheLock.lock()
+        keyInfoCache.removeAll()
+        cacheLock.unlock()
     }
 
     // MARK: - Data-type-aware read
@@ -1506,6 +1567,9 @@ final class SMCController {
     private static let cmdReadKeyInfo: UInt8 = 9
     private static let kernelIndex: UInt32 = 2
 
+    private static var keyInfoCache: [UInt32: (type: UInt32, size: UInt32)] = [:]
+    private static let cacheLock = NSLock()
+
     /// Read a decoded value from any SMC key. Reads the key's metadata first
     /// (data type + size), then decodes the payload — works for `flt` (Apple
     /// Silicon temps/fans), `fpe2`/`sp78` (Intel), and integer keys.
@@ -1516,16 +1580,33 @@ final class SMCController {
         var input = SMCKeyData()
         var output = SMCKeyData()
 
-        // 1. Get key info (dataType + dataSize)
-        input.key = key
-        input.data8 = cmdReadKeyInfo
-        guard callSMC(&input, &output) == KERN_SUCCESS else { return nil }
+        var type: UInt32 = 0
+        var size: UInt32 = 0
 
-        let size = output.keyInfo.dataSize
-        let type = output.keyInfo.dataType
-        guard size > 0 else { return nil }
+        cacheLock.lock()
+        let cached = keyInfoCache[key]
+        cacheLock.unlock()
+
+        if let cached {
+            type = cached.type
+            size = cached.size
+        } else {
+            // 1. Get key info (dataType + dataSize)
+            input.key = key
+            input.data8 = cmdReadKeyInfo
+            guard callSMC(&input, &output) == KERN_SUCCESS else { return nil }
+
+            size = output.keyInfo.dataSize
+            type = output.keyInfo.dataType
+            guard size > 0 else { return nil }
+
+            cacheLock.lock()
+            keyInfoCache[key] = (type: type, size: size)
+            cacheLock.unlock()
+        }
 
         // 2. Read the bytes
+        input.key = key
         input.keyInfo.dataSize = size
         input.data8 = cmdReadBytes
         guard callSMC(&input, &output) == KERN_SUCCESS else { return nil }
@@ -1687,239 +1768,4 @@ private struct SMCKeyData {
         0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0
     )
-}
-
-// ---------------------------------------------------------------------------
-// EnergyAppSampler — approximates "apps using significant energy"
-// ---------------------------------------------------------------------------
-
-/// Scores GUI apps by Apple's process POWER model plus GPU busy percent,
-/// aggregated onto the responsible app so browser/helper processes bill
-/// their parent. Apple's open-source `top` POWER formula is CPU busy time plus
-/// a 500 µs charge for every platform idle wakeup, normalized by elapsed
-/// time. GPU time comes from the accelerator's per-client AppUsage counters.
-final class EnergyAppSampler {
-
-    struct SignificantApp {
-        let name: String
-        let icon: NSImage?
-        let score: Double   // POWER base + GPU busy percent
-    }
-
-    /// Membership uses hysteresis so an app hovering near the boundary doesn't
-    /// flicker in and out: it must reach `enterThreshold` to appear and then
-    /// stays until it decays below `exitThreshold`. The score is Apple's
-    /// CPU/wakeup POWER base plus GPU busy percent.
-    private let enterThreshold: Double = 30.0
-    private let exitThreshold: Double = 16.0
-    /// Once listed, an app is held at least this long before a drop below the
-    /// exit threshold can remove it — smooths over brief lulls.
-    private let minListedSeconds: CFTimeInterval = 6.0
-    /// Gentler than a snappy EMA (was 0.45): scores move gradually so they
-    /// cross the thresholds less often. ~4s to cross enter under steady load.
-    private let emaAlpha: Double = 0.25
-    private let maxListed = 3
-
-    private var lastSampleAt: CFTimeInterval = 0
-    private struct ProcessEnergyCounters {
-        let cpuTime: UInt64
-        let idleWakeups: UInt64
-    }
-
-    private var lastProcessCounters: [pid_t: ProcessEnergyCounters] = [:]
-    private var lastGPUTime: [pid_t: UInt64] = [:]   // per pid
-    private var smoothedScore: [pid_t: Double] = [:] // per responsible pid
-
-    /// Currently displayed apps, in display order. Retained members keep their
-    /// slot (no per-tick re-sorting) so rows don't swap around; freed slots are
-    /// filled by the hottest newcomers. Parallel map tracks when each was added.
-    private var listedOrder: [pid_t] = []
-    private var listedSince: [pid_t: CFTimeInterval] = [:]
-
-    private static let ticksToNS: Double = {
-        var info = mach_timebase_info_data_t()
-        mach_timebase_info(&info)
-        return Double(info.numer) / Double(info.denom)
-    }()
-
-    /// responsibility_get_pid_responsible_for_pid — private but stable
-    /// libsystem symbol; maps helper processes to the app that spawned them.
-    private typealias ResponsibleFn = @convention(c) (pid_t) -> pid_t
-    private static let responsiblePid: ResponsibleFn? = {
-        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2) /* RTLD_DEFAULT */,
-                              "responsibility_get_pid_responsible_for_pid") else { return nil }
-        return unsafeBitCast(sym, to: ResponsibleFn.self)
-    }()
-
-    func reset() {
-        lastSampleAt = 0
-        lastProcessCounters = [:]
-        lastGPUTime = [:]
-        smoothedScore = [:]
-        listedOrder = []
-        listedSince = [:]
-    }
-
-    /// Takes a sample and returns the current list. Needs two samples before
-    /// it can report anything, so the first call always returns [].
-    func sample() -> [SignificantApp] {
-        let now = CACurrentMediaTime()
-        let processCounters = Self.readProcessEnergyCounters()
-        let gpu = Self.readGPUTimes()
-        let previousAt = lastSampleAt
-        let previousProcessCounters = lastProcessCounters
-        let previousGPU = lastGPUTime
-        lastSampleAt = now
-        lastProcessCounters = processCounters
-        lastGPUTime = gpu
-
-        guard previousAt > 0 else { return [] }
-        let wallNS = (now - previousAt) * 1_000_000_000
-        guard wallNS > 100_000_000 else { return buildList() }
-
-        // Apple's open-source top POWER score is:
-        //   (CPU time + 500 µs per platform idle wakeup) / wall time × 100
-        // Add GPU busy percent because Apple documents graphics as a separate
-        // Energy Impact factor and top's process score does not include it.
-        var rawScore: [pid_t: Double] = [:]
-        for (pid, counters) in processCounters {
-            guard let previous = previousProcessCounters[pid],
-                  counters.cpuTime >= previous.cpuTime,
-                  counters.idleWakeups >= previous.idleWakeups else { continue }
-            let cpuNS = Double(counters.cpuTime - previous.cpuTime) * Self.ticksToNS
-            let wakePenaltyNS = Double(counters.idleWakeups - previous.idleWakeups) * 500_000.0
-            rawScore[pid, default: 0] += (cpuNS + wakePenaltyNS) / wallNS * 100
-        }
-        for (pid, t) in gpu {
-            guard let prev = previousGPU[pid], t >= prev else { continue }
-            rawScore[pid, default: 0] += Double(t - prev) * Self.ticksToNS / wallNS * 100
-        }
-
-        // Bill each process to its responsible app.
-        var appScore: [pid_t: Double] = [:]
-        for (pid, score) in rawScore where score > 0.5 {
-            var owner = Self.responsiblePid?(pid) ?? pid
-            if owner <= 0 { owner = pid }
-            appScore[owner, default: 0] += score
-        }
-
-        // Smooth per responsible pid; drop entries that went quiet.
-        var next: [pid_t: Double] = [:]
-        for pid in Set(appScore.keys).union(smoothedScore.keys) {
-            let raw = appScore[pid] ?? 0
-            let prev = smoothedScore[pid] ?? raw
-            let ema = prev + (raw - prev) * emaAlpha
-            if ema > 1 { next[pid] = ema }
-        }
-        smoothedScore = next
-        updateMembership(now: now)
-        return buildList()
-    }
-
-    /// Applies hysteresis + dwell to decide which apps are shown, mutating
-    /// `listedOrder`/`listedSince`. Retained apps keep their position; only
-    /// vacated slots are refilled, so the list stays put across ticks.
-    private func updateMembership(now: CFTimeInterval) {
-        // Drop apps that quit/backgrounded, or that decayed below the exit
-        // threshold after their minimum dwell.
-        listedOrder.removeAll { pid in
-            if !isListable(pid) { return true }
-            if (smoothedScore[pid] ?? 0) < exitThreshold {
-                return now - (listedSince[pid] ?? now) >= minListedSeconds
-            }
-            return false
-        }
-        // Fill free slots with the hottest apps over the enter threshold, so a
-        // momentary spike can't displace an app that's already shown.
-        if listedOrder.count < maxListed {
-            let candidates = smoothedScore
-                .filter { $0.value >= enterThreshold && !listedOrder.contains($0.key) && isListable($0.key) }
-                .sorted { $0.value > $1.value }
-            for (pid, _) in candidates where listedOrder.count < maxListed {
-                listedOrder.append(pid)
-                listedSince[pid] = now
-            }
-        }
-        listedSince = listedSince.filter { listedOrder.contains($0.key) }
-    }
-
-    /// A foreground (Dock) app we can name and show an icon for.
-    private func isListable(_ pid: pid_t) -> Bool {
-        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
-        return app.activationPolicy == .regular && app.localizedName != nil
-    }
-
-    private func buildList() -> [SignificantApp] {
-        listedOrder.compactMap { pid in
-            guard let app = NSRunningApplication(processIdentifier: pid),
-                  app.activationPolicy == .regular,
-                  let name = app.localizedName else { return nil }
-            return SignificantApp(name: name, icon: app.icon, score: smoothedScore[pid] ?? 0)
-        }
-    }
-
-    /// CPU time and package-idle wakeups for every process. `ri_pkg_idle_wkups`
-    /// is the proc-rusage counterpart of top's task_platform_idle_wakeups.
-    private static func readProcessEnergyCounters() -> [pid_t: ProcessEnergyCounters] {
-        var pids = [pid_t](repeating: 0, count: 4096)
-        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
-        guard count > 0 else { return [:] }
-        var result: [pid_t: ProcessEnergyCounters] = [:]
-        result.reserveCapacity(count)
-        for i in 0..<min(count, pids.count) {
-            let pid = pids[i]
-            guard pid > 0 else { continue }
-            var info = rusage_info_current()
-            let ok = withUnsafeMutablePointer(to: &info) { ptr in
-                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                    proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, $0) == 0
-                }
-            }
-            if ok {
-                result[pid] = ProcessEnergyCounters(
-                    cpuTime: info.ri_user_time + info.ri_system_time,
-                    idleWakeups: info.ri_pkg_idle_wkups)
-            }
-        }
-        return result
-    }
-
-    /// Accumulated GPU time (mach units) per creating pid, summed across each
-    /// process's accelerator user clients ("IOUserClientCreator" = "pid N, name").
-    private static func readGPUTimes() -> [pid_t: UInt64] {
-        var result: [pid_t: UInt64] = [:]
-        var iter: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault,
-                                           IOServiceMatching("IOAccelerator"),
-                                           &iter) == KERN_SUCCESS else { return [:] }
-        var accel = IOIteratorNext(iter)
-        while accel != 0 {
-            var children: io_iterator_t = 0
-            if IORegistryEntryGetChildIterator(accel, kIOServicePlane, &children) == KERN_SUCCESS {
-                var child = IOIteratorNext(children)
-                while child != 0 {
-                    var propsRef: Unmanaged<CFMutableDictionary>?
-                    if IORegistryEntryCreateCFProperties(child, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-                       let props = propsRef?.takeRetainedValue() as? [String: Any],
-                       let creator = props["IOUserClientCreator"] as? String,
-                       let usage = props["AppUsage"] as? [[String: Any]] {
-                        let pidStr = creator.dropFirst(4).prefix(while: { $0.isNumber })
-                        if let pid = pid_t(pidStr) {
-                            let total = usage.reduce(UInt64(0)) { acc, entry in
-                                acc + ((entry["accumulatedGPUTime"] as? NSNumber)?.uint64Value ?? 0)
-                            }
-                            if total > 0 { result[pid, default: 0] += total }
-                        }
-                    }
-                    IOObjectRelease(child)
-                    child = IOIteratorNext(children)
-                }
-                IOObjectRelease(children)
-            }
-            IOObjectRelease(accel)
-            accel = IOIteratorNext(iter)
-        }
-        IOObjectRelease(iter)
-        return result
-    }
 }

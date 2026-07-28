@@ -18,7 +18,7 @@ final class Indicator {
     let spaceWatcher: SpaceWatcher
     let musicMonitor: MusicMonitor
     private let settings: AppSettings
-    private let systemState: SystemState
+    let systemState: SystemState
     private let renderer: IndicatorRenderer
 
     var onStatusBarClicked: (() -> Void)?
@@ -38,15 +38,17 @@ final class Indicator {
     private var lastMusicArtist: String?
     /// Guard against overlapping swap fades
     private var musicSwapFadeActive = false
-    /// Bars→dots morph progress (0 = bars, 1 = dots)
+    /// Bars→pause-glyph morph progress (0 = bars, 1 = paused)
     private var musicLingerMorphProgress: CGFloat = 0
     private var musicLingerMorphTimer: Timer?
+    /// Text alpha during the pause morph's marquee reset (dips out, then back)
+    private var musicPauseTextAlpha: CGFloat = 1
     /// One-shot timer that fires when linger should expire
     private var musicLingerExpireTimer: Timer?
 
     // Audio visualizer
-    var visualizerHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
-    private var visualizerTargets: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
+    var visualizerHeights: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8]
+    private var visualizerTargets: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8]
     private var visualizerTimer: Timer?
     private var marqueeOffset: CGFloat = 0
     private var musicFrameWidth: CGFloat = 0
@@ -68,6 +70,15 @@ final class Indicator {
     private var systemHUDTarget: CGFloat = 0
     private var systemHUDFillTimer: Timer?
     private var systemHUDExpireTimer: Timer?
+
+    // MARK: Input source HUD (keyboard language overlay)
+
+    /// When active, the status item shows the keyboard language name and
+    /// `refresh()` returns early. Between this and the volume/brightness HUD,
+    /// whichever event happened last owns the item.
+    private var inputSourceHUDActive = false
+    private var inputSourceHUDName = ""
+    private var inputSourceHUDExpireTimer: Timer?
 
     // MARK: Animation state
 
@@ -224,18 +235,32 @@ final class Indicator {
 
     private func startVisualizer() {
         guard visualizerTimer == nil else { return }
+        if #available(macOS 14.2, *) { AudioSpectrumTap.shared.acquire() }
         visualizerTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             if !self.musicLingerActive {
-                // Pick new random targets
-                for i in 0..<4 {
-                    if Float.random(in: 0...1) < 0.2 {
-                        self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
-                    }
+                var live: [CGFloat]?
+                if #available(macOS 14.2, *) {
+                    let tap = AudioSpectrumTap.shared
+                    if tap.isDelivering && tap.hasSignal { live = tap.levels }
                 }
-                // Smooth toward targets
-                for i in 0..<4 {
-                    self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
+                if let live {
+                    // Real audio: chase the tap's band levels
+                    for i in 0..<audioVisualizerBandCount {
+                        self.visualizerTargets[i] = i < live.count ? live[i] : 0
+                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.5
+                    }
+                } else {
+                    // Fallback (no tap permission / pre-14.2): random targets
+                    for i in 0..<audioVisualizerBandCount {
+                        if Float.random(in: 0...1) < 0.2 {
+                            self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
+                        }
+                    }
+                    // Smooth toward targets
+                    for i in 0..<audioVisualizerBandCount {
+                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
+                    }
                 }
             }
             // Always advance marquee
@@ -247,20 +272,34 @@ final class Indicator {
     }
 
     private func stopVisualizer() {
+        guard visualizerTimer != nil else { return }
         visualizerTimer?.invalidate(); visualizerTimer = nil
+        if #available(macOS 14.2, *) { AudioSpectrumTap.shared.release() }
     }
 
     private func startLingerMorph() {
         guard musicLingerMorphTimer == nil else { return }
         musicLingerMorphProgress = 0
+        // A long title frozen mid-scroll reads badly while paused: dip the text
+        // out over the first half of the morph and bring it back at its start.
+        let resetMarquee = marqueeOffset != 0
+            && renderer.musicMarqueeActive(title: musicMonitor.currentTitle, artist: musicMonitor.currentArtist)
         musicLingerMorphTimer = runProgressTimer(interval: 0.016, duration: 0.267, commonModes: true, onTick: { me, p in
             me.musicLingerMorphProgress = p
+            if resetMarquee {
+                if p >= 0.5 { me.marqueeOffset = 0 }
+                me.musicPauseTextAlpha = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2
+            }
             me.refresh()
-        }, onDone: { me in me.musicLingerMorphTimer = nil })
+        }, onDone: { me in
+            me.musicPauseTextAlpha = 1
+            me.musicLingerMorphTimer = nil
+        })
     }
 
     private func startReverseMorph() {
         musicLingerMorphTimer?.invalidate()
+        musicPauseTextAlpha = 1
         let reverseStart = musicLingerMorphProgress
         let reverseDuration = max(0.001, Double(reverseStart) * 0.133)
         let morphReverseStartTime = CACurrentMediaTime()
@@ -291,6 +330,7 @@ final class Indicator {
                 self.musicLingerExpireTimer?.invalidate(); self.musicLingerExpireTimer = nil
                 self.musicLingerMorphTimer?.invalidate(); self.musicLingerMorphTimer = nil
                 self.musicLingerMorphProgress = 0
+                self.musicPauseTextAlpha = 1
                 self.stopVisualizer()
             }
             self.lastMusicTitle = nil
@@ -435,8 +475,8 @@ final class Indicator {
     // MARK: - Refresh
 
     func refresh() {
-        // The volume/brightness HUD owns the status item while it's up.
-        if systemHUDActive { return }
+        // The volume/brightness or keyboard-language HUD owns the status item while it's up.
+        if systemHUDActive || inputSourceHUDActive { return }
 
         let spacerOn = settings.spacerEnabled
         let musicOn = settings.musicEnabled
@@ -490,8 +530,10 @@ final class Indicator {
                     startVisualizer()
                 }
             }
-            // Schedule linger expiry if not already set
-            if musicLingerActive && musicLingerExpireTimer == nil {
+            // Schedule linger expiry if not already set. Only Dynamic mode hides
+            // the display after the linger window; in Static mode the paused
+            // state (pause glyph + dimmed title) persists until playback resumes.
+            if musicLingerActive && musicLingerExpireTimer == nil && settings.musicDisplayMode == .dynamic {
                 let remaining = settings.musicLingerDuration - (ProcessInfo.processInfo.systemUptime - musicLastPlayedAt)
                 if remaining > 0 {
                     musicLingerExpireTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
@@ -525,7 +567,8 @@ final class Indicator {
                 artist: currentArtist,
                 barHeights: visualizerHeights,
                 marqueeOffset: marqueeOffset,
-                barToDots: musicLingerMorphProgress
+                pauseMorph: musicLingerMorphProgress,
+                textAlpha: musicPauseTextAlpha
             )
             button.image = frame
             musicFrameWidth = frame.size.width
@@ -848,6 +891,13 @@ final class Indicator {
         systemHUDTarget = v
         statusItem.isVisible = true
 
+        // Latest event wins: a volume/brightness change takes over from the
+        // keyboard-language display.
+        if inputSourceHUDActive {
+            inputSourceHUDExpireTimer?.invalidate(); inputSourceHUDExpireTimer = nil
+            inputSourceHUDActive = false
+        }
+
         if !wasActive {
             systemHUDActive = true
             systemHUDValue = v
@@ -926,6 +976,100 @@ final class Indicator {
         }, completionHandler: { [weak self] in
             guard let self else { return }
             self.systemHUDActive = false
+            // If the keyboard-language HUD grabbed the item mid-fade, it owns
+            // the button (and its alpha) now — don't fight its fade-in.
+            guard !self.inputSourceHUDActive else { return }
+            self.lastSetLength = 0          // force length recompute on restore
+            self.refresh()
+            if let b = self.statusItem.button {
+                b.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.2
+                    b.animator().alphaValue = 1
+                }
+            }
+        })
+    }
+
+    // MARK: - Input Source HUD (keyboard language)
+
+    /// Morph the space indicator into the keyboard language name. First entry
+    /// crossfades in over whatever was showing; switching again while it's up
+    /// just swaps the text. Auto-dismisses ~1.5s after the last switch, then
+    /// morphs back.
+    func showInputSourceHUD(name: String) {
+        inputSourceHUDName = name
+        statusItem.isVisible = true
+
+        // Latest event wins: a language switch takes over from the
+        // volume/brightness bar.
+        if systemHUDActive {
+            systemHUDExpireTimer?.invalidate(); systemHUDExpireTimer = nil
+            systemHUDFillTimer?.invalidate(); systemHUDFillTimer = nil
+            systemHUDActive = false
+        }
+
+        if !inputSourceHUDActive {
+            inputSourceHUDActive = true
+            // Stop anything else that writes button.image.
+            animSpacePillTimer?.invalidate(); animSpacePillTimer = nil
+            animSpacePillDisplay = -1
+            preRenderedPillFrames = nil
+            musicLingerMorphTimer?.invalidate(); musicLingerMorphTimer = nil
+            stopVisualizer()
+            renderInputSourceHUD()
+            if let button = statusItem.button {
+                button.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.18
+                    button.animator().alphaValue = 1
+                }
+            }
+        } else {
+            renderInputSourceHUD()
+        }
+        resetInputSourceHUDExpire()
+    }
+
+    private func renderInputSourceHUD() {
+        guard inputSourceHUDActive, let button = statusItem.button else { return }
+        button.title = ""
+        button.attributedTitle = NSAttributedString()
+        let frame = renderer.makeInputSourceHUDFrame(name: inputSourceHUDName)
+        button.image = frame
+        let len = frame.size.width + 4
+        if abs(len - lastSetLength) > 0.1 {
+            lastSetLength = len
+            statusItem.length = len
+        }
+    }
+
+    private func resetInputSourceHUDExpire() {
+        inputSourceHUDExpireTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
+            self?.dismissInputSourceHUD()
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        inputSourceHUDExpireTimer = timer
+    }
+
+    private func dismissInputSourceHUD() {
+        inputSourceHUDExpireTimer?.invalidate(); inputSourceHUDExpireTimer = nil
+        guard inputSourceHUDActive else { return }
+        guard let button = statusItem.button else {
+            inputSourceHUDActive = false
+            refresh()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            button.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            self.inputSourceHUDActive = false
+            // If the volume/brightness HUD grabbed the item mid-fade, it owns
+            // the button (and its alpha) now — don't fight its fade-in.
+            guard !self.systemHUDActive else { return }
             self.lastSetLength = 0          // force length recompute on restore
             self.refresh()
             if let b = self.statusItem.button {

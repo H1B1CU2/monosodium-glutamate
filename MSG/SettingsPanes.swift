@@ -100,6 +100,17 @@ struct HUDReplacerPane: View {
             }
 
             Section {
+                Toggle("Show keyboard language on switch",
+                       isOn: Binding(get: { vm.inputSourceHUDEnabled }, set: { vm.inputSourceHUDEnabled = $0 }))
+            } header: {
+                Text("Keyboard Language")
+            } footer: {
+                Text("When you switch the keyboard input source, the space indicator briefly morphs into the language's short name (TH, ENG), then morphs back. Works independently of the volume/brightness HUD and needs no extra permissions.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section {
                 Toggle("Use current sound device icon",
                        isOn: Binding(get: { vm.systemHUDDeviceIcons }, set: { vm.systemHUDDeviceIcons = $0 }))
             } header: {
@@ -457,6 +468,17 @@ struct MusicPane: View {
                 }
                 .opacity(vm.musicDisplayMode != .dynamic ? 0.45 : 1)
                 .animation(.easeInOut(duration: 0.15), value: vm.musicDisplayMode)
+            }
+
+            Section {
+                Toggle("Send media keys to Apple Music",
+                       isOn: Binding(get: { vm.mediaKeyPriorityMusic }, set: { vm.mediaKeyPriorityMusic = $0 }))
+            } header: {
+                Text("Media Keys")
+            } footer: {
+                Text("When Music is playing, the play/pause, next and previous keys control it instead of whichever app macOS picked as Now Playing — so a video in a browser tab can't steal them. Needs Accessibility permission. Only the keyboard's media keys are affected; headphone buttons still follow macOS.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
             }
         }
         .onAppear {
@@ -844,13 +866,16 @@ struct HardwarePane: View {
             }
         }
         .onAppear {
+            HardwareMonitor.shared.retainPolling()
             stats = HardwareMonitor.shared.stats
             timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
                 DispatchQueue.main.async { stats = HardwareMonitor.shared.stats }
             }
+            timer?.tolerance = 0.3
             if let t = timer { RunLoop.current.add(t, forMode: .common) }
         }
         .onDisappear {
+            HardwareMonitor.shared.releasePolling()
             timer?.invalidate(); timer = nil
         }
     }
@@ -919,6 +944,7 @@ struct HardwarePane: View {
             }
 
             TemperatureRangeSlider(minVal: minVal, maxVal: maxVal, bounds: bounds)
+                .frame(height: 24)
                 .padding(.vertical, 4)
 
             HStack {
@@ -1546,6 +1572,7 @@ struct MenuBarPane: View {
 @available(macOS 14.0, *)
 struct GeneralPane: View {
     @ObservedObject var vm: SettingsViewModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var launchAtLogin: Bool = {
         if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
         return false
@@ -1568,7 +1595,9 @@ struct GeneralPane: View {
         PaneContainer(section: .general) {
             Section {
                 VStack(spacing: 8) {
-                    if let img = NSApp.effectiveAppearance.name == .darkAqua ? (NSImage(named: "AppIcon-Dark") ?? NSImage(named: "AppIcon")) : NSImage(named: "AppIcon") {
+                    if let img = colorScheme == .dark
+                        ? (NSImage(named: "AppIcon-Dark") ?? NSImage(named: NSImage.applicationIconName))
+                        : (NSImage(named: NSImage.applicationIconName) ?? NSImage(named: "AppIcon")) {
                         Image(nsImage: img)
                             .resizable()
                             .frame(width: 64, height: 64)

@@ -71,7 +71,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         musicMonitor.start()
 
         hardwareMonitor = HardwareMonitor.shared
-        hardwareMonitor.start()
 
         indicator = Indicator(settings: settings, musicMonitor: musicMonitor)
         indicator.systemState.slideInProgressProvider = { [weak self] in
@@ -254,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyHardwareStats() {
         let s = settings
         if s.hardwareStatsEnabled {
+            hardwareMonitor.start()
             if hardwareStatusItem == nil {
                 hardwareStatusItem = HardwareStatusItem()
             }
@@ -298,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 batteryStatusItem = nil
             }
         } else {
+            hardwareMonitor.stop()
             hardwareStatusItem?.remove()
             hardwareStatusItem = nil
             batteryStatusItem?.remove()
