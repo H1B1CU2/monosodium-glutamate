@@ -148,11 +148,18 @@ final class TrayPanel {
 
     // MARK: - Show / Hide
 
+    private var didRetainMusicPolling = false
+
     func show(goBack: Bool = false) {
         // Already visible — ⌘⇥ cycles to the next app instead of reopening
         if state.isVisible {
             state.selectNext()
             return
+        }
+
+        if !didRetainMusicPolling {
+            didRetainMusicPolling = true
+            state.musicMonitor?.retainPolling()
         }
 
         state.refresh()
@@ -177,6 +184,10 @@ final class TrayPanel {
 
     func hide(activate: Bool = false) {
         guard state.isVisible else { return }
+        if didRetainMusicPolling {
+            didRetainMusicPolling = false
+            state.musicMonitor?.releasePolling()
+        }
         state.isVisible = false
         if let m = cmdMonitor { NSEvent.removeMonitor(m); cmdMonitor = nil }
         if activate { state.activateSelection() }

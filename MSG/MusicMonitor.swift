@@ -24,6 +24,25 @@ private let kMRTogglePlayPause = UInt32(2)
 private let kMRNextTrack = UInt32(4)
 private let kMRPreviousTrack = UInt32(5)
 
+// MARK: - Media-key routing
+
+/// Music.app's own transport state, tracked independently of the system Now
+/// Playing app so the media keys can be aimed at Music while something else
+/// (a browser tab, Spotify) holds Now Playing.
+enum MusicAppState {
+    case notRunning
+    case stopped
+    case paused
+    case playing
+}
+
+/// A hardware transport key, once we've decided to route it to Music.app.
+enum MediaKeyAction {
+    case playPause
+    case next
+    case previous
+}
+
 // MARK: - MusicMonitor
 
 final class MusicMonitor {
@@ -103,7 +122,23 @@ final class MusicMonitor {
                     currentTitle = currentSource ?? "Now Playing"
                     currentArtist = nil
                 }
-                if let art = np.art { albumArt = art }
+                if let art = np.art {
+                    albumArt = art
+                } else if oldSourceBundleID != currentSourceBundleID {
+                    albumArt = nil   // never show the previous source's artwork
+                }
+                if effectivePlaying, let bid = currentSourceBundleID {
+                    // Scriptable sources can fill in what MediaRemote withheld
+                    // (or what the source never published).
+                    if !hasMetadata { fetchScriptTitle(bid: bid) }
+                    if np.art == nil {
+                        if let url = np.artURL {
+                            fetchURLArtwork(url)
+                        } else {
+                            fetchScriptArtwork(bid: bid)
+                        }
+                    }
+                }
                 let changed = forceNotify
                     || wasPlaying != isPlaying
                     || oldTitle != currentTitle
@@ -111,6 +146,7 @@ final class MusicMonitor {
                     || oldSource != currentSource
                     || oldSourceBundleID != currentSourceBundleID
                     || (!hadAlbumArt && np.art != nil)
+                    || (hadAlbumArt && albumArt == nil)
                 if changed {
                     NSLog("[Music] Applying Now Playing playing=%@ source=%@ bundle=%@ title=%@",
                           isPlaying ? "true" : "false",
@@ -119,14 +155,19 @@ final class MusicMonitor {
                           currentTitle ?? "nil")
                     notify()
                 }
+                if wasPlaying != isPlaying { restartPollTimer() }
             } else if wasPlaying || currentTitle != nil {
                 isPlaying = false
                 currentTitle = nil
                 currentArtist = nil
                 currentSource = nil
                 currentSourceBundleID = nil
+                albumArt = nil
+                artFetchKey = nil
+                urlArtKey = nil
                 NSLog("[Music] Now Playing stopped")
                 notify()
+                if wasPlaying { restartPollTimer() }
             }
         case .appleMusic:
             if let art = np.art, currentSourceBundleID == "com.apple.Music" {
@@ -143,28 +184,101 @@ final class MusicMonitor {
         }
     }
 
-    // MARK: - Polling
+    // MARK: - Demand Gating & Polling
+
+    /// Non-zero while some consumer needs fresh Now Playing data. The popover and the
+    /// tray hold a token while visible; the indicator holds one while the music display
+    /// is switched on. At zero the poller idles completely.
+    private var demandTokens = 0
+
+    func retainPolling() {
+        demandTokens += 1
+        if demandTokens == 1 { restartPollTimer() }
+    }
+
+    func releasePolling() {
+        demandTokens = max(0, demandTokens - 1)
+        if demandTokens == 0 { restartPollTimer() }
+    }
+
+    /// True when the indicator itself wants music on the status item.
+    private var indicatorWantsMusic: Bool {
+        settings.musicEnabled && settings.musicDisplayMode != .off
+    }
+
+    private var wantsNowPlaying: Bool { indicatorWantsMusic || demandTokens > 0 }
+
+    private var isAppleMusicRunning: Bool {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").first != nil
+    }
 
     private var pollTimer: Timer?
+    private var appleMusicStateTimer: Timer?
     private var isQuerying = false
     /// When the in-flight AppleScript query started (systemUptime). Used by the
     /// watchdog in poll() to recover if a completion is never delivered.
     private var queryStartedAt: TimeInterval = 0
     private var lastMusicSource: MusicSource
 
-    func start() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.poll()
+    /// Poll cadence. 1 s while something is playing (track changes, marquee, linger
+    /// need it); 5 s when idle — nothing on screen depends on sub-5s latency for the
+    /// transition from "nothing playing" to "playing", and the first poll that sees
+    /// playback immediately snaps the timer back to 1 s.
+    private func desiredPollInterval() -> TimeInterval {
+        guard wantsNowPlaying else { return 0 }              // 0 == no timer at all
+        if settings.musicSource == .appleMusic && !isAppleMusicRunning { return 3.0 }
+        return isPlaying ? 1.0 : 5.0
+    }
+
+    func restartPollTimer() {
+        let wanted = desiredPollInterval()
+        if wanted == 0 {
+            pollTimer?.invalidate(); pollTimer = nil
+            return
         }
-        if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
-        poll()
+        if let t = pollTimer, abs(t.timeInterval - wanted) < 0.01 { return }   // already correct
+        pollTimer?.invalidate()
+        let t = Timer(timeInterval: wanted, repeats: true) { [weak self] _ in self?.poll() }
+        t.tolerance = wanted * 0.2                                             // sampling - let kernel coalesce
+        RunLoop.main.add(t, forMode: .common)
+        pollTimer = t
+    }
+
+    func settingsChanged() {
+        restartPollTimer()
+        updateAppleMusicStateTimer()
+    }
+
+    private func updateAppleMusicStateTimer() {
+        if settings.mediaKeyPriorityMusic {
+            if appleMusicStateTimer == nil {
+                let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+                    self?.refreshAppleMusicState()
+                }
+                t.tolerance = 0.4
+                RunLoop.main.add(t, forMode: .common)
+                appleMusicStateTimer = t
+            }
+        } else {
+            appleMusicStateTimer?.invalidate()
+            appleMusicStateTimer = nil
+        }
+    }
+
+    func start() {
+        restartPollTimer()
+        if wantsNowPlaying { poll() }
+        updateAppleMusicStateTimer()
     }
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
+        appleMusicStateTimer?.invalidate(); appleMusicStateTimer = nil
     }
 
     private func poll() {
+        guard wantsNowPlaying else { return }
+
         // Watchdog: if a previous query never completed (hung/dropped after wake),
         // don't stay blocked forever — clear the guard so polling can resume.
         if isQuerying, ProcessInfo.processInfo.systemUptime - queryStartedAt > 6 {
@@ -252,6 +366,7 @@ final class MusicMonitor {
                     }
                     self.fetchAlbumArt()
                     if wasPlaying != self.isPlaying || self.isPlaying { self.notify() }
+                    if !wasPlaying { self.restartPollTimer() }
                 } else {
                     // Nothing found via AppleScript — try MediaRemote for browsers/other apps.
                     // Keep isQuerying = true so the next poll doesn't race with the MR callback.
@@ -295,9 +410,11 @@ final class MusicMonitor {
             if nowPlaying {
                 let title  = dict.first(where: { $0.key.contains("Title")  })?.value as? String
                 let artist = dict.first(where: { $0.key.contains("Artist") })?.value as? String
+                let stateChanged = !self.isPlaying
                 self.isPlaying     = true
                 self.currentTitle  = title
                 self.currentArtist = artist
+                if stateChanged { self.restartPollTimer() }
                 
                 if let getPID = MRGetNowPlayingPID {
                     getPID(.main) { [weak self] pid in
@@ -318,12 +435,14 @@ final class MusicMonitor {
                 }
             } else {
                 if self.isPlaying || self.currentTitle != nil {
+                    let was = self.isPlaying
                     self.isPlaying = false
                     self.currentTitle = nil
                     self.currentArtist = nil
                     self.currentSource = nil
                     self.currentSourceBundleID = nil
                     self.notify()
+                    if was { self.restartPollTimer() }
                 }
             }
         }
@@ -346,26 +465,14 @@ final class MusicMonitor {
 
     private func pollAppleMusic() {
         // Check if Music is running
-        let musicRunning = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").first != nil
+        let musicRunning = isAppleMusicRunning
         if !musicRunning {
             if isPlaying || currentTitle != nil {
                 isPlaying = false; currentTitle = nil; currentArtist = nil; currentSource = nil; currentSourceBundleID = nil
                 notify()
             }
-            pollTimer?.invalidate()
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-                self?.poll()
-            }
-            if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
+            restartPollTimer()
             return
-        }
-
-        if pollTimer?.timeInterval != 1.0 {
-            pollTimer?.invalidate()
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-                self?.poll()
-            }
-            if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
         }
 
         isQuerying = true
@@ -402,23 +509,28 @@ final class MusicMonitor {
                         self.currentSource = nil
                         self.currentSourceBundleID = nil
                         self.notify()
+                        self.restartPollTimer()
                     }
                     return
                 }
 
                 self.currentSource = "Apple Music"
                 self.currentSourceBundleID = "com.apple.Music"
+                let stateChanged: Bool
                 if result.hasPrefix("playing|") {
                     let parts = String(result.dropFirst(8)).components(separatedBy: "|")
+                    stateChanged = !self.isPlaying
                     self.isPlaying = true
                     self.currentTitle = parts.first
                     self.currentArtist = parts.count > 1 ? parts[1] : nil
                     if parts.count > 2, let v = Int(parts[2]) { self.volume = v }
                 } else if result.hasPrefix("stopped|") {
                     let parts = result.components(separatedBy: "|")
+                    stateChanged = self.isPlaying
                     self.isPlaying = false
                     if parts.count > 1, let v = Int(parts[1]) { self.volume = v }
                 } else {
+                    stateChanged = self.isPlaying
                     self.isPlaying = false
                 }
 
@@ -426,6 +538,7 @@ final class MusicMonitor {
                 if wasPlaying != self.isPlaying || self.isPlaying {
                     self.notify()
                 }
+                if stateChanged { self.restartPollTimer() }
             }
         }
     }
@@ -436,11 +549,17 @@ final class MusicMonitor {
         // when Music is the now-playing app.
         if MediaRemoteAdapter.isAvailable {
             adapter.query { [weak self] np in
-                guard let self, let art = np?.art else { return }
+                guard let self else { return }
                 if self.settings.musicSource == .appleMusic
                     && self.currentSourceBundleID != "com.apple.Music" { return }
-                self.albumArt = art
-                self.notify()
+                if let art = np?.art {
+                    self.albumArt = art
+                    self.notify()
+                } else if let url = np?.artURL {
+                    self.fetchURLArtwork(url)
+                } else if let bid = self.currentSourceBundleID {
+                    self.fetchScriptArtwork(bid: bid)
+                }
             }
             return
         }
@@ -461,6 +580,206 @@ final class MusicMonitor {
             DispatchQueue.main.async {
                 self.albumArt = image
                 self.notify()   // notify after art is set, not before
+            }
+        }
+    }
+
+    // MARK: - Scriptable-source enrichment (Music / Spotify)
+
+    /// Sources whose track info AppleScript can read without any MediaRemote
+    /// entitlement. Browsers and other apps have no scriptable fallback.
+    private static let scriptableSources: [String: String] = [
+        "com.apple.Music": "Music",
+        "com.spotify.client": "Spotify",
+    ]
+
+    private var titleFetchInFlight = false
+    private var artFetchKey: String?          // "bundleID|title" of the last attempt
+    private var artFetchAt: TimeInterval = 0
+    private var urlArtKey: String?            // URL of the last download attempt
+    private var urlArtAt: TimeInterval = 0
+
+    /// Downloads artwork MediaRemote referenced by URL instead of embedding
+    /// (macOS 26+ snapshots carry only the artwork identifier, a CDN URL for
+    /// Music). One attempt per URL; retried every few seconds while absent.
+    private func fetchURLArtwork(_ url: URL) {
+        let key = url.absoluteString
+        let now = ProcessInfo.processInfo.systemUptime
+        guard urlArtKey != key || (albumArt == nil && now - urlArtAt > 3) else { return }
+        urlArtKey = key
+        urlArtAt = now
+        let bid = currentSourceBundleID
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let img = NSImage(data: data) else { return }
+            DispatchQueue.main.async {
+                guard let self, self.currentSourceBundleID == bid else { return }
+                self.albumArt = img
+                self.notify()
+            }
+        }.resume()
+    }
+
+    /// The helper can report "playing" with empty metadata (OS builds that
+    /// redact fields for unentitled readers). AppleScript still returns the
+    /// real track info for Music/Spotify.
+    private func fetchScriptTitle(bid: String) {
+        guard let appName = Self.scriptableSources[bid], !titleFetchInFlight else { return }
+        titleFetchInFlight = true
+        let script = """
+        tell application "\(appName)"
+            if player state is playing then
+                return name of current track & "|" & artist of current track
+            end if
+        end tell
+        return ""
+        """
+        MusicMonitor.scriptQueue.async { [weak self] in
+            let result = NSAppleScript(source: script)?.executeAndReturnError(nil).stringValue ?? ""
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.titleFetchInFlight = false
+                guard self.currentSourceBundleID == bid, !result.isEmpty else { return }
+                let parts = result.components(separatedBy: "|")
+                guard let title = parts.first, !title.isEmpty, title != self.currentTitle else { return }
+                self.currentTitle = title
+                self.currentArtist = (parts.count > 1 && !parts[1].isEmpty) ? parts[1] : nil
+                self.notify()
+            }
+        }
+    }
+
+    /// AppleScript artwork: Music hands over the raw bytes, Spotify a URL.
+    /// Fetched once per (source, title); retried every few seconds while absent.
+    private func fetchScriptArtwork(bid: String) {
+        guard Self.scriptableSources[bid] != nil else { return }
+        let key = bid + "|" + (currentTitle ?? "")
+        let now = ProcessInfo.processInfo.systemUptime
+        guard artFetchKey != key || (albumArt == nil && now - artFetchAt > 3) else { return }
+        artFetchKey = key
+        artFetchAt = now
+        if bid == "com.apple.Music" {
+            let script = "tell application \"Music\" to get data of artwork 1 of current track"
+            MusicMonitor.scriptQueue.async { [weak self] in
+                var error: NSDictionary?
+                let desc = NSAppleScript(source: script)?.executeAndReturnError(&error)
+                guard error == nil, let desc, let img = NSImage(data: desc.data) else { return }
+                DispatchQueue.main.async {
+                    guard let self, self.currentSourceBundleID == bid else { return }
+                    self.albumArt = img
+                    self.notify()
+                }
+            }
+        } else {
+            let script = "tell application \"Spotify\" to get artwork url of current track"
+            MusicMonitor.scriptQueue.async { [weak self] in
+                guard let urlString = NSAppleScript(source: script)?.executeAndReturnError(nil).stringValue,
+                      let url = URL(string: urlString) else { return }
+                URLSession.shared.dataTask(with: url) { data, _, _ in
+                    guard let data, let img = NSImage(data: data) else { return }
+                    DispatchQueue.main.async {
+                        guard let self, self.currentSourceBundleID == bid else { return }
+                        self.albumArt = img
+                        self.notify()
+                    }
+                }.resume()
+            }
+        }
+    }
+
+    // MARK: - Media-key routing (Apple Music priority)
+    //
+    // When two things are playing at once (Music plus a browser tab, say), the
+    // hardware play key goes to whichever app macOS picked as the Now Playing
+    // app — usually the one that started most recently. With the setting on we
+    // consume the key in SystemHUDMonitor's tap and drive Music.app directly by
+    // AppleScript, which never touches the other source.
+    //
+    // Deciding that has to be instant (it happens inside the event tap), so
+    // Music's state is polled here and cached rather than queried on the press.
+
+    private(set) var musicAppState: MusicAppState = .notRunning
+    private var isQueryingMusicState = false
+    private var musicStateQueryStartedAt: TimeInterval = 0
+
+    /// Set when MSG itself paused Music via a routed key. Without it, pressing
+    /// play again would see Music paused, decline to route, and hand the key to
+    /// whatever else is playing — so you could pause Music but never resume it.
+    private var didPauseAppleMusic = false
+
+    /// Whether the next transport key should go to Music.app instead of the
+    /// system Now Playing app. Read from the event tap: cached state only.
+    var shouldRouteMediaKeysToAppleMusic: Bool {
+        guard settings.mediaKeyPriorityMusic else { return false }
+        switch musicAppState {
+        case .playing:              return true
+        case .paused:               return didPauseAppleMusic
+        case .stopped, .notRunning: return false
+        }
+    }
+
+    func handleRoutedMediaKey(_ action: MediaKeyAction) {
+        switch action {
+        case .playPause:
+            // Flip locally rather than waiting for the poll: the cache is up to
+            // a second stale, and a quick second press must not re-decide the
+            // target from a state we already know is out of date.
+            if musicAppState == .playing {
+                musicAppState = .paused
+                didPauseAppleMusic = true
+            } else {
+                musicAppState = .playing
+                didPauseAppleMusic = false
+            }
+            tellMusic("playpause")
+        case .next:     tellMusic("next track")
+        case .previous: tellMusic("previous track")
+        }
+    }
+
+    /// Refresh the cached Music.app state. Runs on the shared serial script
+    /// queue like every other NSAppleScript call here, and never launches Music.
+    private func refreshAppleMusicState() {
+        guard NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").first != nil else {
+            musicAppState = .notRunning
+            didPauseAppleMusic = false
+            return
+        }
+        if isQueryingMusicState,
+           ProcessInfo.processInfo.systemUptime - musicStateQueryStartedAt > 6 {
+            isQueryingMusicState = false
+        }
+        guard !isQueryingMusicState else { return }
+        isQueryingMusicState = true
+        musicStateQueryStartedAt = ProcessInfo.processInfo.systemUptime
+
+        // Compared against the constants rather than coerced with `as string`:
+        // `player state` is an enumeration, and coercing it isn't dependable.
+        let script = """
+        tell application "Music"
+            if player state is playing then
+                return "playing"
+            else if player state is paused then
+                return "paused"
+            else
+                return "stopped"
+            end if
+        end tell
+        """
+        MusicMonitor.scriptQueue.async { [weak self] in
+            let result = NSAppleScript(source: script)?.executeAndReturnError(nil).stringValue ?? ""
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isQueryingMusicState = false
+                switch result {
+                case "playing":
+                    self.musicAppState = .playing
+                    self.didPauseAppleMusic = false
+                case "paused":
+                    self.musicAppState = .paused
+                default:
+                    self.musicAppState = .stopped
+                    self.didPauseAppleMusic = false
+                }
             }
         }
     }

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hardwareStatusItem: HardwareStatusItem?
     private var batteryStatusItem: BatteryStatusItem?
     private var systemHUDMonitor: SystemHUDMonitor?
+    private var inputSourceMonitor: InputSourceMonitor?
     private var systemHUDStatusItem: SystemHUDStatusItem?
     private var _trayPanel: AnyObject?   // TrayPanel on macOS 14+
 
@@ -56,9 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestAccessibilityIfNeeded()
 
         if #available(macOS 10.14, *) {
-            appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { _, _ in
-                let isDark = NSApp.effectiveAppearance.name == .darkAqua
-                NSApp.applicationIconImage = isDark ? NSImage(named: "AppIcon-Dark") : nil
+            appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { app, _ in
+                let isDark = app.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                let lightIcon = NSImage(named: NSImage.applicationIconName) ?? NSImage(named: "AppIcon")
+                app.applicationIconImage = isDark
+                    ? (NSImage(named: "AppIcon-Dark") ?? lightIcon)
+                    : lightIcon
             }
         }
 
@@ -74,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.start()
 
         applySystemHUD()
+        applyInputSourceHUD()
 
         WallpaperEngine.shared.start()
 
@@ -129,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .indicator:
                 self.indicator.applySettings()
                 self.applyFocusDetectionMode()
+                self.musicMonitor.settingsChanged()
             case .structural:
                 self.rebuildCornerWindows()
                 self.applySlideDetection()
@@ -137,6 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 WallpaperEngine.shared.settingsChanged()
                 self.applyHardwareStats()
                 self.applySystemHUD()
+                self.applyInputSourceHUD()
+                self.musicMonitor.settingsChanged()
             }
         }
 
@@ -302,6 +310,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 systemHUDStatusItem?.remove()
                 systemHUDStatusItem = nil
             }
+        } else {
+            systemHUDStatusItem?.remove()
+            systemHUDStatusItem = nil
+        }
+
+        // One tap serves both features: the volume/brightness HUD and Apple
+        // Music media-key routing. Either alone is reason enough to keep it up.
+        if settings.systemHUDEnabled || settings.mediaKeyPriorityMusic {
             if systemHUDMonitor == nil {
                 let monitor = SystemHUDMonitor(settings: settings)
                 monitor.onChange = { [weak self] kind, value, muted, audioOutputKind in
@@ -315,14 +331,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.indicator.showSystemHUD(kind: kind, value: value, muted: muted, audioOutputKind: audioOutputKind)
                     }
                 }
+                monitor.shouldRouteMediaKey = { [weak self] in
+                    self?.musicMonitor.shouldRouteMediaKeysToAppleMusic ?? false
+                }
+                monitor.onMediaKey = { [weak self] action in
+                    self?.musicMonitor.handleRoutedMediaKey(action)
+                }
                 systemHUDMonitor = monitor
             }
             systemHUDMonitor?.start()
         } else {
             systemHUDMonitor?.stop()
             systemHUDMonitor = nil
-            systemHUDStatusItem?.remove()
-            systemHUDStatusItem = nil
+        }
+    }
+
+    private func applyInputSourceHUD() {
+        if settings.inputSourceHUDEnabled {
+            if inputSourceMonitor == nil {
+                let monitor = InputSourceMonitor()
+                monitor.onChange = { [weak self] name in
+                    self?.indicator.showInputSourceHUD(name: name)
+                }
+                inputSourceMonitor = monitor
+            }
+            inputSourceMonitor?.start()
+        } else {
+            inputSourceMonitor?.stop()
+            inputSourceMonitor = nil
         }
     }
 

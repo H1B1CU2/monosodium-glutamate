@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 
 final class MusicPopover {
     private let monitor: MusicMonitor
@@ -35,11 +36,18 @@ final class MusicPopover {
         window.contentView = root
     }
 
+    private var didRetainPolling = false
+
     func show(relativeTo button: NSStatusBarButton) {
+        if !didRetainPolling {
+            didRetainPolling = true
+            monitor.retainPolling()
+        }
         self.sourceButton = button
         titleLabel?.stringValue = monitor.currentTitle ?? "Not Playing"
         artistLabel?.stringValue = monitor.currentArtist ?? ""
         volumeBar?.setLevel(CGFloat(monitor.volume) / 100.0)
+        touchPad?.setAlbumArt(monitor.currentTitle != nil ? monitor.albumArt : nil)
 
         // Calculate dynamic width from text
         let padW = textBasedPadW()
@@ -50,7 +58,6 @@ final class MusicPopover {
         root.frame.size.width = winW
         window.setContentSize(NSSize(width: winW, height: 220))
         touchPad?.frame.size.width = padW
-        touchPad?.needsDisplay = true
         volumeBar?.frame.origin.x = 12 + padW + 4
 
         guard let buttonWindow = button.window else { return }
@@ -80,6 +87,10 @@ final class MusicPopover {
     }
 
     func close() {
+        if didRetainPolling {
+            didRetainPolling = false
+            monitor.releasePolling()
+        }
         pollTimer?.invalidate(); pollTimer = nil
         if let m = closeMonitor { NSEvent.removeMonitor(m); closeMonitor = nil }
         window.orderOut(nil)
@@ -98,6 +109,7 @@ final class MusicPopover {
         let newArtist = monitor.currentArtist ?? ""
         let newVolume = CGFloat(monitor.volume) / 100.0
         volumeBar?.setLevel(newVolume)
+        touchPad?.setAlbumArt(monitor.currentTitle != nil ? monitor.albumArt : nil)
 
         let titleChanged = titleLabel?.stringValue != newTitle
         let artistChanged = artistLabel?.stringValue != newArtist
@@ -122,7 +134,6 @@ final class MusicPopover {
                 root.frame.size.width = winW
                 self.window.setContentSize(NSSize(width: winW, height: 220))
                 self.touchPad?.frame.size.width = newPadW
-                self.touchPad?.needsDisplay = true
                 self.volumeBar?.frame.origin.x = 12 + newPadW + 4
             }
 
@@ -284,14 +295,18 @@ private final class TouchPad: NSView {
     var iconView: NSImageView?
     var volumeBar: VolumeBar?
 
+    private let artView = NSView()
+    private let dotGrid = DotGridView()
+
     private var feedbackTimer: Timer?
-    private var lastHorizontalDirection: CGFloat = 0
+    /// SF Symbol currently shown as live swipe feedback; nil when the icon
+    /// was last set by tap/volume feedback (forces a re-set on next swipe).
+    private var swipeIconName: String?
 
     private enum Axis { case undecided, horizontal, vertical }
     private var axis: Axis = .undecided
     private var accumX: CGFloat = 0
     private var accumY: CGFloat = 0
-    private var skipFired = false
     private var thresholdHapticFired = false
     private var volumeRemainder: CGFloat = 0
     private var peakVelocity: CGFloat = 0
@@ -300,35 +315,83 @@ private final class TouchPad: NSView {
     private let skipThreshold: CGFloat = 60
     private let deadZone: CGFloat = 20
     private let volumeStep: CGFloat = 6
+    private let maxIconOffset: CGFloat = 36
 
     override var acceptsTouchEvents: Bool { get { true } set {} }
     override func hitTest(_ point: NSPoint) -> NSView? { self }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
+    override init(frame: NSRect) {
+        super.init(frame: frame)
 
-        let dotR: CGFloat = 1.0
-        let padInset: CGFloat = 24
-        let rows = 8
-        let vSpacing = (bounds.height - 2 * padInset) / CGFloat(rows - 1)
-        let cols = max(8, Int((bounds.width - 2 * padInset) / vSpacing + 0.5))
-        let spacing = min((bounds.width - 2 * padInset) / CGFloat(cols - 1), vSpacing)
-        let gridW = spacing * CGFloat(cols - 1)
-        let gridH = spacing * CGFloat(rows - 1)
-        let offsetX = (bounds.width - gridW) / 2
-        let offsetY = (bounds.height - gridH) / 2
+        artView.frame = bounds
+        artView.autoresizingMask = [.width, .height]
+        artView.wantsLayer = true
+        artView.layer?.contentsGravity = .resizeAspectFill
+        artView.layer?.masksToBounds = true
+        artView.alphaValue = 0
+        addSubview(artView)
 
-        let dotColor = NSColor.white.withAlphaComponent(0.06)
-        dotColor.setFill()
+        dotGrid.frame = bounds
+        dotGrid.autoresizingMask = [.width, .height]
+        addSubview(dotGrid)
+    }
 
-        for row in 0..<rows {
-            for col in 0..<cols {
-                let x = offsetX + CGFloat(col) * spacing
-                let y = offsetY + CGFloat(row) * spacing
-                let dotRect = NSRect(x: x - dotR, y: y - dotR, width: dotR * 2, height: dotR * 2)
-                NSBezierPath(ovalIn: dotRect).fill()
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: Album art
+
+    /// The image the current blur was derived from — identity-compared so the
+    /// 0.3s popover poll can call this repeatedly for free.
+    private var artSource: NSImage?
+
+    func setAlbumArt(_ image: NSImage?) {
+        guard image !== artSource else { return }
+        artSource = image
+
+        guard let image else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.35
+                artView.animator().alphaValue = 0
+            }
+            dotGrid.dotAlpha = 0.06
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let blurred = TouchPad.blurredArt(image) else { return }
+            DispatchQueue.main.async {
+                guard let self, image === self.artSource else { return }
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = 0.35
+                self.artView.layer?.add(fade, forKey: "artFade")
+                self.artView.layer?.contents = blurred
+                if self.artView.alphaValue < 0.4 {
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = 0.35
+                        self.artView.animator().alphaValue = 0.4
+                    }
+                }
+                // White dots at 0.06 vanish over artwork — lift them slightly.
+                self.dotGrid.dotAlpha = 0.12
             }
         }
+    }
+
+    private static let ciContext = CIContext()
+
+    private static func blurredArt(_ image: NSImage) -> CGImage? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        // Downscale first so blur cost is constant regardless of source size.
+        let maxDim: CGFloat = 320
+        let scale = min(1, maxDim / CGFloat(max(cg.width, cg.height)))
+        var ci = CIImage(cgImage: cg)
+        if scale < 1 { ci = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
+        let extent = ci.extent
+        let blurred = ci.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 10])
+            .cropped(to: extent)
+        return ciContext.createCGImage(blurred, from: extent)
     }
 
     // MARK: Tap
@@ -347,10 +410,10 @@ private final class TouchPad: NSView {
         if event.phase == .began {
             accumX = 0; accumY = 0
             axis = .undecided
-            skipFired = false
             thresholdHapticFired = false
             peakVelocity = 0
             volumeRemainder = 0
+            swipeIconName = nil
             volumeBar?.setLevel(CGFloat(monitor?.volume ?? 50) / 100.0)
         }
 
@@ -376,16 +439,12 @@ private final class TouchPad: NSView {
             break
 
         case .horizontal:
-            hideIcon()
-
-            if !thresholdHapticFired {
-                let velocityFactor = min(2.0, max(0.5, peakVelocity / 15))
-                let effectiveThreshold = deadZone + skipThreshold / velocityFactor
-                if abs(accumX) >= effectiveThreshold {
-                    haptic(.alignment)
-                    thresholdHapticFired = true
-                }
+            let effectiveThreshold = deadZone + skipThreshold / velocityFactor()
+            if !thresholdHapticFired && abs(accumX) >= effectiveThreshold {
+                haptic(.alignment)
+                thresholdHapticFired = true
             }
+            trackSwipeIcon(threshold: effectiveThreshold)
 
         case .vertical:
             volumeRemainder -= event.scrollingDeltaY
@@ -401,32 +460,79 @@ private final class TouchPad: NSView {
 
         if event.phase == .ended || event.phase == .cancelled {
             if axis == .horizontal {
-                let velocityFactor = min(2.0, max(0.5, peakVelocity / 15))
-                let effectiveThreshold = deadZone + skipThreshold / velocityFactor
+                let effectiveThreshold = deadZone + skipThreshold / velocityFactor()
                 if abs(accumX) >= effectiveThreshold {
-                    let name = accumX > 0 ? "backward.fill" : "forward.fill"
                     if accumX > 0 { monitor?.previousTrack() }
                     else { monitor?.nextTrack() }
-                    flashIcon(name)
-                    skipFired = true
                     haptic(.alignment)
+                    settleSwipeIcon()
+                } else {
+                    retractSwipeIcon()
                 }
             }
-            if axis == .horizontal && !skipFired { dismissIcon() }
             if axis == .vertical { fadeOutIcon() }
             axis = .undecided
         }
     }
 
-    // MARK: Feedback
+    private func velocityFactor() -> CGFloat {
+        min(2.0, max(0.5, peakVelocity / 15))
+    }
 
-    private func hideIcon() {
-        guard let icon = iconView, icon.alphaValue > 0 else { return }
+    // MARK: Live swipe feedback
+
+    /// Tracks the horizontal gesture in real time: the skip icon follows the
+    /// fingers rubber-band style, ramping to full presence at the threshold
+    /// (where the haptic locks in the skip).
+    private func trackSwipeIcon(threshold: CGFloat) {
+        guard let icon = iconView else { return }
+        feedbackTimer?.invalidate()
+
+        let direction: CGFloat = accumX >= 0 ? 1 : -1
+        let name = direction > 0 ? "backward.fill" : "forward.fill"
+        if name != swipeIconName {
+            swipeIconName = name
+            icon.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        }
+
+        let drag = max(0, abs(accumX) - deadZone)
+        let offset = min(maxIconOffset, drag * 0.35) * direction
+        let progress = min(1.0, abs(accumX) / threshold)
+
+        // Direct (non-animated) sets so the icon stays glued to the gesture.
+        icon.alphaValue = thresholdHapticFired ? 0.55 : 0.1 + 0.3 * progress
+        icon.layer?.setAffineTransform(
+            CGAffineTransform(translationX: offset + opticalX(for: name), y: 0))
+    }
+
+    /// Release past threshold: skip fired — icon settles back to center, holds,
+    /// then fades.
+    private func settleSwipeIcon() {
+        guard let icon = iconView, let name = swipeIconName else { return }
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.1
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            icon.animator().alphaValue = 0.5
+            icon.layer?.setAffineTransform(
+                CGAffineTransform(translationX: opticalX(for: name), y: 0))
+        }
+        scheduleIconFadeOut()
+    }
+
+    /// Release before threshold: no skip — icon slides back home and fades.
+    private func retractSwipeIcon() {
+        guard let icon = iconView else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            ctx.allowsImplicitAnimation = true
             icon.animator().alphaValue = 0
+            icon.layer?.setAffineTransform(.identity)
         }
     }
+
+    // MARK: Feedback
 
     private func opticalX(for name: String) -> CGFloat {
         switch name {
@@ -442,6 +548,7 @@ private final class TouchPad: NSView {
     private func showVolumeHint() {
         guard let icon = iconView else { return }
         feedbackTimer?.invalidate()
+        swipeIconName = nil
         let vol = monitor?.volume ?? 50
         let name: String
         switch vol {
@@ -458,21 +565,21 @@ private final class TouchPad: NSView {
     private func flashIcon(_ name: String) {
         guard let icon = iconView else { return }
         feedbackTimer?.invalidate()
+        swipeIconName = nil
         icon.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
 
-        let direction = lastHorizontalDirection
-        let popOffset: CGFloat = 30 * -direction
-        let ox = opticalX(for: name)
         icon.alphaValue = 0.2
-        icon.layer?.setAffineTransform(CGAffineTransform(translationX: popOffset + ox, y: 0))
+        icon.layer?.setAffineTransform(CGAffineTransform(translationX: opticalX(for: name), y: 0))
 
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             icon.animator().alphaValue = 0.5
-            icon.animator().layer?.setAffineTransform(CGAffineTransform(translationX: ox, y: 0))
         }
+        scheduleIconFadeOut()
+    }
 
+    private func scheduleIconFadeOut() {
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
             self?.fadeOutIcon()
         }
@@ -486,19 +593,45 @@ private final class TouchPad: NSView {
         }
     }
 
-    private func dismissIcon() {
-        let direction = lastHorizontalDirection
-        let exitOffset: CGFloat = 80 * -direction
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            iconView?.animator().alphaValue = 0
-            iconView?.animator().layer?.setAffineTransform(
-                CGAffineTransform(translationX: exitOffset, y: 0))
-        }
-    }
-
     private func haptic(_ pattern: NSHapticFeedbackManager.FeedbackPattern) {
         NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .now)
+    }
+}
+
+// MARK: - DotGridView
+
+/// The touch pad's dot-grid texture. Lives above the album art (subview
+/// order in TouchPad.init); TouchPad.hitTest keeps it out of event routing.
+private final class DotGridView: NSView {
+    var dotAlpha: CGFloat = 0.06 { didSet { if dotAlpha != oldValue { needsDisplay = true } } }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dotR: CGFloat = 1.0
+        let padInset: CGFloat = 24
+        let rows = 8
+        let vSpacing = (bounds.height - 2 * padInset) / CGFloat(rows - 1)
+        let cols = max(8, Int((bounds.width - 2 * padInset) / vSpacing + 0.5))
+        let spacing = min((bounds.width - 2 * padInset) / CGFloat(cols - 1), vSpacing)
+        let gridW = spacing * CGFloat(cols - 1)
+        let gridH = spacing * CGFloat(rows - 1)
+        let offsetX = (bounds.width - gridW) / 2
+        let offsetY = (bounds.height - gridH) / 2
+
+        let dotColor = NSColor.white.withAlphaComponent(dotAlpha)
+        dotColor.setFill()
+
+        for row in 0..<rows {
+            for col in 0..<cols {
+                let x = offsetX + CGFloat(col) * spacing
+                let y = offsetY + CGFloat(row) * spacing
+                let dotRect = NSRect(x: x - dotR, y: y - dotR, width: dotR * 2, height: dotR * 2)
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
+        }
     }
 }
