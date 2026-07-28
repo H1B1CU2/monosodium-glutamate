@@ -74,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hardwareMonitor.start()
 
         indicator = Indicator(settings: settings, musicMonitor: musicMonitor)
+        indicator.systemState.slideInProgressProvider = { [weak self] in
+            self?.menuBarPairActive == true || (self?.slidingDisplays.isEmpty == false)
+        }
         applyHardwareStats()
         indicator.start()
 
@@ -430,9 +433,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastActiveSpace = 0
     private var lastSpaceNotificationAt: TimeInterval = 0
     private var lastAnimatingEndAt: TimeInterval = 0
-    private let slideScanQueue = DispatchQueue(label: "msg.slidescan", qos: .userInteractive)
-    private var slideScanInFlight = false
-    private var slideScanStartedAt: TimeInterval = 0
     private var menuBarPairActive = false
     private var menuBarPairSince: TimeInterval = 0
     private var lastScanCount = 1
@@ -457,20 +457,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Number of onscreen Window Server menu bar windows (layer 24). Each
-    /// space carries its own; during a space slide both the source and the
-    /// destination space are onscreen, so the count jumps to ≥2 at slide
-    /// start (measured ~0.5–1s before the landing signals) and returns to 1
-    /// at landing. Works for fullscreen-app spaces where IsAnimating doesn't.
-    private static func menuBarWindowCount() -> Int {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
-                as? [[String: Any]] else { return 1 }
-        return list.filter {
-            ($0[kCGWindowOwnerName as String] as? String) == "Window Server"
-                && ($0[kCGWindowLayer as String] as? Int) == 24
-        }.count
-    }
-
     private func applyMenuBarPair(count: Int) {
         lastScanCount = count
         let pair = count >= 2
@@ -492,13 +478,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applySlideDetection() {
         let wanted = settings.cornersEnabled && settings.cornerGrowEnabled
-        if wanted, slidePollTimer == nil {
-            let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-                self?.pollSlideState()
+        if wanted {
+            indicator.systemState.onMenuBarWindowCount = { [weak self] count in
+                self?.applyMenuBarPair(count: count)
             }
-            RunLoop.main.add(t, forMode: .common)
-            slidePollTimer = t
-        } else if !wanted {
+            indicator.systemState.rescheduleScan()
+            if slidePollTimer == nil {
+                let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                    self?.pollSlideState()
+                }
+                RunLoop.main.add(t, forMode: .common)
+                slidePollTimer = t
+            }
+        } else {
+            indicator.systemState.onMenuBarWindowCount = nil
+            indicator.systemState.rescheduleScan()
             slidePollTimer?.invalidate(); slidePollTimer = nil
             slidingDisplays.removeAll()
         }
@@ -512,15 +506,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the rest exposes stuck state.
         if now - slideHeartbeatAt > 30 {
             slideHeartbeatAt = now
-            slideLog("heartbeat ticks=\(slideTicks) mc=\(indicator.isMissionControl) pair=\(menuBarPairActive) inflight=\(slideScanInFlight) lastCount=\(lastScanCount) windows=\(cornerWindows.count)")
+            slideLog("heartbeat ticks=\(slideTicks) mc=\(indicator.isMissionControl) pair=\(menuBarPairActive) lastCount=\(lastScanCount) windows=\(cornerWindows.count)")
             slideTicks = 0
-        }
-
-        // Watchdog: a scan that never came back would silence the pair path
-        // for good — reset after 2s and let the next tick rescan.
-        if slideScanInFlight, now - slideScanStartedAt > 2 {
-            slideScanInFlight = false
-            slideLog("watchdog: scan reset")
         }
 
         // MC's own transitions also animate; the MC exit path handles those.
@@ -567,20 +554,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 slidingDisplays.remove(uuid)
                 lastAnimatingEndAt = now
                 win.spaceSlideEnded()
-            }
-        }
-
-        // Menu-bar-pair scan (CGWindowList) off the main thread, one in
-        // flight at a time — same pattern as SystemState's MC detection.
-        guard !slideScanInFlight else { return }
-        slideScanInFlight = true
-        slideScanStartedAt = now
-        slideScanQueue.async { [weak self] in
-            let count = Self.menuBarWindowCount()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.slideScanInFlight = false
-                self.applyMenuBarPair(count: count)
             }
         }
     }

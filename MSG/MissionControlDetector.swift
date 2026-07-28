@@ -17,7 +17,7 @@ import AppKit
 enum MissionControlDetector {
 
     /// Named WindowManager overlays that exist only during Mission Control / Exposé.
-    private static let overlayNames: Set<String> = [
+    static let overlayNames: Set<String> = [
         "Spaces Bar",
         "Expose Overlay",
         "ExposeShieldWindow",
@@ -25,25 +25,44 @@ enum MissionControlDetector {
     ]
 
     static func isActive() -> Bool {
-        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return false
-        }
-        for w in list {
-            guard (w[kCGWindowOwnerName as String] as? String) == "WindowManager" else { continue }
-            let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            guard layer > 0 && layer < 1000 else { continue }
+        return WindowListScanner.scan().missionControlActive
+    }
+}
 
-            // When window names are readable (requires Screen Recording permission),
-            // require a known overlay name so Stage Manager's positive-layer windows
-            // can't trigger a false positive. Without that permission the name is
-            // nil/empty — and a positive-layer WindowManager window is, by itself,
-            // already a strong Mission Control signal — so accept it.
+/// One on-screen window-list pass, yielding every signal MSG derives from it.
+/// Both consumers (Mission Control detection and menu-bar-pair slide detection)
+/// used to run their own full `CGWindowListCopyWindowInfo` dump; this collapses
+/// them into a single WindowServer round trip.
+struct WindowListSignals {
+    /// Mission Control / App Exposé is on screen.
+    let missionControlActive: Bool
+    /// Onscreen Window Server menu bar windows (layer 24). ≥2 means a space
+    /// slide is in flight — see the doc on `menuBarWindowCount` for why.
+    let menuBarWindowCount: Int
+}
+
+enum WindowListScanner {
+    static func scan() -> WindowListSignals {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
+                as? [[String: Any]] else {
+            return WindowListSignals(missionControlActive: false, menuBarWindowCount: 1)
+        }
+        var mc = false
+        var menuBars = 0
+        for w in list {
+            let owner = w[kCGWindowOwnerName as String] as? String
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            if owner == "Window Server", layer == 24 { menuBars += 1; continue }
+            guard !mc, owner == "WindowManager", layer > 0, layer < 1000 else { continue }
+            // Name check preserved verbatim from MissionControlDetector — see the
+            // rationale comment there about Screen Recording permission and Stage Manager.
             if let name = w[kCGWindowName as String] as? String, !name.isEmpty {
-                if overlayNames.contains(name) { return true }
+                if MissionControlDetector.overlayNames.contains(name) { mc = true }
             } else {
-                return true
+                mc = true
             }
         }
-        return false
+        return WindowListSignals(missionControlActive: mc,
+                                 menuBarWindowCount: max(1, menuBars))
     }
 }
