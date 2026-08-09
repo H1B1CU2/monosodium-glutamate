@@ -56,6 +56,7 @@ static BOOL      gPlaying = NO;
 static NSString *gTitle = nil;
 static NSString *gArtist = nil;
 static NSData   *gArt = nil;
+static NSString *gArtURL = nil;
 static NSString *gLastLine = nil;
 
 // Notification userInfo keys, resolved from the framework at launch (with
@@ -117,6 +118,15 @@ static void applyInfo(NSDictionary *info) {
         }
     }
     if (art != nil) gArt = art;   // keep prior artwork when this update has none
+
+    // macOS 26+ snapshots stop embedding artwork bytes for unentitled readers;
+    // the artwork identifier is often a direct CDN URL (mzstatic for Music).
+    // Pass it along so MSG can download the image itself.
+    id ident = info[@"kMRMediaRemoteNowPlayingInfoArtworkIdentifier"];
+    if ([ident isKindOfClass:[NSString class]]
+        && ([ident hasPrefix:@"https://"] || [ident hasPrefix:@"http://"])) {
+        gArtURL = ident;
+    }
 }
 
 // A different app became "now playing" — drop the previous item's metadata so
@@ -127,6 +137,7 @@ static void setPid(int pid) {
     gTitle = nil;
     gArtist = nil;
     gArt = nil;
+    gArtURL = nil;
 }
 
 static void emitLine(void) {
@@ -136,6 +147,7 @@ static void emitLine(void) {
     if (gTitle)  out[@"title"]  = gTitle;
     if (gArtist) out[@"artist"] = gArtist;
     if (gArt)    out[@"art"]    = [gArt base64EncodedStringWithOptions:0];
+    if (gArtURL) out[@"artURL"] = gArtURL;
 
     NSData *json = [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL];
     if (!json) return;
@@ -247,6 +259,11 @@ static void MSGMediaRemoteMain(void) {
                         gPid = (pid > 0) ? pid : 0;
                     }
                 }
+
+                // No explicit artwork fetch here: every async MediaRemote call
+                // (MRNowPlayingRequest requests, MRMediaRemoteGetNowPlayingInfo)
+                // silently never completes in this unentitled host process on
+                // macOS 26+ — the artwork URL from applyInfo is the only path.
 
                 emitLine();
                 exit(0);

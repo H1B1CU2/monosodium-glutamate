@@ -138,10 +138,14 @@ struct TrayHUDView: View {
 
     private var nowPlayingCard: some View {
         HStack(spacing: 10) {
-            // Album art
+            // Album art; sources that publish none (browsers) show their app icon
             Group {
                 if let art = state.albumArt {
                     Image(nsImage: art).resizable().aspectRatio(contentMode: .fill)
+                } else if let icon = state.nowPlayingAppIcon {
+                    Color(nsColor: .controlBackgroundColor)
+                        .overlay(Image(nsImage: icon).resizable()
+                            .aspectRatio(contentMode: .fit).padding(3))
                 } else {
                     Color(nsColor: .controlBackgroundColor)
                         .overlay(Image(systemName: "music.note")
@@ -395,21 +399,36 @@ private struct WindowPreviewGrid: View {
 
 @available(macOS 14.0, *)
 private final class VisualizerModel: ObservableObject {
-    @Published var heights: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
-    private var targets: [CGFloat] = [0.4, 0.7, 0.5, 0.9]
+    @Published var heights: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8]
+    private var targets: [CGFloat] = [0.4, 0.7, 0.5, 0.9, 0.6, 0.8]
     private var tick = 0
     private var timer: Timer?
 
     func start() {
+        guard timer == nil else { return }
+        if #available(macOS 14.2, *) { AudioSpectrumTap.shared.acquire() }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] t in
             guard let self else { return }
-            if self.tick % 15 == 0 {
-                for i in 0..<4 {
-                    self.targets[i] = CGFloat.random(in: 0.3...1.0)
-                }
+            var live: [CGFloat]?
+            if #available(macOS 14.2, *) {
+                let tap = AudioSpectrumTap.shared
+                if tap.isDelivering && tap.hasSignal { live = tap.levels }
             }
-            for i in 0..<4 {
-                self.heights[i] += (self.targets[i] - self.heights[i]) * 0.4
+            if let live {
+                // Real audio: chase the tap's band levels
+                for i in 0..<audioVisualizerBandCount {
+                    self.heights[i] += ((i < live.count ? live[i] : 0) - self.heights[i]) * 0.5
+                }
+            } else {
+                // Fallback (no tap permission / pre-14.2): random targets
+                if self.tick % 15 == 0 {
+                    for i in 0..<audioVisualizerBandCount {
+                        self.targets[i] = CGFloat.random(in: 0.3...1.0)
+                    }
+                }
+                for i in 0..<audioVisualizerBandCount {
+                    self.heights[i] += (self.targets[i] - self.heights[i]) * 0.4
+                }
             }
             self.tick += 1
         }
@@ -417,8 +436,10 @@ private final class VisualizerModel: ObservableObject {
     }
 
     func stop() {
+        guard timer != nil else { return }
         timer?.invalidate()
         timer = nil
+        if #available(macOS 14.2, *) { AudioSpectrumTap.shared.release() }
     }
 }
 
@@ -428,7 +449,7 @@ private struct AudioVisualizer: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(0..<4, id: \.self) { i in
+            ForEach(0..<audioVisualizerBandCount, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 1)
                     .fill(.white.opacity(0.9))
                     .frame(width: 2, height: 4 + model.heights[i] * 10)

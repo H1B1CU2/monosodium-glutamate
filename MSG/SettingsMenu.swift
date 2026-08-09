@@ -39,6 +39,18 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         extHeaderItems.removeAll()
         focusDetectionItem = nil; displayOrderItem = nil
 
+        // Follow the System Settings appearance, not the menu bar's.
+        //
+        // A menu popped from a status item inherits the *menu bar's* appearance,
+        // and macOS turns that vibrantLight over a light wallpaper even while the
+        // system is in Dark mode — so the menu came up light on a dark system.
+        // Pinning it to NSApp's effective appearance (which tracks the Appearance
+        // setting) keeps it in step with the rest of the app. Re-read on every
+        // open so toggling Light/Dark is picked up without a relaunch.
+        let systemIsDark = NSApp.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        menu.appearance = NSAppearance(named: systemIsDark ? .darkAqua : .aqua)
+
         menu.autoenablesItems = false
 
         // ── Spacer ──────────────────
@@ -133,8 +145,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // ── Cornermization ──────────
-        addHeaderItem("Cornermization", to: menu)
+        // ── Cornermizer ──────────
+        addHeaderItem("Cornermizer", to: menu)
 
         let model = MacModel.name
         let builtIn = NSScreen.screens.first
@@ -265,6 +277,13 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         atEdge.target = self; atEdge.state = underBar ? .off : .on; sub.addItem(atEdge)
         let belowBar = NSMenuItem(title: "Below Menu Bar", action: isExternal ? #selector(extPosBelow) : #selector(posBelow), keyEquivalent: "")
         belowBar.target = self; belowBar.state = underBar ? .on : .off; sub.addItem(belowBar)
+        sub.addItem(.separator())
+        let fsOnly = NSMenuItem(title: "Fullscreen Only",
+                                action: isExternal ? #selector(extFullscreenOnlyToggle) : #selector(fullscreenOnlyToggle),
+                                keyEquivalent: "")
+        fsOnly.target = self
+        fsOnly.state = (isExternal ? settings.extTopCornersFullscreenOnly : settings.topCornersFullscreenOnly) ? .on : .off
+        sub.addItem(fsOnly)
         return sub
     }
 
@@ -298,6 +317,11 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         let belowBar = NSMenuItem(title: "Below Menu Bar", action: #selector(extPosBelowUUID(_:)), keyEquivalent: "")
         belowBar.target = self; belowBar.representedObject = uuid; belowBar.state = underBar ? .on : .off
         sub.addItem(belowBar)
+        sub.addItem(.separator())
+        let fsOnly = NSMenuItem(title: "Fullscreen Only", action: #selector(extFullscreenOnlyToggleUUID(_:)), keyEquivalent: "")
+        fsOnly.target = self; fsOnly.representedObject = uuid
+        fsOnly.state = settings.extTopCornersFullscreenOnly(for: uuid) ? .on : .off
+        sub.addItem(fsOnly)
         return sub
     }
 
@@ -321,6 +345,10 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc private func extPosBelowUUID(_ sender: NSMenuItem) {
         guard let uuid = sender.representedObject as? String else { return }
         settings.setExtTopCornersUnderMenuBar(true, for: uuid)
+    }
+    @objc private func extFullscreenOnlyToggleUUID(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        settings.setExtTopCornersFullscreenOnly(!settings.extTopCornersFullscreenOnly(for: uuid), for: uuid)
     }
 
     // MARK: - Visibility helpers
@@ -399,6 +427,8 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     @objc func posBelow()                        { settings.topCornersUnderMenuBar = true }
     @objc func extPosEdge()                      { settings.extTopCornersUnderMenuBar = false }
     @objc func extPosBelow()                     { settings.extTopCornersUnderMenuBar = true }
+    @objc func fullscreenOnlyToggle()            { settings.topCornersFullscreenOnly.toggle() }
+    @objc func extFullscreenOnlyToggle()         { settings.extTopCornersFullscreenOnly.toggle() }
     @objc func musicModePicked(_ sender: NSMenuItem) {
         let modes = MusicDisplayMode.allCases
         guard sender.tag >= 0, sender.tag < modes.count else { return }
@@ -477,7 +507,23 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             item.indentationLevel = 1
             menu.addItem(item)
         }
+
+        // A monitor that is enumerated and active but showing no picture looks
+        // identical to a working one from software, so there is nothing to detect
+        // and auto-repair — this re-triggers the link the way pulling the cable does.
+        if externals.contains(where: { $0.enabled }) {
+            let fix = NSMenuItem(title: "  Re-link Displays (fix blank screen)",
+                                 action: #selector(relinkDisplays), keyEquivalent: "")
+            fix.target = self
+            fix.indentationLevel = 1
+            fix.isEnabled = totalActive > 1
+            menu.addItem(fix)
+        }
         addSpaceItem()
+    }
+
+    @objc private func relinkDisplays() {
+        DisplaplacerEngine.relinkAllExternals()
     }
 
     @objc private func applyPreset(_ sender: NSMenuItem) {

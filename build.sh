@@ -27,6 +27,8 @@ xcrun -sdk macosx swiftc \
     IndicatorRenderer.swift \
     SystemHUDMonitor.swift \
     SystemHUDStatusItem.swift \
+    InputSourceMonitor.swift \
+    AudioSpectrumTap.swift \
     CornerWindow.swift \
     AppDelegate.swift \
     HardwareMonitor.swift \
@@ -54,6 +56,7 @@ xcrun -sdk macosx swiftc \
     -target arm64-apple-macos13.0 \
     -framework AppKit \
     -framework CoreAudio \
+    -framework Carbon \
     -framework CoreVideo \
     -framework SwiftUI \
     -framework ServiceManagement \
@@ -81,6 +84,22 @@ cp Info.plist "$CONTENTS/Info.plist"
 cp AppIcon.png "$RESOURCES/AppIcon.png"
 cp AppIcon-Dark.png "$RESOURCES/AppIcon-Dark.png"
 
+# Sign with a stable identity so TCC grants (Accessibility etc.) survive
+# rebuilds — ad-hoc signatures change cdhash every build and macOS treats
+# each one as a brand-new app. Plain dev signing only: no entitlements, no
+# hardened runtime (restricted entitlements get the binary AMFI-killed).
+xattr -cr "$APP_BUNDLE"
+
+echo "▸ Codesigning..."
+IDENTITY="${CODESIGN_ID:-Apple Development}"
+if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
+    codesign --force --sign "$IDENTITY" "$RESOURCES/libMSGMediaRemote.dylib"
+    codesign --force --sign "$IDENTITY" "$RESOURCES/MSGFanControlHelper"
+    codesign --force --sign "$IDENTITY" --identifier H1D3S1GN.MSG "$APP_BUNDLE"
+else
+    echo "⚠️  No '$IDENTITY' cert found — ad-hoc signing (Accessibility grant will NOT persist across builds)"
+    codesign --force --sign - "$APP_BUNDLE"
+fi
 
 echo ""
 echo "✅  Built: $APP_BUNDLE"

@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Corner windows
 
     private var cornerWindows: [CornerWindow] = []
+    private var wakeRebuildItem: DispatchWorkItem?
 
     // MARK: - Focus detection
 
@@ -99,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.trayPanel.registerHotkey()
                 self.trayPanel.state.prepare()
             } else {
-                self.trayPanel.unregisterHotkey()
+                self.trayPanel.unregisterHotkey() 
             }
         }
 
@@ -162,6 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildCornerWindows()
         applySlideDetection()
 
+        // A soft-disabled display outlives the app (the config is .forSession), so a
+        // display left dark by a crash, a force-quit, or a lost eject record is still
+        // dark now. Heal once at launch, after the screen list has settled.
+        DisplayLog.snapshot("launch")
+        scheduleDisplayHeal()
+
         // Screen changes
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -170,6 +177,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rebuildCornerWindows()
             self?.checkScreenArrangement()
             self?.settingsMenu.updateExternalMonitorVisibility()
+            self?.scheduleDisplayHeal()
+        }
+
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                // Both notifications fire on a normal wake — coalesce so we rebuild once.
+                self.wakeRebuildItem?.cancel()
+                let item = DispatchWorkItem { [weak self] in self?.rebuildCornerWindows() }
+                self.wakeRebuildItem = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+            }
         }
 
         // Space / fullscreen transitions: re-assert corner window ordering and
@@ -193,12 +214,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // CGDisplay callback for arrangement changes
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        CGDisplayRegisterReconfigurationCallback({ _, _, userInfo in
+        CGDisplayRegisterReconfigurationCallback({ display, flags, userInfo in
+            // Log every reconfiguration, whoever caused it. When a monitor goes dark
+            // this is the record of what actually happened to it, and whether the
+            // change came out of one of our own display transactions.
+            DisplayLog.write("reconfig id=\(display) \(DisplayLog.describe(flags))"
+                             + (DisplayLog.inOurTransaction ? " [ours]" : ""))
             guard let ctx = userInfo else { return }
             let ad = Unmanaged<AppDelegate>.fromOpaque(ctx).takeUnretainedValue()
             DispatchQueue.main.async {
                 ad.settingsMenu.updateExternalMonitorVisibility()
                 ad.checkScreenArrangement()
+                if !flags.contains(.beginConfigurationFlag) { DisplayLog.snapshot("reconfig settled") }
             }
         }, ctx)
 
@@ -340,6 +367,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 monitor.onMediaKey = { [weak self] action in
                     self?.musicMonitor.handleRoutedMediaKey(action)
+                }
+                monitor.onTransportKey = { [weak self] in
+                    self?.musicMonitor.pokeNow()
                 }
                 systemHUDMonitor = monitor
             }
@@ -500,6 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             indicator.systemState.rescheduleScan()
             slidePollTimer?.invalidate(); slidePollTimer = nil
             slidingDisplays.removeAll()
+            // Nothing feeds applyMenuBarPair() any more, so a true left here can
+            // never be cleared — and it gates the corner watchdog.
+            menuBarPairActive = false
         }
     }
 
@@ -560,24 +593,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 win.spaceSlideEnded()
             }
         }
+
+        // A display unplugged mid-slide loses its window before the "stopped
+        // animating" edge arrives, so its UUID would sit here forever — gating the
+        // corner watchdog, keeping slideInProgressProvider true (which defeats
+        // SystemState's idle gate and pins the scan at 30 Hz), and suppressing the
+        // active-flip backup path. Keep only UUIDs we still have a window for.
+        slidingDisplays.formIntersection(cornerWindows.compactMap(\.displayUUID))
     }
 
     // MARK: - Mission Control
 
-    /// Hide the under-menu-bar top corners while Mission Control is active so that
-    /// leaving it produces a hidden→shown transition the corner view grows in.
+    /// systemUptime at which the current MC top-corner hide began, 0 when not hiding.
+    private var topHiddenSince: TimeInterval = 0
+    /// Set once the ceiling fires, so the hide is not immediately re-applied.
+    /// Cleared when isMissionControl goes false — i.e. when the reading recovers.
+    private var mcHideCeilingHit = false
+    /// No real Mission Control session justifies hiding the corners this long.
+    private static let mcHideCeilingSec: TimeInterval = 30
+
+    /// Drives both top-corner inputs for every window:
+    ///
+    /// - **Mission Control** hides the under-menu-bar top corners, so leaving MC
+    ///   produces a hidden→shown transition the corner view grows in.
+    /// - **Fullscreen-only mode** hides them on a desktop space and brings them
+    ///   back when that display enters a fullscreen space — the same hidden→shown
+    ///   transition, so the grow-in comes free.
+    ///
+    /// Fullscreen is read per display from the CGS space type rather than from
+    /// `SystemState.isFullscreen` (Accessibility, and global to the frontmost
+    /// app), so a fullscreen window on one display doesn't round the corners on
+    /// the others.
     private func applyCornerWindowTopState() {
-        let hideTop = indicator.isMissionControl
+        let mc = indicator.isMissionControl
+        if mc {
+            if topHiddenSince == 0 { topHiddenSince = ProcessInfo.processInfo.systemUptime }
+        } else {
+            topHiddenSince = 0
+            mcHideCeilingHit = false
+        }
+        let hideTop = mc && !mcHideCeilingHit
+        // nil = CGS unreadable. Treat that as "fullscreen" so a failed read shows
+        // the corners; the opposite default would silently delete the feature.
+        let fsDisplays = SpaceWatcher.fullscreenDisplayUUIDs()
         for win in cornerWindows {
             let uuid = win.displayUUID ?? "_default"
-            let underBar = win.targetScreen.isBuiltin
+            let isBuiltin = win.targetScreen.isBuiltin
+            let underBar = isBuiltin
                 ? settings.topCornersUnderMenuBar
                 : settings.extTopCornersUnderMenuBar(for: uuid)
-            win.setSkipTop(hideTop && underBar)
+            let fullscreenOnly = isBuiltin
+                ? settings.topCornersFullscreenOnly
+                : settings.extTopCornersFullscreenOnly(for: uuid)
+            // Fail open in both unknown cases — CGS unreadable, or a display whose
+            // UUID won't resolve — so the corners show rather than silently vanish.
+            let isFullscreen = fsDisplays.map { set in
+                win.displayUUID.map(set.contains) ?? true
+            } ?? true
+            win.setSkipTop((hideTop && underBar) || (fullscreenOnly && !isFullscreen))
         }
     }
 
+    /// `isMissionControl` can latch true (see MissionControlDetector: an unnamed
+    /// positive-layer WindowManager window is indistinguishable from MC without
+    /// Screen Recording). A latched reading hides the top corners for good, so
+    /// give the hide a ceiling: worst case the corners paint over a genuinely
+    /// open Mission Control, which is cosmetic and self-correcting on exit.
+    private func releaseStuckTopHideIfNeeded() {
+        guard indicator.isMissionControl, !mcHideCeilingHit, topHiddenSince > 0 else { return }
+        guard ProcessInfo.processInfo.systemUptime - topHiddenSince > Self.mcHideCeilingSec else { return }
+        mcHideCeilingHit = true
+        applyCornerWindowTopState()   // un-skips → hidden→shown → normal grow-in
+    }
+
     // MARK: - Corner windows
+
+    /// True when every corner window still maps to the live screen at its index.
+    /// NSScreen objects are invalidated by display reconfiguration and sleep/wake;
+    /// a window holding a dead one reports frame .zero and paints nothing, and the
+    /// frame-vs-frame test in redrawCornerWindows() cannot see that.
+    private func cornerWindowsMatchScreens() -> Bool {
+        let live = NSScreen.screens
+        guard cornerWindows.count == live.count else { return false }
+        for (win, screen) in zip(cornerWindows, live) {
+            guard win.targetScreen.frame.width > 0,
+                  win.targetScreen.frame == screen.frame,
+                  win.displayUUID == screen.uuid else { return false }
+        }
+        return true
+    }
 
     private func rebuildCornerWindows() {
         for win in cornerWindows { win.orderOut(nil) }
@@ -595,9 +699,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func redrawCornerWindows() {
         guard settings.cornersEnabled else { return }
-        let screenFrames = NSScreen.screens.map(\.frame)
-        let windowFrames = cornerWindows.map(\.frame)
-        if cornerWindows.count != NSScreen.screens.count || windowFrames != screenFrames {
+        guard cornerWindowsMatchScreens(),
+              cornerWindows.map(\.frame) == NSScreen.screens.map(\.frame) else {
             rebuildCornerWindows()
             return
         }
@@ -606,6 +709,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.orderFrontRegardless()
             win.redraw()
         }
+        applyCornerWindowTopState()
+    }
+
+    // MARK: - Corner watchdog
+
+    /// 0.5 s arrangement-poll ticks since the last watchdog pass (→ ~2 s period).
+    private var cornerWatchdogTick = 0
+
+    /// Everything in Cornermizer is edge-triggered, so a missed edge stays wrong
+    /// until relaunch. This is the only thing that re-checks: it re-asserts window
+    /// ordering, rebuilds on a stale screen identity (C2), releases a stuck MC
+    /// top-corner hide (C4), and heals a stranded grow (C3).
+    private func cornerWatchdog() {
+        // C4 runs first — it is the one check that must happen *during* MC.
+        releaseStuckTopHideIfNeeded()
+
+        guard settings.cornersEnabled, !cornerWindows.isEmpty else { return }
+        // Never contend with WindowServer mid-animation: MC owns the screen, and a
+        // slide in flight is deliberately showing hidden corners.
+        // A pair older than 4 s is stale — no slide lasts that long — and must not
+        // keep the watchdog gated (see the same rule in pollSlideState).
+        let pairFresh = menuBarPairActive
+            && ProcessInfo.processInfo.systemUptime - menuBarPairSince <= 4
+        guard !indicator.isMissionControl, !pairFresh, slidingDisplays.isEmpty else { return }
+
+        // C2: a window holding a dead NSScreen paints nothing — rebuild instead.
+        guard cornerWindowsMatchScreens() else {
+            rebuildCornerWindows()
+            return
+        }
+
+        for win in cornerWindows {
+            // Unconditional: a foreign window sitting *above* ours leaves both
+            // `isVisible` and `level` untouched, so there is nothing to test.
+            if win.level != CornerWindow.cornerLevel { win.level = CornerWindow.cornerLevel }
+            win.orderFrontRegardless()
+            win.healStrandedGrow()   // C3
+        }
+
+        // Heal a missed fullscreen edge (e.g. the space changed while Mission
+        // Control was up, so the activeSpaceDidChange observer skipped it). One
+        // CGS read at 0.086 ms, and setSkipTop only repaints on a real change.
         applyCornerWindowTopState()
     }
 
@@ -618,6 +763,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         t.setEventHandler { [weak self] in self?.checkScreenArrangement() }
         t.resume()
         arrangementPollSource = t
+    }
+
+    private var displayHealItem: DispatchWorkItem?
+
+    // Debounced: plugging a monitor in emits a burst of screen-parameter changes and
+    // the panel reads as inactive mid-negotiation, so healing on the first one would
+    // fight macOS while it is still bringing the display up.
+    private func scheduleDisplayHeal() {
+        displayHealItem?.cancel()
+        let item = DispatchWorkItem { DisplaplacerEngine.healStuckDisplays() }
+        displayHealItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
     }
 
     private func checkScreenArrangement() {
@@ -635,6 +792,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             indicator.statusItem.button?.display()
         }
 
+        cornerWatchdogTick += 1
+        if cornerWatchdogTick >= 4 {   // ~2 s
+            cornerWatchdogTick = 0
+            cornerWatchdog()
+        }
     }
 
     private func applyAutoOrder() {

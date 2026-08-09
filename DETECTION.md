@@ -1,7 +1,7 @@
 # How MSG Detects Things
 
 MSG reports a lot of live system state — active Space, Mission Control, real
-frame rate, temperatures, fan RPM, battery/charge-limit, per-app energy,
+frame rate, temperatures, fan RPM, battery/charge-limit,
 volume/brightness key presses — with **zero external dependencies** and, for
 most of it, **no special permissions**. It does this by reading public IOKit /
 CoreGraphics / CoreAudio interfaces plus a small set of private-but-stable
@@ -220,36 +220,7 @@ cross-check `AppleSmartBattery.NotChargingReason` before showing the tick.
 
 ---
 
-## 10. Which apps are using significant energy
-
-**What:** the "Apps using significant energy" list in the battery card —
-per-app combined CPU + GPU load, billed to the responsible app.
-
-**How** (`EnergyAppSampler`):
-- **Apple POWER base** — mirrors Apple's open-source `top` formula using
-  `proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, …)` for every pid: CPU busy time
-  plus a 500 µs penalty per `ri_pkg_idle_wkups`, divided by sample duration.
-- **GPU** — each `IOAccelerator` user client's `AppUsage` array, summing
-  `accumulatedGPUTime` per creating pid (parsed from `IOUserClientCreator`).
-- **Attribution** — helper processes are billed to their owning app via the
-  private-but-stable libsystem symbol
-  `responsibility_get_pid_responsible_for_pid(pid)`.
-
-Apple does not publish the Battery Status menu's exact threshold or complete
-weighting. Apple documents Energy Impact as a relative score incorporating CPU,
-network, disk I/O, and more; MSG uses Apple's inspectable POWER base plus GPU.
-
-**Stability of the *list itself*** (why it doesn't flicker): scores are smoothed
-(EMA α = 0.25) and membership uses **hysteresis + dwell** — an app must reach
-30% to appear and stays until it decays below 16%, held for a 6 s minimum once
-shown, and retained apps keep their row position (only freed slots refill). See
-the four tunables at the top of `EnergyAppSampler`.
-
-**Permission:** none. **Stability:** medium.
-
----
-
-## 11. Energy mode (Automatic / Low / High Power)
+## 10. Energy mode (Automatic / Low / High Power)
 
 **What:** the current energy mode, and the ability to change it.
 
@@ -262,7 +233,7 @@ same socket helper used for fan writes.
 
 ---
 
-## 12. Volume / brightness key presses
+## 11. Volume / brightness key presses
 
 **What:** the hardware volume-up/down/mute and brightness-up/down keys, so MSG
 can replace the native OSD with its own indicator bar.
@@ -288,7 +259,7 @@ re-enables itself.
 
 ---
 
-## 13. Output-device icon (speaker / headphones / AirPods / AirPods Pro)
+## 12. Output-device icon (speaker / headphones / AirPods / AirPods Pro)
 
 **What:** which icon the volume HUD shows for the current default output device.
 
@@ -321,7 +292,7 @@ needs updates as Apple ships new hardware.
 
 ---
 
-## 14. Now Playing (media metadata)
+## 13. Now Playing (media metadata)
 
 **What:** current track/artist/artwork/playback state across Apple Music,
 Spotify, browsers, etc.
@@ -333,12 +304,21 @@ the binary AMFI-killed. MSG sidesteps this by loading a helper dylib
 (via `DynaLoader`), which streams Now Playing updates back as JSON lines over
 stdout. See the README's "macOS 15.4+ Now Playing Bypass".
 
+**Artwork:** macOS 26+ stops embedding artwork bytes in the now-playing snapshot
+(and every *async* MediaRemote call — `MRNowPlayingRequest` instance requests,
+`MRMediaRemoteGetNowPlayingInfo` — silently never completes in the helper, so
+artwork cannot be requested explicitly). The snapshot's
+`kMRMediaRemoteNowPlayingInfoArtworkIdentifier` is often a direct CDN URL
+(mzstatic for Music); the helper emits it as `artURL` and MSG downloads the
+image itself. AppleScript artwork remains the fallback for sources without a
+URL, though Music returns no artwork via AppleScript for streaming tracks.
+
 **Permission:** none (the perl host carries the platform entitlement).
 **Stability:** low — depends on MediaRemote internals and the entitlement regime.
 
 ---
 
-## 15. Music player state (Apple Music / Spotify)
+## 14. Music player state (Apple Music / Spotify)
 
 **What:** precise transport state and volume for the scriptable players.
 
@@ -365,7 +345,6 @@ that otherwise hangs across sleep/wake and burns CPU.
 | Temps / fan RPM | `AppleSMC` (`IOConnectCallStructMethod`) | none (reads) |
 | Power / battery | `AppleSmartBattery` IORegistry | none |
 | Charge limit | `com.apple.batteryui.charging.mac` pref | none |
-| Per-app energy | `proc_pid_rusage` + `IOAccelerator AppUsage` | none |
 | Energy mode | `pmset -g custom` | none (read) |
 | Volume/brightness keys | `CGEventTap` on `NX_SYSDEFINED` | Accessibility |
 | Output-device icon | `CBCentralManager` + Apple Proximity Pairing broadcast | Bluetooth |

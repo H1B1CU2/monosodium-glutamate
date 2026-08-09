@@ -65,6 +65,12 @@ final class HardwareStatusItem {
         let size = barView.intrinsicContentSize
         barView.frame.size = size
         item.length = size.width
+        // The button lives in the menu bar, so its appearance is the real one:
+        // vibrantLight over a light wallpaper even while the system is in Dark
+        // mode. The offscreen bar view can't see that on its own.
+        barView.menuBarIsDark = item.button?.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+            .map { $0 == .darkAqua || $0 == .vibrantDark } ?? true
         item.button?.image = barView.renderedImage()
     }
 }
@@ -122,6 +128,30 @@ final class HardwareBarView: NSView {
 
     /// "white" | "green"
     var colorScale: String = "white"
+
+    /// Whether the menu bar's own background is dark.
+    ///
+    /// Pushed in by the status item rather than read here: this view renders
+    /// offscreen into an NSImage, so its `effectiveAppearance` follows the app,
+    /// not the menu bar. Those disagree — a translucent menu bar over a light
+    /// wallpaper is `vibrantLight` while the system is still in Dark mode, and
+    /// white-on-light is invisible. `IndicatorRenderer.menuBarTextColor` solves
+    /// the same problem the same way, which is why the space indicator stays
+    /// readable when these bars did not.
+    var menuBarIsDark = true
+
+    /// The ink every element is drawn in, matching `menuBarTextColor`'s values.
+    private var ink: NSColor { menuBarIsDark ? .white : NSColor(white: 0.15, alpha: 1) }
+
+    /// Darkens a hued status colour so it stays legible on a light menu bar.
+    /// Bright yellow at 98% brightness is as invisible on a pale bar as white is.
+    private func adapt(_ c: NSColor) -> NSColor {
+        guard !menuBarIsDark, let hsb = c.usingColorSpace(.deviceRGB) else { return c }
+        return NSColor(hue: hsb.hueComponent,
+                       saturation: min(1, hsb.saturationComponent * 1.15),
+                       brightness: hsb.brightnessComponent * 0.70,
+                       alpha: hsb.alphaComponent)
+    }
 
     // -----------------------------------------------------------------------
     // MARK: - Layout
@@ -271,7 +301,7 @@ final class HardwareBarView: NSView {
         // Background track
         let track = NSRect(x: barOriginX, y: barY, width: w, height: barH)
         let trackPath = NSBezierPath(roundedRect: track, xRadius: w / 2, yRadius: w / 2)
-        NSColor.white.withAlphaComponent(0.15).setFill()
+        ink.withAlphaComponent(0.15).setFill()
         trackPath.fill()
 
         // Filled portion
@@ -316,7 +346,7 @@ final class HardwareBarView: NSView {
 
         let track = NSRect(x: trackX, y: trackY, width: trackW, height: trackH)
         let trackPath = NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2)
-        NSColor.white.withAlphaComponent(0.15).setFill()
+        ink.withAlphaComponent(0.15).setFill()
         trackPath.fill()
 
         if module.ratio > 0 {
@@ -395,7 +425,7 @@ final class HardwareBarView: NSView {
         let bgPath = NSBezierPath()
         bgPath.appendArc(withCenter: center, radius: r, startAngle: 0, endAngle: 360)
         bgPath.lineWidth = lineW
-        NSColor.white.withAlphaComponent(0.15).setStroke()
+        ink.withAlphaComponent(0.15).setStroke()
         bgPath.stroke()
 
         // Filled arc
@@ -440,7 +470,7 @@ final class HardwareBarView: NSView {
                           y: rect.midY - bodyH / 2,
                           width: bodyW, height: bodyH)
 
-        let outlineColor = NSColor.white.withAlphaComponent(0.55)
+        let outlineColor = ink.withAlphaComponent(0.55)
         let outline = NSBezierPath(roundedRect: body, xRadius: 3.4 * s, yRadius: 3.4 * s)
         outline.lineWidth = 1.15 * s
         outlineColor.setStroke()
@@ -540,7 +570,7 @@ final class HardwareBarView: NSView {
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.8),
+            .foregroundColor: ink.withAlphaComponent(0.8),
         ]
         for (i, ch) in chars.enumerated() {
             let s = String(ch) as NSString
@@ -555,7 +585,7 @@ final class HardwareBarView: NSView {
         let labelFontSize = fontSize ?? horizontalLabelFontSize
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: labelFontSize, weight: .bold),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.7),
+            .foregroundColor: ink.withAlphaComponent(0.7),
         ]
         let sz = s.size(withAttributes: attrs)
         let drawY = max(rect.minY + 1, min(y, rect.maxY - sz.height - 1))
@@ -567,7 +597,7 @@ final class HardwareBarView: NSView {
         let s = text as NSString
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: horizontalLabelFontSize, weight: .bold),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.7),
+            .foregroundColor: ink.withAlphaComponent(0.7),
         ]
         let sz = s.size(withAttributes: attrs)
         let drawY = max(rect.minY + 1, min(centerY - sz.height / 2, rect.maxY - sz.height - 1))
@@ -583,12 +613,12 @@ final class HardwareBarView: NSView {
         let valStr = module.valueText as NSString
         let valAttrs: [NSAttributedString.Key: Any] = [
             .font: Self.valueFont,
-            .foregroundColor: NSColor.white,
+            .foregroundColor: ink,
         ]
         let lblStr = module.label as NSString
         let lblAttrs: [NSAttributedString.Key: Any] = [
             .font: Self.valueLabelFont,
-            .foregroundColor: NSColor.white.withAlphaComponent(0.5),
+            .foregroundColor: ink.withAlphaComponent(0.5),
             .kern: -0.4,
         ]
         // Unit drawn one size down and aligned to the number's baseline, so it
@@ -597,7 +627,7 @@ final class HardwareBarView: NSView {
         let hasUnit = !module.unit.isEmpty
         let unitAttrs: [NSAttributedString.Key: Any] = [
             .font: Self.valueUnitFont,
-            .foregroundColor: NSColor.white,   // match the value's color
+            .foregroundColor: ink,   // match the value's color
         ]
 
         let valSize = valStr.size(withAttributes: valAttrs)
@@ -666,23 +696,23 @@ final class HardwareBarView: NSView {
     // MARK: - Color
     // -----------------------------------------------------------------------
 
-    /// Neutral below 80%, then a smooth yellow→orange→red ramp toward 100%.
+    /// Neutral below 60%, then yellow / orange (75%) / red (90%), eased between.
     private func barColor(ratio: CGFloat, forceWhite: Bool = false, preferredScale: String? = nil) -> NSColor {
-        if forceWhite { return NSColor.white }
-        if let warn = loadWarningColor(ratio) { return warn }
+        if forceWhite { return ink }
+        if let warn = loadWarningColor(ratio) { return adapt(warn) }
         let scale = preferredScale ?? colorScale
-        if scale == "green" { return NSColor(hue: 0.34, saturation: 0.62, brightness: 1.0, alpha: 1.0) }
-        return NSColor.white
+        if scale == "green" { return adapt(NSColor(hue: 0.34, saturation: 0.62, brightness: 1.0, alpha: 1.0)) }
+        return ink
     }
 
     /// Battery scale is inverted: low charge is the bad end.
     private func batteryColor(ratio: CGFloat) -> NSColor {
         if stats.isLowPowerMode { return NSColor.systemYellow }
         let r = max(0, min(1, ratio))
-        if r <= 0.10 { return NSColor(hue: 0.0,  saturation: 0.9, brightness: 0.95, alpha: 1.0) }
-        if r <= 0.25 { return NSColor(hue: 0.10, saturation: 0.9, brightness: 0.95, alpha: 1.0) }
-        if colorScale == "green" { return NSColor(hue: 0.34, saturation: 0.62, brightness: 1.0, alpha: 1.0) }
-        return NSColor.white
+        if r <= 0.10 { return adapt(NSColor(hue: 0.0,  saturation: 0.9, brightness: 0.95, alpha: 1.0)) }
+        if r <= 0.25 { return adapt(NSColor(hue: 0.10, saturation: 0.9, brightness: 0.95, alpha: 1.0)) }
+        if colorScale == "green" { return adapt(NSColor(hue: 0.34, saturation: 0.62, brightness: 1.0, alpha: 1.0)) }
+        return ink
     }
 
     // -----------------------------------------------------------------------
@@ -1097,9 +1127,6 @@ final class HardwarePopover: NSObject {
     private var menuTrackingCount = 0
     private var menuTrackingObservers: [NSObjectProtocol] = []
 
-    private let energySampler = EnergyAppSampler()
-    private var energyApps: [EnergyAppSampler.SignificantApp] = []
-    private lazy var energyList = EnergyAppsListView(rowWidth: contentWidth - 20)
     private var energyModes = HardwareMonitor.EnergyModes()
 
     /// Last ratio drawn for each stat card, keyed by card id. Cards are
@@ -1193,13 +1220,6 @@ final class HardwarePopover: NSObject {
         // so pick it up fresh on every open rather than only at popover
         // creation time.
         shell.refreshAppearance()
-        // Keep showing whatever energyApps last held (from the previous time
-        // this popover was open) instead of blanking to empty — resetting
-        // the sampler still means the *next* reading is measured fresh from
-        // now, but the list doesn't need to sit empty for a second while
-        // waiting for it.
-        energySampler.reset()
-        _ = energySampler.sample()   // baseline; real values from the next tick
         refreshEnergyModes()
         rebuild()
 
@@ -1247,15 +1267,6 @@ final class HardwarePopover: NSObject {
             self?.refreshValues()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
-
-        // The sampler needs some elapsed wall time to compute a fresh delta;
-        // 150ms clears its internal 100ms floor, so a currently-heavy app
-        // shows up almost immediately instead of after the first full
-        // 1-second poll tick.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self, self.window.isVisible else { return }
-            self.refreshValues()
-        }
     }
 
     func close() {
@@ -1481,12 +1492,11 @@ final class HardwarePopover: NSObject {
         return card
     }
 
-    /// Full-width battery card: charge level, energy-mode picker, and the
-    /// approximated "apps using significant energy" list.
+    /// Full-width battery card: charge level and energy-mode picker.
     private func makeBatteryCard(_ s: HardwareStats) -> NSView {
         let card = makeBatteryDetailCard(stats: s, contentWidth: contentWidth,
                               cornerRadius: cardCornerRadius,
-                              energyModes: energyModes, energyAppsView: energyList,
+                              energyModes: energyModes,
                               previousPowerWatts: lastPowerWatts) { [weak self] mode in
             self?.selectEnergyMode(mode)
         }
@@ -1503,21 +1513,7 @@ final class HardwarePopover: NSObject {
 
     private func refreshValues() {
         guard menuTrackingCount == 0 else { return }
-        let sampledApps = energySampler.sample()
-        let energyNamesChanged = sampledApps.map(\.name) != energyApps.map(\.name)
-        energyApps = sampledApps
-
-        if energyNamesChanged {
-            energyList.setApps(sampledApps, animated: true) { [weak self] in
-                self?.resizeWindow(animated: true)
-            }
-            return
-        }
-
         rebuild()
-        energyList.setApps(sampledApps, animated: false) { [weak self] in
-            self?.resizeWindow(animated: true)
-        }
     }
 
     /// Re-reads pmset's powermode values off-main and repaints when they land.
@@ -1833,18 +1829,40 @@ private final class AnimatedValueField: NSTextField {
     }
 }
 
-/// Load-warning ramp shared by the menu-bar gauges and the popover mini bars.
-/// Neutral below 80%, then hue is interpolated continuously so the color eases
-/// through the range instead of snapping: yellow at 0.80, orange at 0.90, red at
-/// 1.00. Returns nil below the threshold so the caller supplies its own base.
+/// Load-warning colour shared by the menu-bar gauges and the popover mini bars.
+/// Each band holds its colour flat — yellow from 60%, orange from 75%, red from
+/// 90% — and the hue only moves inside a short eased crossfade centred on each
+/// boundary. So the change reads as a smooth transition rather than a snap,
+/// without spending the whole range drifting through in-between hues.
+/// Returns nil below the first threshold so the caller supplies its own base.
+private let loadWarnStart:  CGFloat = 0.60   // base → yellow
+private let loadWarnOrange: CGFloat = 0.75   // yellow → orange
+private let loadWarnRed:    CGFloat = 0.90   // orange → red
+
+/// Half-width of the eased crossfade centred on each boundary.
+private let loadWarnBlend: CGFloat = 0.03
+
 private func loadWarningColor(_ ratio: CGFloat) -> NSColor? {
     let r = max(0, min(1, ratio))
-    guard r >= 0.8 else { return nil }
+    guard r >= loadWarnStart else { return nil }
+
     let yellow: CGFloat = 0.15, orange: CGFloat = 0.083, red: CGFloat = 0.0
-    let hue: CGFloat = r < 0.9
-        ? yellow + (orange - yellow) * (r - 0.8) / 0.1
-        : orange + (red - orange) * (r - 0.9) / 0.1
-    return NSColor(hue: hue, saturation: 0.9, brightness: 0.95, alpha: 1.0)
+
+    /// Smoothstep across a boundary: 0 below the fade, 1 above it, eased between.
+    func blend(_ boundary: CGFloat) -> CGFloat {
+        let t = max(0, min(1, (r - (boundary - loadWarnBlend)) / (loadWarnBlend * 2)))
+        return t * t * (3 - 2 * t)
+    }
+
+    // The fades don't overlap, so the steps compose additively.
+    var hue = yellow
+    hue += (orange - yellow) * blend(loadWarnOrange)
+    hue += (red - orange) * blend(loadWarnRed)
+
+    // Saturation eases in over the first band so leaving the base colour is a
+    // fade rather than a pop straight to full yellow.
+    let entry = blend(loadWarnStart + loadWarnBlend)
+    return NSColor(hue: hue, saturation: 0.35 + 0.55 * entry, brightness: 0.98, alpha: 1.0)
 }
 
 /// Same ramp as the gauges, but resting on a translucent-white base.
@@ -1997,188 +2015,11 @@ final class PopoverActionRow: NSView {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EnergyAppsListView — persistent "apps using significant energy" section.
-// The popovers tear down and rebuild every card each poll tick, so this view
-// is owned by the popover and re-parented into each fresh battery card; it
-// diffs the sampled app list itself. The section owns a height constraint so
-// the battery card extends from its bottom edge when the significant-energy
-// rows appear, instead of making the whole popover feel like it jumped.
-// ---------------------------------------------------------------------------
-
-final class EnergyAppsListView: NSView {
-
-    private let rowWidth: CGFloat
-    private let stack = NSStackView()
-    private let placeholder: NSTextField
-    private let header: NSTextField
-    private var heightConstraint: NSLayoutConstraint?
-    private var rows: [(name: String, view: NSView)] = []
-    private var names: [String] = []
-
-    init(rowWidth: CGFloat) {
-        self.rowWidth = rowWidth
-
-        let line = NSTextField(labelWithString: "No apps using significant energy")
-        line.font = NSFont.systemFont(ofSize: 10)
-        line.textColor = .tertiaryLabelColor
-        placeholder = line
-
-        let cap = NSTextField(labelWithString: "")
-        cap.attributedStringValue = StatCard.captionString("USING SIGNIFICANT ENERGY")
-        header = cap
-        header.isHidden = true
-
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.masksToBounds = true
-
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-        stack.addArrangedSubview(placeholder)
-        stack.addArrangedSubview(header)
-        [placeholder, header].forEach { $0.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true }
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// Diffs against the currently shown apps and animates the difference.
-    /// `layoutChange` is called during the section-height animation so the
-    /// popover bottom can move with the battery card's bottom edge.
-    func setApps(_ apps: [EnergyAppSampler.SignificantApp], animated: Bool,
-                 layoutChange: (() -> Void)? = nil) {
-        let newNames = apps.map(\.name)
-        guard newNames != names else {
-            if heightConstraint == nil {
-                ensuredHeightConstraint().constant = max(1, stack.fittingSize.height)
-            }
-            return
-        }
-        names = newNames
-
-        var surviving: [String: NSView] = [:]
-        var dying: [NSView] = []
-        for (name, view) in rows {
-            if newNames.contains(name) { surviving[name] = view } else { dying.append(view) }
-        }
-        rows = apps.map { app in
-            (name: app.name, view: surviving[app.name] ?? makeAppRow(app))
-        }
-        let height = ensuredHeightConstraint()
-        let oldHeight = max(1, bounds.height > 0 ? bounds.height : stack.fittingSize.height)
-        height.constant = oldHeight
-        layoutSubtreeIfNeeded()
-
-        var appearing: [NSView] = []
-        // Brand-new rows go in now at their final size, transparent. Keeping
-        // arranged subviews visible avoids NSStackView's layout animation
-        // fighting the popover's own frame animation.
-        for entry in rows where surviving[entry.name] == nil {
-            appearing.append(entry.view)
-            entry.view.alphaValue = animated ? 0 : 1
-            entry.view.wantsLayer = true
-            stack.addArrangedSubview(entry.view)
-            entry.view.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-        }
-
-        let headerWasHidden = header.isHidden
-        let applyTargets = {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0
-                ctx.allowsImplicitAnimation = false
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self.placeholder.isHidden = !newNames.isEmpty
-                self.header.isHidden = newNames.isEmpty
-                if headerWasHidden && !newNames.isEmpty {
-                    self.header.alphaValue = animated ? 0 : 1
-                    appearing.append(self.header)
-                }
-                // Order: placeholder, header, live rows. insertArrangedSubview
-                // moves already-arranged views into their final positions before
-                // the popover resize starts.
-                for (i, entry) in self.rows.enumerated() {
-                    self.stack.insertArrangedSubview(entry.view, at: 2 + i)
-                    entry.view.isHidden = false
-                    entry.view.alphaValue = appearing.contains(where: { $0 === entry.view }) ? entry.view.alphaValue : 1
-                    entry.view.layer?.transform = CATransform3DIdentity
-                }
-                for view in dying {
-                    self.stack.removeArrangedSubview(view)
-                    view.removeFromSuperview()
-                }
-                CATransaction.commit()
-            }
-        }
-
-        guard animated, window != nil else {
-            applyTargets()
-            height.constant = max(1, stack.fittingSize.height)
-            layoutChange?()
-            return
-        }
-
-        applyTargets()
-        let newHeight = max(1, stack.fittingSize.height)
-        height.constant = oldHeight
-        layoutSubtreeIfNeeded()
-
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.22
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            ctx.allowsImplicitAnimation = true
-            height.animator().constant = newHeight
-            appearing.forEach { $0.animator().alphaValue = 1 }
-            layoutChange?()
-        }
-    }
-
-    private func ensuredHeightConstraint() -> NSLayoutConstraint {
-        if let heightConstraint { return heightConstraint }
-        let constraint = heightAnchor.constraint(equalToConstant: max(1, stack.fittingSize.height))
-        constraint.priority = .required
-        constraint.isActive = true
-        heightConstraint = constraint
-        return constraint
-    }
-
-    private func makeAppRow(_ app: EnergyAppSampler.SignificantApp) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = app.icon
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
-
-        let name = NSTextField(labelWithString: app.name)
-        name.font = NSFont.systemFont(ofSize: 11)
-        name.textColor = .labelColor
-        name.lineBreakMode = .byTruncatingTail
-
-        let row = NSStackView(views: [iconView, name])
-        row.orientation = .horizontal
-        row.spacing = 5
-        row.alignment = .centerY
-        return row
-    }
-}
-
-/// Full-width battery card: charge level, energy-mode picker, and the
-/// approximated "apps using significant energy" list.
+/// Full-width battery card: charge level and energy-mode picker.
 func makeBatteryDetailCard(stats s: HardwareStats,
                             contentWidth: CGFloat,
                             cornerRadius: CGFloat = 8,
                             energyModes: HardwareMonitor.EnergyModes,
-                            energyAppsView: NSView,
                             previousPowerWatts: Double? = nil,
                             onSelectEnergyMode: @escaping (Int) -> Void) -> NSView {
     let card = NSView()
@@ -2319,10 +2160,6 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         inner.setCustomSpacing(10, after: chipRow)
     }
 
-    // Significant energy apps — persistent view owned by the popover, so its
-    // appear/disappear animations survive the per-tick card rebuild.
-    inner.addArrangedSubview(energyAppsView)
-
     return card
 }
 
@@ -2393,6 +2230,12 @@ final class BatteryStatusItem {
         let size = barView.intrinsicContentSize
         barView.frame.size = size
         item.length = size.width
+        // The button lives in the menu bar, so its appearance is the real one:
+        // vibrantLight over a light wallpaper even while the system is in Dark
+        // mode. The offscreen bar view can't see that on its own.
+        barView.menuBarIsDark = item.button?.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
+            .map { $0 == .darkAqua || $0 == .vibrantDark } ?? true
         item.button?.image = barView.renderedImage()
     }
 }
@@ -2412,9 +2255,6 @@ final class BatteryPopover: NSObject {
     private var menuTrackingCount = 0
     private var menuTrackingObservers: [NSObjectProtocol] = []
 
-    private let energySampler = EnergyAppSampler()
-    private var energyApps: [EnergyAppSampler.SignificantApp] = []
-    private lazy var energyList = EnergyAppsListView(rowWidth: contentWidth - 20)
     private var energyModes = HardwareMonitor.EnergyModes()
     /// Last watt figure shown, so a fresh AnimatedValueField can ease from it
     /// instead of snapping (cards are rebuilt from scratch every poll).
@@ -2495,13 +2335,6 @@ final class BatteryPopover: NSObject {
         // so pick it up fresh on every open rather than only at popover
         // creation time.
         shell.refreshAppearance()
-        // Keep showing whatever energyApps last held (from the previous time
-        // this popover was open) instead of blanking to empty — resetting
-        // the sampler still means the *next* reading is measured fresh from
-        // now, but the list doesn't need to sit empty for a second while
-        // waiting for it.
-        energySampler.reset()
-        _ = energySampler.sample()   // baseline; real values from the next tick
         refreshEnergyModes()
         rebuild()
 
@@ -2549,15 +2382,6 @@ final class BatteryPopover: NSObject {
             self?.refreshValues()
         }
         if let t = pollTimer { RunLoop.current.add(t, forMode: .common) }
-
-        // The sampler needs some elapsed wall time to compute a fresh delta;
-        // 150ms clears its internal 100ms floor, so a currently-heavy app
-        // shows up almost immediately instead of after the first full
-        // 1-second poll tick.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self, self.window.isVisible else { return }
-            self.refreshValues()
-        }
     }
 
     func close() {
@@ -2573,7 +2397,7 @@ final class BatteryPopover: NSObject {
 
         let batteryCard = makeBatteryDetailCard(stats: s, contentWidth: contentWidth,
                                                 cornerRadius: cardCornerRadius,
-                                                energyModes: energyModes, energyAppsView: energyList,
+                                                energyModes: energyModes,
                                                 previousPowerWatts: lastPowerWatts) { [weak self] mode in
             self?.selectEnergyMode(mode)
         }
@@ -2586,21 +2410,7 @@ final class BatteryPopover: NSObject {
 
     private func refreshValues() {
         guard menuTrackingCount == 0 else { return }
-        let sampledApps = energySampler.sample()
-        let energyNamesChanged = sampledApps.map(\.name) != energyApps.map(\.name)
-        energyApps = sampledApps
-
-        if energyNamesChanged {
-            energyList.setApps(sampledApps, animated: true) { [weak self] in
-                self?.resizeWindow(animated: true)
-            }
-            return
-        }
-
         rebuild()
-        energyList.setApps(sampledApps, animated: false) { [weak self] in
-            self?.resizeWindow(animated: true)
-        }
     }
 
     /// Re-reads pmset's powermode values off-main and repaints when they land.

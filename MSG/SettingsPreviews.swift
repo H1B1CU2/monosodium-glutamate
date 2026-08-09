@@ -507,7 +507,7 @@ struct MusicPopoverScene: View {
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 HStack(spacing: 2) {
-                    ForEach(0..<4) { i in
+                    ForEach(0..<audioVisualizerBandCount, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 1)
                             .fill(Color.black.opacity(0.65))
                             .frame(width: 2, height: barH(i, at: t))
@@ -518,9 +518,8 @@ struct MusicPopoverScene: View {
     }
 
     private func barH(_ i: Int, at t: TimeInterval) -> CGFloat {
-        let offsets: [CGFloat] = [0, 0.4, 0.9, 1.3]
         let phase = t * 2 * .pi / 1.2
-        let h = sin(phase + offsets[i]) * 0.5 + 0.5
+        let h = sin(phase + CGFloat(i) * 0.45) * 0.5 + 0.5
         return 5 + h * 8
     }
 
@@ -861,7 +860,7 @@ struct PreviewMusicPill: View {
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 HStack(spacing: 1) {
-                    ForEach(0..<4) { i in
+                    ForEach(0..<audioVisualizerBandCount, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 0.75)
                             .fill(Color.black.opacity(0.6))
                             .frame(width: 1.5, height: barHeight(i, at: t))
@@ -872,9 +871,8 @@ struct PreviewMusicPill: View {
     }
 
     private func barHeight(_ i: Int, at t: TimeInterval) -> CGFloat {
-        let offsets: [CGFloat] = [0, 0.4, 0.9, 1.3]
         let phase = t * 2 * .pi / 1.2
-        let h = sin(phase + offsets[i]) * 0.5 + 0.5
+        let h = sin(phase + CGFloat(i) * 0.45) * 0.5 + 0.5
         return 2 + h * 4
     }
 }

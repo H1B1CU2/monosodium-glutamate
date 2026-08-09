@@ -270,7 +270,7 @@ final class IndicatorRenderer {
         }
         if isRowMorphing && !isMorphing {
             let fromDisplays = rowMorphFromCount > displays.count ? oldDisplays : displays
-            let fromW = gnomePillFixedWidth(for: fromDisplays, stackIndicators: stackIndicators)
+            let fromW = gnomePillFixedWidth(for: fromDisplays, stackIndicators: rowMorphFromStacked)
             let toW = targetWidth(for: displays, stackIndicators: stackIndicators)
             naturalW = fromW + (toW - fromW) * rmT
         }
@@ -306,7 +306,10 @@ final class IndicatorRenderer {
                     let isFadingRow = dIdx >= min(oldDisplays.count, displays.count)
                     var rowAlpha = isFadingRow ? alpha_row2 : 1.0
 
-                    if isRowMorphing && !isMorphing {
+                    // A row-layout change keeps every display visible: the same
+                    // display groups are only moving between inline and stacked
+                    // positions. Fade only when the display set itself changed.
+                    if isRowMorphing && !isMorphing && oldDisplays.count != displays.count {
                         if dIdx >= displays.count { rowAlpha = 1.0 - rmT }
                         else if dIdx >= rowMorphFromCount { rowAlpha = rmT }
                     }
@@ -314,10 +317,15 @@ final class IndicatorRenderer {
 
                     let toStacked = stackIndicators && displaysToDraw.count > 1
                     let fromStacked = isRowMorphing ? (rowMorphFromStacked && rowMorphFromCount > 1) : toStacked
-                    let isStacked = toStacked
+                    let stackProgress: CGFloat
+                    if isRowMorphing && fromStacked != toStacked {
+                        stackProgress = fromStacked ? (1.0 - rmT) : rmT
+                    } else {
+                        stackProgress = toStacked ? 1.0 : 0.0
+                    }
 
                     let rowY: CGFloat
-                    if !isStacked && !fromStacked {
+                    if !toStacked && !fromStacked {
                         rowY = (imgH - rowH) / 2
                     } else if isRowMorphing && fromStacked != toStacked {
                         let inlineY = (imgH - rowH) / 2
@@ -368,7 +376,7 @@ final class IndicatorRenderer {
                     let clampedPillIdx = max(1.0, min(countFloat, currentPillIdx))
 
                     let rowNaturalW = countFloat * dotD + max(0, countFloat - 1) * sp + (pillW - dotD)
-                    let rowStretch = isStacked ? max(0, naturalW - rowNaturalW) : 0
+                    let rowStretch = max(0, naturalW - rowNaturalW) * stackProgress
 
                     let metrics = PillMetrics(
                         dotD: dotD, pillW: pillW, pillH: pillH,
@@ -382,17 +390,14 @@ final class IndicatorRenderer {
                         if i > 1 { totalRowW += sp }
                     }
 
-                    var x: CGFloat
-                    if isStacked {
-                        x = (fixedW - totalRowW) / 2
-                    } else {
-                        x = inlineStartX + inlineXPos
-                        if dIdx > 0 {
-                            let sepX = x - 10
-                            let sepRect = NSRect(x: sepX, y: (imgH - 8) / 2, width: 1.5, height: 8)
-                            palette.dimFocus.withAlphaComponent(rowAlpha).set()
-                            NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
-                        }
+                    let inlineX = inlineStartX + inlineXPos
+                    let stackedX = (fixedW - totalRowW) / 2
+                    var x = inlineX + (stackedX - inlineX) * stackProgress
+                    if dIdx > 0 && stackProgress < 1.0 {
+                        let sepX = x - 10
+                        let sepRect = NSRect(x: sepX, y: (imgH - 8) / 2, width: 1.5, height: 8)
+                        palette.dimFocus.withAlphaComponent(rowAlpha * (1.0 - stackProgress)).set()
+                        NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                     }
                     // Directional stretch offset: smear toward destination
                     let stretchShift = isAnim ? pillStretchBase * pillDir * 0.35 : 0
@@ -408,9 +413,7 @@ final class IndicatorRenderer {
                         x += w
                         if i < count { x += sp }
                     }
-                    if !isStacked {
-                        inlineXPos += totalRowW + 16
-                    }
+                    inlineXPos += rowNaturalW + (isAnim ? pillStretchBase : 0) + 16
                 }
             }
             return true

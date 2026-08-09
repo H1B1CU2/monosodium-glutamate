@@ -670,6 +670,19 @@ final class Indicator {
         var naturalW: CGFloat
         if animLayoutProgress < 1.0 {
             naturalW = animLayoutMorphOldW + (animLayoutMorphNewW - animLayoutMorphOldW) * Easing.outQuart(animLayoutProgress)
+        } else if animRowMorphProgress < 1.0 && !shouldUseGridLayout {
+            let fromDisplays = animRowMorphFromCount > info.displays.count
+                ? previousLayoutDisplays
+                : info.displays
+            let fromW = renderer.gnomePillFixedWidth(
+                for: fromDisplays,
+                stackIndicators: animRowMorphFromStacked
+            )
+            let toW = renderer.targetWidth(
+                for: info.displays,
+                stackIndicators: stackIndicators
+            )
+            naturalW = fromW + (toW - fromW) * Easing.outQuart(animRowMorphProgress)
         } else if shouldUseGridLayout {
             let dims = gridDimensions(for: currentGridLayout)
             naturalW = renderer.gnomePillFixedWidth(

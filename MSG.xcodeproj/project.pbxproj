@@ -40,8 +40,8 @@
 		BB000022 /* SystemHUDMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000122 /* SystemHUDMonitor.swift */; };
 		BB000023 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000123 /* CoreAudio.framework */; };
 		BB000024 /* SystemHUDStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000125 /* SystemHUDStatusItem.swift */; };
-		BB000026 /* AirPodsBLEDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000127 /* AirPodsBLEDetector.swift */; };
-		BB000028 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB000129 /* CoreBluetooth.framework */; };
+		BB000029 /* AudioSpectrumTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012A /* AudioSpectrumTap.swift */; };
+		BB00002A /* InputSourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012B /* InputSourceMonitor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -83,8 +83,8 @@
 		BB000123 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
 		BB000124 /* FanControlHelper.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = FanControlHelper.c; sourceTree = "<group>"; };
 		BB000125 /* SystemHUDStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDStatusItem.swift; sourceTree = "<group>"; };
-		BB000127 /* AirPodsBLEDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirPodsBLEDetector.swift; sourceTree = "<group>"; };
-		BB000129 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
+		BB00012A /* AudioSpectrumTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSpectrumTap.swift; sourceTree = "<group>"; };
+		BB00012B /* InputSourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceMonitor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,7 +94,6 @@
 			files = (
 				BB000021 /* IOKit.framework in Frameworks */,
 				BB000023 /* CoreAudio.framework in Frameworks */,
-				BB000028 /* CoreBluetooth.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,7 +105,7 @@
 			children = (
 				BBA00001 /* Core */,
 				BBA00002 /* Spacer */,
-				BBA00003 /* Cornermization */,
+				BBA00003 /* Cornermizer */,
 				BBA00004 /* Music */,
 				BBA00005 /* Tray */,
 				BBA00008 /* Dock */,
@@ -142,7 +141,6 @@
 			children = (
 				BB000121 /* IOKit.framework */,
 				BB000123 /* CoreAudio.framework */,
-				BB000129 /* CoreBluetooth.framework */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -168,18 +166,17 @@
 				BB00010F /* MissionControlDetector.swift */,
 				BB000122 /* SystemHUDMonitor.swift */,
 				BB000125 /* SystemHUDStatusItem.swift */,
-				BB000127 /* AirPodsBLEDetector.swift */,
 			);
 			name = Spacer;
 			sourceTree = "<group>";
 		};
-		BBA00003 /* Cornermization */ = {
+		BBA00003 /* Cornermizer */ = {
 			isa = PBXGroup;
 			children = (
 				BB000106 /* CornerWindow.swift */,
 				BB00010E /* WallpaperEngine.swift */,
 			);
-			name = Cornermization;
+			name = Cornermizer;
 			sourceTree = "<group>";
 		};
 		BBA00004 /* Music */ = {
@@ -189,6 +186,8 @@
 				BB000119 /* MediaRemoteAdapter.swift */,
 				BB00011A /* MediaRemoteHelper.m */,
 				BB00010C /* MusicPopover.swift */,
+				BB00012A /* AudioSpectrumTap.swift */,
+				BB00012B /* InputSourceMonitor.swift */,
 			);
 			name = Music;
 			sourceTree = "<group>";
@@ -368,7 +367,8 @@
 				BB00001F /* HardwareStatusItem.swift in Sources */,
 				BB000022 /* SystemHUDMonitor.swift in Sources */,
 				BB000024 /* SystemHUDStatusItem.swift in Sources */,
-				BB000026 /* AirPodsBLEDetector.swift in Sources */,
+				BB000029 /* AudioSpectrumTap.swift in Sources */,
+				BB00002A /* InputSourceMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

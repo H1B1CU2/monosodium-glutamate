@@ -36,6 +36,8 @@ final class TrayState: ObservableObject {
     @Published var nowPlayingTitle:  String? = nil
     @Published var nowPlayingArtist: String? = nil
     @Published var nowPlayingSource: String? = nil
+    @Published var nowPlayingBundleID: String? = nil
+    @Published var nowPlayingAppIcon: NSImage? = nil
     @Published var isNowPlaying: Bool = false
     @Published var albumArt: NSImage? = nil
     @Published var desktopAppIDs: Set<String> = []
@@ -44,7 +46,9 @@ final class TrayState: ObservableObject {
     private let settings: AppSettings
     private let tracker  = TrayAppTracker()
     private let pins     = TrayPinSource()
-    private var musicMonitor: MusicMonitor?
+    /// Readable by TrayPanel so it can hold a Now Playing polling token while
+    /// the panel is on screen (F1 demand gating).
+    private(set) var musicMonitor: MusicMonitor?
     private var cancellables = Set<AnyCancellable>()
 
     private var hiddenAppIDs: Set<String> = []
@@ -99,6 +103,14 @@ final class TrayState: ObservableObject {
                 self.nowPlayingArtist  = m.currentArtist
                 self.nowPlayingSource  = m.currentSource
                 self.albumArt         = m.albumArt
+                if self.nowPlayingBundleID != m.currentSourceBundleID {
+                    self.nowPlayingBundleID = m.currentSourceBundleID
+                    self.nowPlayingAppIcon = m.currentSourceBundleID.flatMap { bid in
+                        NSRunningApplication.runningApplications(withBundleIdentifier: bid).first?.icon
+                            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid)
+                                .map { NSWorkspace.shared.icon(forFile: $0.path) }
+                    }
+                }
                 self.updatePlayingStatuses()
             }
         }
@@ -258,21 +270,111 @@ final class TrayState: ObservableObject {
 
     func activateSelection() {
         guard let app = previewedApp else { return }
-        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first {
-            running.activate(from: .current, options: [])
-        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id) {
-            NSWorkspace.shared.open(url)
-        }
+        focus(app)
         dismissAction?()
     }
 
     func activateWindowPreview(at index: Int) {
         guard let app = previewedApp else { return }
-        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first {
-            running.activate(from: .current, options: [])
-        }
         if app.pid > 0 { raiseAXWindow(pid: app.pid, at: index) }
+        focus(app)
         dismissAction?()
+    }
+
+    /// Brings an app to the foreground from this never-active background app.
+    ///
+    /// macOS 14+ cooperative activation silently ignores
+    /// `NSRunningApplication.activate` from a process that isn't the active app
+    /// — the call still returns true. AX frontmost (we hold Accessibility for
+    /// the ⌘⇥ tap) works in most cases; when the frontmost check still fails
+    /// shortly after, fall back to LaunchServices (the `open -a` path), which
+    /// the system honors for background callers.
+    private func focus(_ app: TrayApp) {
+        let running = (app.pid > 0 ? NSRunningApplication(processIdentifier: app.pid) : nil)
+            ?? NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first
+        guard let running, !running.isTerminated else {
+            launch(app.id)
+            return
+        }
+        if running.isHidden { running.unhide() }
+
+        let axApp = AXUIElementCreateApplication(running.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.25)   // a hung app must not stall the HUD
+        let windows = axWindows(axApp)
+
+        // Running but windowless (every window closed). Frontmost + activate
+        // puts it in the menu bar with nothing on screen, and because it *is*
+        // frontmost the fallback below never fires. LaunchServices sends the
+        // reopen AppleEvent instead — the Dock-click path, which makes the app
+        // recreate its default window.
+        guard !windows.isEmpty else {
+            launch(app.id)
+            return
+        }
+
+        unminimizeIfNeeded(windows)
+
+        AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        running.activate(from: .current, options: [.activateAllWindows])
+        raiseFrontWindow(windows)
+
+        let pid = running.processIdentifier
+        let bid = app.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                NSLog("Tray: activation of %@ not honored — falling back to LaunchServices", bid)
+                self?.launch(bid)
+            }
+        }
+    }
+
+    private func launch(_ bundleID: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { _, error in
+            if let error {
+                NSLog("Tray: LaunchServices activation failed for %@: %@", bundleID, String(describing: error))
+            }
+        }
+    }
+
+    private func axWindows(_ axApp: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return [] }
+        return windows
+    }
+
+    /// Frontmost alone doesn't pull in a window living on another Space or in
+    /// its own fullscreen Space — raising it does.
+    private func raiseFrontWindow(_ windows: [AXUIElement]) {
+        let target = windows.first { win in
+            var mini: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &mini)
+            return (mini as? Bool) != true
+        }
+        guard let target else { return }
+        AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(target, kAXRaiseAction as CFString)
+    }
+
+    /// An app whose windows are all minimized comes forward with nothing on
+    /// screen — restore its first minimized window so the switch is visible.
+    private func unminimizeIfNeeded(_ windows: [AXUIElement]) {
+        var firstMinimized: AXUIElement?
+        for win in windows {
+            var mini: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &mini)
+            if (mini as? Bool) == true {
+                if firstMinimized == nil { firstMinimized = win }
+            } else {
+                return   // has a visible window — nothing to restore
+            }
+        }
+        if let win = firstMinimized {
+            AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
     }
 
     private func raiseAXWindow(pid: pid_t, at index: Int) {
@@ -286,6 +388,7 @@ final class TrayState: ObservableObject {
             return (mini as? Bool) != true
         }
         guard index < visible.count else { return }
+        AXUIElementSetAttributeValue(visible[index], kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementPerformAction(visible[index], kAXRaiseAction as CFString)
     }
 

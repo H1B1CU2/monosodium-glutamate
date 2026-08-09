@@ -74,11 +74,13 @@ final class AppSettings {
         static let topCornersEnabled        = "topCornersEnabled"
         static let bottomCornersEnabled     = "bottomCornersEnabled"
         static let topCornersUnderMenuBar   = "topCornersUnderMenuBar"
+        static let topCornersFullscreenOnly = "topCornersFullscreenOnly"
         static let cornerGrowEnabled        = "cornerGrowEnabled"
         static let extCornerRadius          = "extCornerRadius"
         static let extTopCornersEnabled     = "extTopCornersEnabled"
         static let extBottomCornersEnabled  = "extBottomCornersEnabled"
         static let extTopCornersUnderMenuBar = "extTopCornersUnderMenuBar"
+        static let extTopCornersFullscreenOnly = "extTopCornersFullscreenOnly"
         static let mirrorMainDisplay        = "mirrorMainDisplay"
         static let externalMonitorCorners   = "externalMonitorCorners"
         static let stackMode                = "stackMode"
@@ -147,6 +149,8 @@ final class AppSettings {
         static let systemHUDBrightness         = "systemHUDBrightness"
         static let systemHUDPresentationMode   = "systemHUDPresentationMode"
         static let systemHUDDeviceIcons        = "systemHUDDeviceIcons"
+        static let inputSourceHUDEnabled       = "inputSourceHUDEnabled"
+        static let mediaKeyPriorityMusic       = "mediaKeyPriorityMusic"
     }
 
     static let shared = AppSettings()
@@ -166,6 +170,13 @@ final class AppSettings {
     }
     var topCornersUnderMenuBar: Bool {
         didSet { save(); if mirrorMainDisplay { extTopCornersUnderMenuBar = topCornersUnderMenuBar }; onChange?(.corners) }
+    }
+    /// Top corners only while the display is showing a fullscreen space — hidden
+    /// on the desktop. Driven per display by the CGS space type, not by the
+    /// overlay's own geometry (a canJoinAllSpaces window always reads the
+    /// desktop's, so it cannot see the fullscreen round trip itself).
+    var topCornersFullscreenOnly: Bool {
+        didSet { save(); if mirrorMainDisplay { extTopCornersFullscreenOnly = topCornersFullscreenOnly }; onChange?(.corners) }
     }
     /// Grow-in animation for corners (space switch, Mission Control exit).
     /// Behavioral (all displays), so no ext-mirroring.
@@ -211,12 +222,22 @@ final class AppSettings {
         UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersUnderMenuBar, uuid: uuid))
         onChange?(.corners)
     }
+    func extTopCornersFullscreenOnly(for uuid: String) -> Bool {
+        if mirrorMainDisplay { return topCornersFullscreenOnly }
+        return UserDefaults.standard.object(forKey: extKey(Key.extTopCornersFullscreenOnly, uuid: uuid)) as? Bool
+            ?? extTopCornersFullscreenOnly
+    }
+    func setExtTopCornersFullscreenOnly(_ v: Bool, for uuid: String) {
+        UserDefaults.standard.set(v, forKey: extKey(Key.extTopCornersFullscreenOnly, uuid: uuid))
+        onChange?(.corners)
+    }
 
     // Stored fallbacks for code that doesn't use UUIDs
     var extCornerRadius: CGFloat = 10       { didSet { save(); onChange?(.corners) } }
     var extTopCornersEnabled: Bool = true   { didSet { save(); onChange?(.corners) } }
     var extBottomCornersEnabled: Bool = true { didSet { save(); onChange?(.corners) } }
     var extTopCornersUnderMenuBar: Bool = false { didSet { save(); onChange?(.corners) } }
+    var extTopCornersFullscreenOnly: Bool = true { didSet { save(); onChange?(.corners) } }
 
     var mirrorMainDisplay: Bool {
         didSet {
@@ -226,6 +247,7 @@ final class AppSettings {
                 extTopCornersEnabled = topCornersEnabled
                 extBottomCornersEnabled = bottomCornersEnabled
                 extTopCornersUnderMenuBar = topCornersUnderMenuBar
+                extTopCornersFullscreenOnly = topCornersFullscreenOnly
             }
             onChange?(.structural)
         }
@@ -260,7 +282,14 @@ final class AppSettings {
     var dockPreviewHoverDelay: TimeInterval { didSet { save() } }
     var dockPreviewThumbHeight: CGFloat { didSet { save() } }
     var dockPreviewOffset: CGFloat   { didSet { save() } }
-    var displaplacerEnabled: Bool { didSet { save(); onChange?(.structural) } }
+    // Turning the feature off hides the only UI that can un-eject a display, so
+    // restore them first — otherwise a monitor stays dark with no way back to it.
+    var displaplacerEnabled: Bool {
+        didSet {
+            if !displaplacerEnabled && oldValue { DisplaplacerEngine.reconnectAll() }
+            save(); onChange?(.structural)
+        }
+    }
     var displaplacerPresets: [DisplaplacerPreset] { didSet { save() } }
     var menuBarSpacing: Int        { didSet { save() } }
     var menuBarSpacingPadding: Int { didSet { save() } }
@@ -308,6 +337,13 @@ final class AppSettings {
     var systemHUDPresentationMode: SystemHUDPresentationMode { didSet { save(); onChange?(.structural) } }
     var systemHUDDeviceIcons: Bool { didSet { save() } }
 
+    // Keyboard language HUD (space indicator morphs into the input source name)
+    var inputSourceHUDEnabled: Bool { didSet { save(); onChange?(.structural) } }
+
+    // Send the hardware play/next/previous keys to Music.app instead of
+    // whichever app macOS currently considers the Now Playing app.
+    var mediaKeyPriorityMusic: Bool { didSet { save(); onChange?(.structural) } }
+
     var effectiveDisplayCount: Int { NSScreen.screens.count + fakeDisplays.count }
 
     // MARK: Init
@@ -319,6 +355,7 @@ final class AppSettings {
             Key.topCornersEnabled:      true,
             Key.bottomCornersEnabled:   true,
             Key.topCornersUnderMenuBar: false,
+            Key.topCornersFullscreenOnly: true,
             Key.cornerGrowEnabled:      true,
             Key.extCornerRadius:        CGFloat(10),
             Key.extTopCornersEnabled:    true,
@@ -393,12 +430,15 @@ final class AppSettings {
             Key.systemHUDBrightness:     true,
             Key.systemHUDPresentationMode: SystemHUDPresentationMode.dynamic.rawValue,
             Key.systemHUDDeviceIcons:    true,
+            Key.inputSourceHUDEnabled:   true,
+            Key.mediaKeyPriorityMusic:   false,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
         topCornersEnabled        = d.bool(forKey: Key.topCornersEnabled)
         bottomCornersEnabled     = d.bool(forKey: Key.bottomCornersEnabled)
         topCornersUnderMenuBar   = d.bool(forKey: Key.topCornersUnderMenuBar)
+        topCornersFullscreenOnly = d.bool(forKey: Key.topCornersFullscreenOnly)
         cornerGrowEnabled        = d.bool(forKey: Key.cornerGrowEnabled)
         extCornerRadius          = CGFloat(d.float(forKey: Key.extCornerRadius))
         extTopCornersEnabled     = d.bool(forKey: Key.extTopCornersEnabled)
@@ -490,6 +530,8 @@ final class AppSettings {
         systemHUDBrightness = d.object(forKey: Key.systemHUDBrightness) as? Bool ?? true
         systemHUDPresentationMode = SystemHUDPresentationMode(rawValue: d.string(forKey: Key.systemHUDPresentationMode) ?? "") ?? .dynamic
         systemHUDDeviceIcons = d.object(forKey: Key.systemHUDDeviceIcons) as? Bool ?? true
+        inputSourceHUDEnabled = d.object(forKey: Key.inputSourceHUDEnabled) as? Bool ?? true
+        mediaKeyPriorityMusic = d.object(forKey: Key.mediaKeyPriorityMusic) as? Bool ?? false
     }
 
     private func save() {
@@ -499,6 +541,7 @@ final class AppSettings {
         d.set(topCornersEnabled,            forKey: Key.topCornersEnabled)
         d.set(bottomCornersEnabled,         forKey: Key.bottomCornersEnabled)
         d.set(topCornersUnderMenuBar,       forKey: Key.topCornersUnderMenuBar)
+        d.set(topCornersFullscreenOnly,     forKey: Key.topCornersFullscreenOnly)
         d.set(cornerGrowEnabled,            forKey: Key.cornerGrowEnabled)
         d.set(Float(extCornerRadius),       forKey: Key.extCornerRadius)
         d.set(extTopCornersEnabled,         forKey: Key.extTopCornersEnabled)
@@ -574,5 +617,7 @@ final class AppSettings {
         d.set(systemHUDBrightness, forKey: Key.systemHUDBrightness)
         d.set(systemHUDPresentationMode.rawValue, forKey: Key.systemHUDPresentationMode)
         d.set(systemHUDDeviceIcons, forKey: Key.systemHUDDeviceIcons)
+        d.set(inputSourceHUDEnabled, forKey: Key.inputSourceHUDEnabled)
+        d.set(mediaKeyPriorityMusic, forKey: Key.mediaKeyPriorityMusic)
     }
 }

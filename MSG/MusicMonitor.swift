@@ -54,7 +54,20 @@ final class MusicMonitor {
     /// state and the direct MR/AppleScript paths below become fallbacks.
     private let adapter = MediaRemoteAdapter()
 
-    private(set) var isPlaying = false
+    private(set) var isPlaying = false {
+        didSet {
+            guard oldValue != isPlaying else { return }
+            if !isPlaying {
+                // Stopping arms the responsiveness grace window (see
+                // desiredPollInterval) and a one-shot to re-evaluate the cadence
+                // once that window closes — nothing else would demote the timer.
+                lastPlaybackActivityAt = ProcessInfo.processInfo.systemUptime
+                armGraceExpiry()
+            } else {
+                graceExpiryTimer?.invalidate(); graceExpiryTimer = nil
+            }
+        }
+    }
     private(set) var currentTitle: String?
     private(set) var currentArtist: String?
     private(set) var volume: Int = 50
@@ -220,14 +233,51 @@ final class MusicMonitor {
     private var queryStartedAt: TimeInterval = 0
     private var lastMusicSource: MusicSource
 
-    /// Poll cadence. 1 s while something is playing (track changes, marquee, linger
-    /// need it); 5 s when idle — nothing on screen depends on sub-5s latency for the
-    /// transition from "nothing playing" to "playing", and the first poll that sees
-    /// playback immediately snaps the timer back to 1 s.
+    /// How long after playback stops the poller stays at its fast cadence.
+    private let playbackGraceWindow: TimeInterval = 45
+    private var lastPlaybackActivityAt: TimeInterval = -.greatestFiniteMagnitude
+    private var graceExpiryTimer: Timer?
+
+    private var inPlaybackGraceWindow: Bool {
+        ProcessInfo.processInfo.systemUptime - lastPlaybackActivityAt < playbackGraceWindow
+    }
+
+    /// Re-evaluate the cadence the moment the grace window closes. Without this
+    /// the timer would sit at the fast rate until the next state change.
+    private func armGraceExpiry() {
+        graceExpiryTimer?.invalidate()
+        let t = Timer(timeInterval: playbackGraceWindow + 0.1, repeats: false) { [weak self] _ in
+            self?.graceExpiryTimer = nil
+            self?.restartPollTimer()
+        }
+        t.tolerance = 2.0
+        RunLoop.main.add(t, forMode: .common)
+        graceExpiryTimer = t
+    }
+
+    /// Poll cadence. 1 s while something is playing (track changes, marquee and
+    /// linger all need it) and for `playbackGraceWindow` after it stops — someone
+    /// who just stopped is very likely to start again shortly (skipping a track,
+    /// switching album, a call ending), and dropping straight to the idle rate is
+    /// what made "stop, then play again" feel sluggish. Only once music has been
+    /// idle for the whole window does the rate decay, and even then a player
+    /// notification or a transport key wakes it instantly via `pokeNow()`.
     private func desiredPollInterval() -> TimeInterval {
         guard wantsNowPlaying else { return 0 }              // 0 == no timer at all
         if settings.musicSource == .appleMusic && !isAppleMusicRunning { return 3.0 }
-        return isPlaying ? 1.0 : 5.0
+        if isPlaying || inPlaybackGraceWindow { return 1.0 }
+        return 3.0
+    }
+
+    /// Something happened that plausibly started playback (a player posted a state
+    /// change, a transport key was pressed). Read immediately rather than waiting
+    /// out the current tick, and restore the fast cadence.
+    func pokeNow() {
+        guard wantsNowPlaying else { return }
+        lastPlaybackActivityAt = ProcessInfo.processInfo.systemUptime
+        armGraceExpiry()
+        restartPollTimer()
+        poll()
     }
 
     func restartPollTimer() {
@@ -265,15 +315,37 @@ final class MusicMonitor {
         }
     }
 
+    /// Player state-change broadcasts. Music.app and Spotify both post these the
+    /// instant playback starts or stops, with no entitlement needed and no cost
+    /// while nothing is playing — so the poller can idle slowly and still react
+    /// immediately for the two most common sources.
+    private static let playerNotifications = [
+        "com.apple.iTunes.playerInfo",
+        "com.spotify.client.PlaybackStateChanged",
+    ]
+    private var playerObservers: [NSObjectProtocol] = []
+
     func start() {
         restartPollTimer()
         if wantsNowPlaying { poll() }
         updateAppleMusicStateTimer()
+
+        guard playerObservers.isEmpty else { return }
+        let dnc = DistributedNotificationCenter.default()
+        for name in Self.playerNotifications {
+            playerObservers.append(dnc.addObserver(
+                forName: Notification.Name(name), object: nil, queue: .main
+            ) { [weak self] _ in self?.pokeNow() })
+        }
     }
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
         appleMusicStateTimer?.invalidate(); appleMusicStateTimer = nil
+        graceExpiryTimer?.invalidate(); graceExpiryTimer = nil
+        let dnc = DistributedNotificationCenter.default()
+        playerObservers.forEach { dnc.removeObserver($0) }
+        playerObservers.removeAll()
     }
 
     private func poll() {

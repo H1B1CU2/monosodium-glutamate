@@ -36,6 +36,19 @@ final class SystemHUDMonitor {
     /// `(kind, value 0…1, muted, outputKind)` — fired on the main thread after a change.
     var onChange: ((SystemHUDKind, CGFloat, Bool, AudioOutputKind?) -> Void)?
 
+    /// Asked on every transport key press: return `true` to take the key away
+    /// from the system Now Playing app and deliver it via `onMediaKey` instead.
+    /// Runs inside the tap callback, so it must answer from cached state only.
+    var shouldRouteMediaKey: (() -> Bool)?
+
+    /// A transport key that `shouldRouteMediaKey` claimed. Main thread.
+    var onMediaKey: ((MediaKeyAction) -> Void)?
+
+    /// Fired for every transport key press, whoever ends up handling it, so the
+    /// music monitor can read Now Playing immediately instead of waiting out its
+    /// current poll interval. Main thread.
+    var onTransportKey: (() -> Void)?
+
     private let settings: AppSettings
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -55,6 +68,12 @@ final class SystemHUDMonitor {
         static let brightnessUp   = 2
         static let brightnessDown = 3
         static let mute           = 7
+        static let play           = 16
+        static let next           = 17
+        static let previous       = 18
+        /// Sent instead of next/previous while the key is held (scrub).
+        static let fast           = 19
+        static let rewind         = 20
     }
 
     private static let systemDefinedType: UInt32 = 14   // NX_SYSDEFINED
@@ -66,7 +85,6 @@ final class SystemHUDMonitor {
     // MARK: Lifecycle
 
     func start() {
-        AirPodsBLEDetector.shared.start()
         guard eventTap == nil else { return }
 
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -97,7 +115,6 @@ final class SystemHUDMonitor {
     }
 
     func stop() {
-        AirPodsBLEDetector.shared.stop()
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         eventTap = nil
@@ -124,21 +141,46 @@ final class SystemHUDMonitor {
         let isRepeat = (keyFlags & 0x1) == 1
         let fine = event.flags.contains(.maskShift) && event.flags.contains(.maskAlternate)
 
+        // The HUD keys check `systemHUDEnabled` as well as their own toggle: the
+        // tap also runs for media-key routing alone, and must then leave the
+        // volume and brightness keys entirely to macOS.
         switch keyCode {
         case AuxKey.soundUp, AuxKey.soundDown:
-            guard settings.systemHUDVolume else { return false }
+            guard settings.systemHUDEnabled, settings.systemHUDVolume else { return false }
             if isDown { adjustVolume(up: keyCode == AuxKey.soundUp, fine: fine) }
             return true
 
         case AuxKey.mute:
-            guard settings.systemHUDVolume else { return false }
+            guard settings.systemHUDEnabled, settings.systemHUDVolume else { return false }
             if isDown && !isRepeat { toggleMute() }
             return true
 
         case AuxKey.brightnessUp, AuxKey.brightnessDown:
-            guard settings.systemHUDBrightness, builtinDisplay() != nil else { return false }
+            guard settings.systemHUDEnabled, settings.systemHUDBrightness, builtinDisplay() != nil else { return false }
             if isDown { adjustBrightness(up: keyCode == AuxKey.brightnessUp, fine: fine) }
             return true
+
+        case AuxKey.play, AuxKey.next, AuxKey.previous:
+            // Tell the music monitor regardless of who ends up handling the key:
+            // a transport press means playback state is about to change, and
+            // reading immediately is what keeps the indicator feeling instant
+            // when the poller has backed off. Never changes the return value.
+            if isDown && !isRepeat { onTransportKey?() }
+            guard shouldRouteMediaKey?() == true else { return false }
+            if isDown && !isRepeat {
+                switch keyCode {
+                case AuxKey.play:     onMediaKey?(.playPause)
+                case AuxKey.next:     onMediaKey?(.next)
+                default:              onMediaKey?(.previous)
+                }
+            }
+            return true
+
+        // Swallowed while routing is active so a held next/previous can't leak
+        // to the app we just took the key from. Music has no AppleScript scrub
+        // command worth mapping these to, so they do nothing beyond that.
+        case AuxKey.fast, AuxKey.rewind:
+            return shouldRouteMediaKey?() == true
 
         default:
             return false
@@ -200,13 +242,36 @@ final class SystemHUDMonitor {
         return status == noErr && deviceID != 0 ? deviceID : nil
     }
 
+    /// Bluetooth ProductIDs of Apple audio accessories (VendorID 0x004C),
+    /// mapped to the closest icon this app draws. AirPods Max has no
+    /// dedicated over-ear glyph in the symbol family, so it maps to the
+    /// `.headphones` silhouette rather than the earbud-shaped `.airPods` one.
+    /// IDs cross-checked against furiousMAC's continuity protocol docs and
+    /// the BLE-DB dataset (the BLE Proximity Pairing model field is the same
+    /// value byte-swapped).
+    private static let appleAudioProductKinds: [UInt16: AudioOutputKind] = [
+        0x200E: .airPodsPro, // AirPods Pro (1st gen)
+        0x2014: .airPodsPro, // AirPods Pro (2nd gen, Lightning)
+        0x2024: .airPodsPro, // AirPods Pro (2nd gen, USB-C) — confirmed live on this device
+        0x2002: .airPods,    // AirPods (1st gen)
+        0x200F: .airPods,    // AirPods (2nd gen)
+        0x2013: .airPods,    // AirPods (3rd gen)
+        0x2019: .airPods,    // AirPods (4th gen)
+        0x201B: .airPods,    // AirPods (4th gen, ANC) — stemless like regular AirPods, not Pro-shaped
+        0x200A: .headphones, // AirPods Max (Lightning)
+        0x201F: .headphones, // AirPods Max (USB-C)
+    ]
+
     private func audioOutputKind(for device: AudioDeviceID) -> AudioOutputKind {
-        // Prefer BLE-based model detection when it has a fresh reading — it
-        // identifies the real hardware, unlike the name-based checks below
-        // which break the moment the device is renamed in Bluetooth settings.
+        // For Bluetooth outputs, CoreAudio's ModelUID carries the accessory's
+        // real Bluetooth ProductID/VendorID as "<pid> <vid>" hex (e.g.
+        // "2024 4c" for AirPods Pro 2). That identifies the exact hardware
+        // model of the device audio is actually routed to, unlike the
+        // name-based checks below which break the moment the device is
+        // renamed in Bluetooth settings.
         if audioDeviceTransportType(device) == kAudioDeviceTransportTypeBluetooth,
-           let bleKind = AirPodsBLEDetector.shared.currentKind() {
-            return bleKind
+           let kind = appleAudioKindFromModelUID(device) {
+            return kind
         }
 
         let name = audioDeviceName(device).lowercased()
@@ -235,6 +300,16 @@ final class SystemHUDMonitor {
         }
 
         return .speaker
+    }
+
+    private func appleAudioKindFromModelUID(_ device: AudioDeviceID) -> AudioOutputKind? {
+        let parts = audioDeviceStringProperty(kAudioDevicePropertyModelUID, device: device)
+            .split(separator: " ")
+        guard parts.count == 2,
+              let pid = UInt16(parts[0], radix: 16),
+              let vid = UInt16(parts[1], radix: 16),
+              vid == 0x004C else { return nil }
+        return Self.appleAudioProductKinds[pid]
     }
 
     private func audioDeviceName(_ device: AudioDeviceID) -> String {

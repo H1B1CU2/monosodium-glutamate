@@ -6,6 +6,10 @@ import AppKit
 /// black corner masks. One window per managed screen.
 final class CornerWindow: NSWindow {
 
+    /// Above every normal and assistive-tech window. Hoisted so the watchdog can
+    /// re-assert it after something else clobbers the ordering.
+    static let cornerLevel = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
+
     let targetScreen: NSScreen
     var displayUUID: String? { view.displayUUID }
     private let view: CornerView
@@ -26,7 +30,7 @@ final class CornerWindow: NSWindow {
         isOpaque           = false
         hasShadow          = false
         ignoresMouseEvents = true
-        level              = NSWindow.Level(Int(kCGAssistiveTechHighWindowLevel))
+        level              = Self.cornerLevel
         animationBehavior  = .none
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
 
@@ -40,6 +44,9 @@ final class CornerWindow: NSWindow {
     }
 
     func updateFrame() {
+        // A stale NSScreen reports .zero — resizing to it would blank the overlay
+        // for good. Leave the last good frame up; the watchdog rebuilds us.
+        guard targetScreen.frame.width > 0, targetScreen.frame.height > 0 else { return }
         view.alphaValue = 1
         setFrame(targetScreen.frame, display: true)
         view.targetScreen = targetScreen
@@ -52,9 +59,20 @@ final class CornerWindow: NSWindow {
         view.display()
     }
 
+    /// Hide or show the top corners (Mission Control, or the fullscreen-only mode
+    /// on a desktop space).
+    ///
+    /// Redraws only on an actual change — the watchdog calls this every ~2 s to
+    /// heal a missed edge, and an unconditional `redraw()` would repaint all four
+    /// corners on every pass.
+    ///
+    /// Do NOT invalidate growTimer here. It is shared with the bottom corners,
+    /// which are still on screen; killing it strands bottomGrowProgress at a
+    /// partial value with nothing left to re-ramp it. It self-invalidates within
+    /// 0.25 s anyway, and the top ramp it drives is invisible while skipped.
     func setSkipTop(_ skip: Bool) {
+        guard view.skipTopCorners != skip else { return }
         view.skipTopCorners = skip
-        if skip { growTimer?.invalidate(); growTimer = nil }   // hidden now (Mission Control)
         redraw()
     }
 
@@ -80,6 +98,17 @@ final class CornerWindow: NSWindow {
         guard awaitingSlideGrow else { return }
         awaitingSlideGrow = false
         startGrowIn()
+    }
+
+    /// Watchdog hook: with no timer running and no slide pending, any progress
+    /// below 1 is stranded — snap it to full rather than leaving the corners
+    /// permanently undersized.
+    func healStrandedGrow() {
+        guard growTimer == nil, !awaitingSlideGrow else { return }
+        guard view.topGrowProgress < 1 || view.bottomGrowProgress < 1 else { return }
+        view.topGrowProgress = 1
+        view.bottomGrowProgress = 1
+        view.display()
     }
 
     /// Ramps armed corners' radius from 0 → full over `duration` using the
@@ -161,8 +190,19 @@ final class CornerView: NSView {
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)
 
+        // Same inset on desktop and fullscreen spaces. Measured on macOS 26 with a
+        // fullscreen Safari: the menu bar is still on screen (Window Server window
+        // 1512x33 at y=0) and the app's content starts at y=33, exactly as on the
+        // desktop. Snapping this to 0 for fullscreen puts the masks on the
+        // display's hardware-rounded corner, where they are invisible.
         let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
-        let skipTop = skipTopCorners || (underBar && !NSMenu.menuBarVisible())
+        // No menu-bar proxy here. `underBar && !NSMenu.menuBarVisible()` used to
+        // stand in for "no menu bar, so nothing to sit below", but hiding is the
+        // wrong response — an invisible corner mask is the one failure mode with
+        // no recovery the user can see. Measured on macOS 26: menuBarVisible() is
+        // true on fullscreen spaces anyway (the bar really is on screen), so the
+        // clause was inert here regardless.
+        let skipTop = skipTopCorners
         let topShown = topEnabled && !skipTop
 
         // Detect a hidden→shown transition (Mission Control closed, or left a

@@ -3,34 +3,6 @@ import ApplicationServices
 import Combine
 import SwiftUI
 
-// MARK: - Private SkyLight window-raising bindings
-
-/// Brings a specific window (and its owning process) to the front, switching to
-/// that window's Space if it lives on another one — the reliable cross-Space
-/// focus path. `mode` 0x200 = `kCPSUserGenerated`.
-@_silgen_name("_SLPSSetFrontProcessWithOptions")
-private func _SLPSSetFrontProcessWithOptions(_ psn: inout ProcessSerialNumber,
-                                             _ wid: CGWindowID, _ mode: UInt32) -> CGError
-
-/// Posts a raw window event (used to make the raised window the key window so
-/// keyboard focus follows it).
-@_silgen_name("SLPSPostEventRecordTo")
-private func SLPSPostEventRecordTo(_ psn: inout ProcessSerialNumber,
-                                   _ bytes: UnsafePointer<UInt8>) -> CGError
-
-@_silgen_name("GetProcessForPID")
-private func GetProcessForPID(_ pid: pid_t, _ psn: inout ProcessSerialNumber) -> OSStatus
-
-@_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement,
-                                   _ identifier: UnsafeMutablePointer<CGWindowID>) -> AXError
-
-@_silgen_name("_AXUIElementCreateWithRemoteToken")
-private func _AXUIElementCreateWithRemoteToken(_ token: CFData) -> Unmanaged<AXUIElement>?
-
-private typealias AXUIElementID = UInt64
-
-
 // MARK: - DockItem
 
 /// A live application tile in the real macOS Dock, resolved via Accessibility.
@@ -41,8 +13,11 @@ private struct DockItem: Equatable {
     /// Tile frame in Cocoa (bottom-left origin) global coordinates.
     let frame: CGRect
 
+    /// Identity is the app, not the tile rect — with Dock magnification the same
+    /// tile's frame changes on every mouse move, and frame-sensitive equality
+    /// would re-trigger capture continuously while gliding.
     static func == (lhs: DockItem, rhs: DockItem) -> Bool {
-        lhs.pid == rhs.pid && lhs.frame == rhs.frame
+        lhs.pid == rhs.pid
     }
 }
 
@@ -51,7 +26,9 @@ private struct DockItem: Equatable {
 /// Watches the system Dock and shows a native-looking window-preview panel when
 /// the cursor rests on a running app's tile. Clicking a thumbnail raises that
 /// exact window and activates the app. Layers on top of the Dock — it never
-/// touches or suppresses native Dock behavior.
+/// touches or suppresses native Dock behavior. All AX/SkyLight window plumbing
+/// lives in `WindowPreviewCapture`; this type only tracks hover state and owns
+/// the panel UI.
 @available(macOS 14.0, *)
 final class DockHoverController {
 
@@ -71,6 +48,9 @@ final class DockHoverController {
     private var isPanelVisible = false
     /// Generation counter so a slow async capture for an abandoned tile is ignored.
     private var captureToken = 0
+
+    private var lastMoveStamp: CFAbsoluteTime = 0
+    private var dockOrientationCache: (stamp: CFAbsoluteTime, value: String)?
 
     private var panel: DockPreviewPanel?
     private var dockApp: AXUIElement?
@@ -110,33 +90,60 @@ final class DockHoverController {
     // MARK: Mouse tracking
 
     private func handleMouseMoved() {
+        // Mouse-moved events stream at display refresh rate; 40 Hz is plenty for
+        // hover intent and caps the per-move work.
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastMoveStamp < 0.025 { return }
+        lastMoveStamp = now
+
         let mouse = NSEvent.mouseLocation
 
-        // Over a Dock app tile?
-        if let item = dockItem(at: mouse) {
-            // Same tile already hovered/shown/queued — nothing to do.
-            if item == hoveredItem { return }
-            hoveredItem = item
+        // Only AX-hit-test the Dock when the cursor is inside the band of screen
+        // the Dock occupies — moves everywhere else cost a few rect checks.
+        if isNearDock(mouse) {
+            switch dockHit(at: mouse) {
+            case .app(let item):
+                // Same tile already hovered/shown/queued — just refresh its frame
+                // (magnification inflates it while the cursor rides the tile).
+                if item == hoveredItem {
+                    hoveredItem = item
+                    return
+                }
+                hoveredItem = item
 
-            // Gliding onto a tile whose app has no previewable windows: drop any
-            // visible/queued preview immediately (don't let the previous app's
-            // card linger).
-            if !WindowPreviewCapture.hasPreviewableWindows(pid: item.pid) {
-                cancelPendingShow()
-                let savedItem = hoveredItem
-                if shownItem != nil { hide() }
-                hoveredItem = savedItem
+                // Gliding onto a tile whose app has no previewable windows: drop
+                // any visible/queued preview immediately (don't let the previous
+                // app's card linger).
+                if !WindowPreviewCapture.hasPreviewableWindows(pid: item.pid) {
+                    cancelPendingShow()
+                    let savedItem = hoveredItem
+                    if shownItem != nil { hide() }
+                    hoveredItem = savedItem
+                    return
+                }
+
+                if isPanelVisible {
+                    // A preview is already up → glide to the new tile instantly.
+                    switchTo(item)
+                } else {
+                    // First appearance → wait out the hover-intent delay.
+                    scheduleShow(for: item)
+                }
                 return
-            }
 
-            if isPanelVisible {
-                // A preview is already up → glide to the new tile instantly.
-                switchTo(item)
-            } else {
-                // First appearance → wait out the hover-intent delay.
-                scheduleShow(for: item)
+            case .otherTile:
+                // Over a Dock tile that can never have a preview (a non-running
+                // app, folder, Trash, a minimized-window tile). Hide immediately —
+                // the bridge region below must not keep the previous app's card
+                // alive across foreign tiles.
+                hoveredItem = nil
+                cancelPendingShow()
+                if shownItem != nil { hide() }
+                return
+
+            case .none:
+                break
             }
-            return
         }
 
         // Not over a tile — keep alive only while inside the panel (or the small
@@ -210,7 +217,7 @@ final class DockHoverController {
         Task { @MainActor [weak self] in
             let windows = await WindowPreviewCapture.capture(pid: pid)
             guard let self, self.captureToken == token, self.pendingItem == item else { return }
-            
+
             let isWindowed = !windows.isEmpty && !(windows.count == 1 && windows[0].id == 0)
             if isWindowed {
                 self.present(item: item, windows: windows)
@@ -246,8 +253,7 @@ final class DockHoverController {
             offset: settings.dockPreviewOffset,
             anchor: item.frame,
             onSelect: { [weak self] win in
-                let index = windows.firstIndex(where: { $0.id == win.id }) ?? 0
-                self?.activate(item: item, window: win, at: index)
+                self?.activate(item: item, window: win)
             },
             onClose: { [weak self] win in
                 self?.closeWindow(pid: item.pid, windowID: win.id)
@@ -267,132 +273,22 @@ final class DockHoverController {
 
     // MARK: Activation
 
-    private func activate(item: DockItem, window: CapturedWindow, at index: Int) {
-        // Baseline app activation (bundle-id preferred, as before).
-        if let bid = item.bundleID,
-           let running = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first {
-            running.activate(from: .current, options: [])
-        } else {
-            NSRunningApplication(processIdentifier: item.pid)?.activate(from: .current, options: [])
-        }
-        // Authoritative: un-minimize, switch to its Space, and raise it topmost.
-        raiseWindow(pid: item.pid, windowID: window.id, matching: window.bounds, at: index)
+    private func activate(item: DockItem, window: CapturedWindow) {
+        let pid = item.pid
+        let windowID = window.id
+        let bounds = window.bounds
         hide()
-    }
-
-    private func findAXWindow(pid: pid_t, windowID: CGWindowID) -> AXUIElement? {
-        var token = Data(count: 20)
-        token.replaceSubrange(0 ..< 4, with: withUnsafeBytes(of: pid) { Data($0) })
-        token.replaceSubrange(4 ..< 8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })
-        token.replaceSubrange(8 ..< 12, with: withUnsafeBytes(of: Int32(0x636F_636F)) { Data($0) })
-
-        for axId: AXUIElementID in 0 ..< 1000 {
-            token.replaceSubrange(12 ..< 20, with: withUnsafeBytes(of: axId) { Data($0) })
-            guard let el = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue() else {
-                continue
-            }
-            var wid: CGWindowID = 0
-            _ = _AXUIElementGetWindow(el, &wid)
-            if wid == windowID {
-                return el
-            }
+        // The AX lookup may brute-force remote tokens (slow sync IPC) — keep it
+        // off the main thread; the backend hops to main only where required.
+        Task {
+            await WindowPreviewCapture.raiseWindow(pid: pid, windowID: windowID, fallbackBounds: bounds)
         }
-        return nil
     }
 
     private func closeWindow(pid: pid_t, windowID: CGWindowID) {
-        guard let el = findAXWindow(pid: pid, windowID: windowID) else { return }
-        var closeButton: CFTypeRef?
-        if AXUIElementCopyAttributeValue(el, kAXCloseButtonAttribute as CFString, &closeButton) == .success {
-            AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
+        Task {
+            await WindowPreviewCapture.closeWindow(pid: pid, windowID: windowID)
         }
-    }
-
-    /// Brings the clicked window to the front: finds the AX window best matching
-    /// the captured bounds, un-minimizes it, switches to its Space, and raises it
-    /// topmost (keyboard focus follows). Falls back to plain app activation.
-    private func raiseWindow(pid: pid_t, windowID: CGWindowID, matching target: CGRect, at index: Int) {
-        // Activate process first (matching DockDoor's bringToFront)
-        if let app = NSRunningApplication(processIdentifier: pid) {
-            app.activate(options: [])
-        }
-
-        // Try to find the exact AX window (including brute force remote search across Spaces)
-        var targetAXWindow = findAXWindow(pid: pid, windowID: windowID)
-
-        if targetAXWindow == nil {
-            let axApp = AXUIElementCreateApplication(pid)
-            var value: CFTypeRef?
-            let windows = (AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success)
-                ? (value as? [AXUIElement]) ?? [] : []
-
-            if windowID == 0 {
-                var bestDist = CGFloat.greatestFiniteMagnitude
-                for win in windows {
-                    guard let frame = axFrame(of: win) else { continue }
-                    let dx = frame.midX - target.midX
-                    let dy = frame.midY - target.midY
-                    let dist = dx * dx + dy * dy
-                    if dist < bestDist { bestDist = dist; targetAXWindow = win }
-                }
-                if targetAXWindow == nil {
-                    targetAXWindow = windows.first
-                }
-            }
-        }
-
-        // Un-minimize if needed
-        if let win = targetAXWindow {
-            var mini: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &mini)
-            if (mini as? Bool) == true {
-                AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, false as CFTypeRef)
-            }
-        }
-
-        // Bring this exact window's process+window to the front using SkyLight APIs
-        if windowID != 0 {
-            var psn = ProcessSerialNumber()
-            if GetProcessForPID(pid, &psn) == noErr {
-                _ = _SLPSSetFrontProcessWithOptions(&psn, windowID, 0x200) // kCPSUserGenerated
-                makeKeyWindow(psn: &psn, windowID: windowID)
-            }
-        }
-
-        // Raise window and make it main window topmost (matching DockDoor's bringToFront)
-        if let win = targetAXWindow {
-            AXUIElementSetAttributeValue(win, kAXMainWindowAttribute as CFString, true as CFTypeRef)
-            AXUIElementPerformAction(win, kAXRaiseAction as CFString)
-        }
-    }
-
-    /// Posts the two raw window events that make `windowID` the key window so
-    /// keyboard focus follows it across the Space switch (AltTab's technique).
-    private func makeKeyWindow(psn: inout ProcessSerialNumber, windowID: CGWindowID) {
-        var wid = windowID
-        var bytes = [UInt8](repeating: 0, count: 0xf8)
-        bytes[0x04] = 0xf8
-        bytes[0x08] = 0x01
-        bytes[0x3a] = 0x10
-        memcpy(&bytes[0x3c], &wid, MemoryLayout<CGWindowID>.size)
-        memset(&bytes[0x20], 0xff, 0x10)
-        bytes[0x08] = 0x02
-        _ = SLPSPostEventRecordTo(&psn, &bytes)
-        bytes[0x08] = 0x01
-        _ = SLPSPostEventRecordTo(&psn, &bytes)
-    }
-
-    private func axFrame(of element: AXUIElement) -> CGRect? {
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success
-        else { return nil }
-        var pos = CGPoint.zero
-        var size = CGSize.zero
-        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
-        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
-        return CGRect(origin: pos, size: size)
     }
 
     // MARK: Dock Accessibility
@@ -403,21 +299,70 @@ final class DockHoverController {
         }
     }
 
-    /// Hit-tests the Dock for a running-application tile under the given Cocoa point.
-    private func dockItem(at cocoaPoint: NSPoint) -> DockItem? {
+    /// True when the point sits in the strip of any screen the Dock occupies
+    /// (pinned inset plus magnification headroom; a fixed reveal band when the
+    /// Dock auto-hides). Gates the per-move AX hit-test.
+    private func isNearDock(_ p: NSPoint) -> Bool {
+        let orientation = dockOrientation()
+        for screen in NSScreen.screens {
+            let f = screen.frame
+            let v = screen.visibleFrame
+            let band: CGRect
+            switch orientation {
+            case "left":
+                let inset = max(0, v.minX - f.minX)
+                let thickness = inset > 0 ? inset + 100 : 150
+                band = CGRect(x: f.minX, y: f.minY, width: thickness, height: f.height)
+            case "right":
+                let inset = max(0, f.maxX - v.maxX)
+                let thickness = inset > 0 ? inset + 100 : 150
+                band = CGRect(x: f.maxX - thickness, y: f.minY, width: thickness, height: f.height)
+            default: // bottom
+                let inset = max(0, v.minY - f.minY)
+                let thickness = inset > 0 ? inset + 100 : 150
+                band = CGRect(x: f.minX, y: f.minY, width: f.width, height: thickness)
+            }
+            if band.contains(p) { return true }
+        }
+        return false
+    }
+
+    private func dockOrientation() -> String {
+        let now = CFAbsoluteTimeGetCurrent()
+        if let c = dockOrientationCache, now - c.stamp < 10 { return c.value }
+        let value = UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom"
+        dockOrientationCache = (now, value)
+        return value
+    }
+
+    /// What sits under the cursor in the Dock.
+    private enum DockHit {
+        /// A running application's tile — the only thing that gets a preview.
+        case app(DockItem)
+        /// Some other Dock tile: a non-running app, folder, Trash, a minimized
+        /// window, the separator. A preview can never belong to it, so hovering
+        /// one must drop any visible card.
+        case otherTile
+        /// No Dock tile at all under the point.
+        case none
+    }
+
+    /// Hit-tests the Dock for the tile under the given Cocoa point.
+    private func dockHit(at cocoaPoint: NSPoint) -> DockHit {
         if dockApp == nil { resolveDockElement() }
-        guard let dockApp else { return nil }
+        guard let dockApp else { return .none }
 
         let axPoint = Self.cocoaToAX(cocoaPoint)
         var element: AXUIElement?
         guard AXUIElementCopyElementAtPosition(dockApp, Float(axPoint.x), Float(axPoint.y), &element) == .success,
-              let el = element else { return nil }
+              let el = element else { return .none }
 
         var subroleRef: CFTypeRef?
         AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &subroleRef)
-        guard (subroleRef as? String) == "AXApplicationDockItem" else { return nil }
+        guard let subrole = subroleRef as? String, subrole.hasSuffix("DockItem") else { return .none }
+        guard subrole == "AXApplicationDockItem" else { return .otherTile }
 
-        guard let frame = axFrame(of: el) else { return nil }
+        guard let frame = WindowPreviewCapture.axFrame(of: el) else { return .otherTile }
         let cocoaFrame = Self.axRectToCocoa(frame)
 
         var titleRef: CFTypeRef?
@@ -425,7 +370,8 @@ final class DockHoverController {
         let title = (titleRef as? String) ?? ""
 
         // Resolve the running app behind the tile via its file URL, falling back
-        // to a name match. Only running apps (with a pid) get a preview.
+        // to a name match. Only running apps (with a pid) get a preview — an app
+        // tile without one (app not launched) is just another foreign tile.
         var urlRef: CFTypeRef?
         AXUIElementCopyAttributeValue(el, kAXURLAttribute as CFString, &urlRef)
         let bundleID: String? = (urlRef as? URL).flatMap { Bundle(url: $0)?.bundleIdentifier }
@@ -435,12 +381,12 @@ final class DockHoverController {
                 $0.activationPolicy == .regular && $0.localizedName == title
             }
         guard let app = running,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return .otherTile }
 
-        return DockItem(pid: app.processIdentifier,
-                        bundleID: app.bundleIdentifier ?? bundleID,
-                        name: app.localizedName ?? title,
-                        frame: cocoaFrame)
+        return .app(DockItem(pid: app.processIdentifier,
+                             bundleID: app.bundleIdentifier ?? bundleID,
+                             name: app.localizedName ?? title,
+                             frame: cocoaFrame))
     }
 
     // MARK: Coordinate conversion (Cocoa bottom-left ⇄ AX/Quartz top-left)

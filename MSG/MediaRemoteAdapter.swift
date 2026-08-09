@@ -23,6 +23,9 @@ final class MediaRemoteAdapter {
         let artist: String?
         let pid: pid_t
         let art: NSImage?
+        /// Artwork referenced by URL instead of embedded bytes — macOS 26+
+        /// snapshots only carry the artwork identifier (a CDN URL for Music).
+        let artURL: URL?
     }
 
     /// The most recent successful read (used by the Apple Music art path).
@@ -116,7 +119,8 @@ final class MediaRemoteAdapter {
             title: obj["title"] as? String,
             artist: obj["artist"] as? String,
             pid: pid_t(obj["pid"] as? Int ?? 0),
-            art: art
+            art: art,
+            artURL: (obj["artURL"] as? String).flatMap(URL.init(string:))
         )
     }
 

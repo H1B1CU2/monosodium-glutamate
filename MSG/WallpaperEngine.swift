@@ -21,6 +21,37 @@ final class WallpaperEngine {
     private let settings: AppSettings
     private let queue = DispatchQueue(label: "msg.wallpaper", qos: .utility)
 
+    // MARK: - Debug logging
+
+    /// Off unless `defaults write H1D3S1GN.MSG MSGWallpaperDebug -bool YES`.
+    /// Same pattern as the slide log in AppDelegate (see F6): a shipping build
+    /// with the key unset never creates the file and never formats a string.
+    private static let debugEnabled =
+        UserDefaults.standard.bool(forKey: "MSGWallpaperDebug")
+
+    /// Appends to /tmp/msg_wallpaper_debug.log, rotating at 512 KB.
+    /// `@autoclosure` so the message isn't built when logging is off.
+    static func wpLog(_ s: @autoclosure () -> String) {
+        guard debugEnabled else { return }
+        let url = URL(fileURLWithPath: "/tmp/msg_wallpaper_debug.log")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           (attrs[.size] as? Int ?? 0) > 512_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let line = "\(Date()) \(s())\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Short name for a wallpaper URL — "BAKE:uuid_a.png" or "user:Foo.heic".
+    static func wpName(_ u: URL?) -> String {
+        guard let u else { return "nil" }
+        return isMSGFile(url: u) ? "BAKE:\(u.lastPathComponent)" : "user:\(u.lastPathComponent)"
+    }
+
     private var screens: [String: ScreenState] = [:]
     private var pollTimer: Timer?
     private var spaceObserver: NSObjectProtocol?
@@ -80,12 +111,13 @@ final class WallpaperEngine {
     /// Stays true from the moment an external change is detected until fetch() is called.
     /// Survives settings-pane navigation so auto-apply stays suppressed until resolved.
     private(set) var externalChangePending: Bool = false
+    private var pendingSince: TimeInterval = 0
 
     /// Set by Indicator when SystemState detects MC entry/exit.
     /// Suppresses the polling IPC check so we don't contend with WindowServer during MC animations.
     var isMissionControlActive = false
 
-    /// True while the Cornermization pane is open. Suppresses automatic
+    /// True while the Cornermizer pane is open. Suppresses automatic
     /// resolution of external wallpaper changes (the pane shows a confirmation
     /// card instead) and automatic re-bakes from settings changes (the pane
     /// has its own Apply flow).
@@ -193,14 +225,30 @@ final class WallpaperEngine {
     // MARK: - Editing mode
 
     /// Reverts the desktop to the baseline (uncornered) so the user sees a clean
-    /// preview in the Cornermization pane. The CornerWindow overlay still shows
+    /// preview in the Cornermizer pane. The CornerWindow overlay still shows
     /// the current corner settings as a live preview.
     func showBaseline() {
         for (uuid, state) in screens {
             if let screen = NSScreen.screens.first(where: { $0.uuid == uuid }) {
+                // Never put the old baseline back over a wallpaper the user has
+                // just changed to and we haven't adopted yet — that reads as MSG
+                // undoing their choice.
+                guard isSafeToOverwrite(screen: screen, state: state) else { continue }
                 Self.setWallpaper(url: state.baselineURL, for: screen)
             }
         }
+    }
+
+    /// Whether it is safe for us to write a wallpaper to `screen`.
+    ///
+    /// True only when the desktop currently shows something we already own: one
+    /// of our baked PNGs, or the exact baseline we captured. Anything else means
+    /// the user picked a new wallpaper that we have not adopted yet, and writing
+    /// would silently revert them. `checkForExternalChange()` adopts it within
+    /// one poll and normal baking resumes.
+    private func isSafeToOverwrite(screen: NSScreen, state: ScreenState) -> Bool {
+        guard let cur = Self.wallpaperURL(for: screen) else { return false }
+        return Self.isMSGFile(url: cur) || cur == state.baselineURL
     }
 
     // MARK: - Sync
@@ -220,6 +268,7 @@ final class WallpaperEngine {
             let showsBake = current.map { Self.isMSGFile(url: $0) } ?? false
             if bottomCornersWanted(for: screen, uuid: uuid) {
                 if !showsBake || bakedSignature[uuid] != signature(for: screen, uuid: uuid, state: state) {
+                    Self.wpLog("sync: stale -> rebake (cur=\(Self.wpName(current)) showsBake=\(showsBake) sigMatch=\(bakedSignature[uuid] == signature(for: screen, uuid: uuid, state: state)))")
                     staleDisplays.insert(uuid)
                 }
             } else if showsBake {
@@ -288,6 +337,7 @@ final class WallpaperEngine {
 
         guard changed else { return }
         externalChangePending = false  // user acknowledged the change by re-snapshotting
+        pendingSince = 0
         persistBaselines()
     }
 
@@ -359,7 +409,13 @@ final class WallpaperEngine {
                   displays?.contains(uuid) ?? true,
                   var state = screens[uuid],
                   bottomCornersWanted(for: screen, uuid: uuid) else { continue }
-            state.toggle.toggle()
+            // Choose the a/b slot from what is actually on the desktop, never from
+            // a counter. Rewriting the file the desktop is currently showing makes
+            // macOS reload it in place and the wallpaper visibly flickers — and a
+            // plain toggle resets to its default on every launch, so a relaunch
+            // wrote the displayed slot again. Reading the screen is immune to that.
+            let shown = Self.wallpaperURL(for: screen)?.lastPathComponent
+            state.toggle = (shown != Self.bakeFileName(uuid: uuid, toggle: true))
             screens[uuid] = state
             let radius = screen.isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
             jobs.append(BakeJob(
@@ -405,10 +461,21 @@ final class WallpaperEngine {
             guard let outURL else { continue }
 
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.screens[job.uuid]?.baselineURL == job.sourceURL else { return }
+                guard let self else { return }
+                guard self.screens[job.uuid]?.baselineURL == job.sourceURL else {
+                    // Rendered, then dropped: the baseline moved while we worked.
+                    // Nothing reschedules, so the corners stay off until some
+                    // unrelated trigger calls sync() again.
+                    Self.wpLog("bake DISCARDED (baseline moved): job=\(Self.wpName(job.sourceURL)) now=\(Self.wpName(self.screens[job.uuid]?.baselineURL))")
+                    return
+                }
+                Self.wpLog("bake done -> \(Self.wpName(outURL))")
                 Self.setWallpaper(url: outURL, for: job.screen)
                 self.lastBakedURLs[job.uuid] = outURL
                 self.bakedSignature[job.uuid] = job.signature
+                // Persist the fingerprint too, so the next launch knows this
+                // desktop is already correct and skips the redundant re-bake.
+                self.persistBaselines()
             }
         }
     }
@@ -432,7 +499,17 @@ final class WallpaperEngine {
         var jobs: [(NSScreen, URL)] = []
         for screen in NSScreen.screens {
             guard let uuid = screen.uuid,
-                  let url = lastBakedURLs[uuid] else { continue }
+                  let url = lastBakedURLs[uuid],
+                  let state = screens[uuid] else { continue }
+            // The user can change their wallpaper at any moment, and the poll that
+            // notices only runs every 5 s. Without this check a space switch inside
+            // that window re-applies the *previous* bake straight over their new
+            // choice, which then gets adopted and re-baked — the visible flicker
+            // back to the old wallpaper.
+            guard isSafeToOverwrite(screen: screen, state: state) else {
+                Self.wpLog("reapply SKIPPED (unadopted wallpaper on screen): \(Self.wpName(Self.wallpaperURL(for: screen)))")
+                continue
+            }
             jobs.append((screen, url))
         }
         guard !jobs.isEmpty else { return }
@@ -455,12 +532,33 @@ final class WallpaperEngine {
 
     private func checkForExternalChange() {
         guard !isMissionControlActive else { return }
-        guard !screens.isEmpty else { return }
 
-        // A pending change left over from the pane (closed without resolving,
-        // or detected while it was open) gets adopted as soon as editing ends.
+        // Re-arm displays released by releaseUnreadableBaselines(): once their
+        // wallpaper is readable again they get a baseline back and resume baking.
+        // Must test *live* screens, not counts — `screens` keeps entries for
+        // displays that are merely unplugged, so a count comparison can report
+        // "armed" while the only connected display has no baseline.
+        let needsBaseline = NSScreen.screens.contains { screen in
+            guard let uuid = screen.uuid else { return false }
+            return screens[uuid] == nil
+        }
+        if settings.cornersEnabled, needsBaseline {
+            let before = screens.count
+            fetchMissingDisplays()
+            // fetchMissingDisplays() only captures and persists; sync() is the only
+            // thing that bakes. Without this the display recovers its baseline and
+            // then sits uncornered until some unrelated settings/screen change.
+            if screens.count != before { sync() }
+        }
+
         if externalChangePending {
-            if !isEditing { adoptExternalWallpaper() }
+            if !isEditing {
+                adoptExternalWallpaper()
+                if externalChangePending, pendingSince > 0,
+                   ProcessInfo.processInfo.systemUptime - pendingSince > 30 {
+                    releaseUnreadableBaselines()
+                }
+            }
             return
         }
 
@@ -470,7 +568,9 @@ final class WallpaperEngine {
             guard let cur = Self.wallpaperURL(for: screen) else { continue }
 
             if !Self.isMSGFile(url: cur), cur != state.baselineURL {
+                Self.wpLog("external change detected: \(Self.wpName(cur)) (baseline \(Self.wpName(state.baselineURL))) editing=\(isEditing)")
                 externalChangePending = true
+                pendingSince = ProcessInfo.processInfo.systemUptime
                 if isEditing {
                     // Pane is open: show the confirmation card, let the user decide.
                     onExternalChange?()
@@ -489,6 +589,28 @@ final class WallpaperEngine {
         sync()
     }
 
+    /// Unwedge: a display whose wallpaper we can no longer capture keeps
+    /// externalChangePending true forever, and that flag disables sync(), bake()
+    /// and reapplyToAllSpaces() for *every* display. Drop the baselines we can't
+    /// re-read — so we never re-bake a stale wallpaper over a new one — and let
+    /// the flag go so the rest of the engine lives. fetchMissingDisplays() adopts
+    /// them again as soon as their wallpaper is readable.
+    private func releaseUnreadableBaselines() {
+        for screen in NSScreen.screens {
+            guard let uuid = screen.uuid, screens[uuid] != nil else { continue }
+            let readable = Self.wallpaperURL(for: screen).map {
+                FileManager.default.fileExists(atPath: $0.path) && !Self.isMSGFile(url: $0)
+            } ?? false
+            guard !readable else { continue }
+            screens[uuid] = nil
+            lastBakedURLs[uuid] = nil
+            bakedSignature[uuid] = nil
+        }
+        externalChangePending = false
+        pendingSince = 0
+        persistBaselines()
+    }
+
     // MARK: - Persistence
 
     private var baselinesPath: String {
@@ -502,11 +624,21 @@ final class WallpaperEngine {
         let uuid: String
         let path: String
         let placement: Int
+        /// Fingerprint of the bake currently on the desktop, and the file it went
+        /// to. Persisted because both used to live only in memory: every launch
+        /// started with an empty signature, so sync() judged a perfectly good
+        /// wallpaper stale and re-baked it — the redundant bake on every app
+        /// relaunch. Optional so an older baselines.json still decodes.
+        var signature: String? = nil
+        var bakedPath: String? = nil
     }
 
     private func persistBaselines() {
-        let entries: [PersistedEntry] = screens.compactMap { uuid, state in
-            PersistedEntry(uuid: uuid, path: state.baselineURL.path, placement: state.placement.rawValue)
+        let entries: [PersistedEntry] = screens.map { uuid, state in
+            PersistedEntry(uuid: uuid, path: state.baselineURL.path,
+                           placement: state.placement.rawValue,
+                           signature: bakedSignature[uuid],
+                           bakedPath: lastBakedURLs[uuid]?.path)
         }
         guard let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: URL(fileURLWithPath: baselinesPath))
@@ -541,9 +673,24 @@ final class WallpaperEngine {
                 baselineURL: url,
                 placement: Placement(rawValue: entry.placement) ?? .fill
             )
+            // Restore what we already baked, so sync() can recognise a desktop
+            // that is still correct instead of re-baking it on every launch.
+            if let sig = entry.signature { restoredSignatures[entry.uuid] = sig }
+            if let baked = entry.bakedPath, FileManager.default.fileExists(atPath: baked) {
+                restoredBakedURLs[entry.uuid] = URL(fileURLWithPath: baked)
+            }
         }
-        if !loaded.isEmpty { screens = loaded }
+        if !loaded.isEmpty {
+            screens = loaded
+            bakedSignature = restoredSignatures
+            lastBakedURLs = restoredBakedURLs
+        }
+        restoredSignatures.removeAll(); restoredBakedURLs.removeAll()
     }
+
+    /// Scratch for loadPersistedBaselines — only applied if the load succeeds.
+    private var restoredSignatures: [String: String] = [:]
+    private var restoredBakedURLs: [String: URL] = [:]
 
     private func clearPersistedBaselines() {
         try? FileManager.default.removeItem(atPath: baselinesPath)
@@ -567,9 +714,11 @@ final class WallpaperEngine {
     }
 
     static func setWallpaper(url: URL, for screen: NSScreen) {
+        wpLog("setWallpaper -> \(wpName(url))  (was \(wpName(wallpaperURL(for: screen))))")
         do {
             try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
         } catch {
+            wpLog("  setDesktopImageURL THREW: \(error.localizedDescription)")
             // "desktop 1" is the primary display; for any other screen the
             // fallback would overwrite the primary's wallpaper — skip instead.
             guard screen == NSScreen.screens.first else { return }
@@ -675,11 +824,17 @@ final class WallpaperEngine {
 
     /// `toggle` selects the a/b output filename; the caller advances it before
     /// baking so the desktop never has its current file rewritten in place.
+    /// Filename for a bake slot. Shared so the slot chosen in `bake()` and the
+    /// file written here can never drift apart.
+    static func bakeFileName(uuid: String, toggle: Bool) -> String {
+        "\(uuid)_\(toggle ? "a" : "b").png"
+    }
+
     static func exportPNG(image: CGImage, uuid: String, toggle: Bool) -> (URL?, URL?) {
         let dir = wallpaperDir()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let outURL = dir.appendingPathComponent("\(uuid)_\(toggle ? "a" : "b").png")
-        let altURL = dir.appendingPathComponent("\(uuid)_\(toggle ? "b" : "a").png")
+        let outURL = dir.appendingPathComponent(bakeFileName(uuid: uuid, toggle: toggle))
+        let altURL = dir.appendingPathComponent(bakeFileName(uuid: uuid, toggle: !toggle))
         guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, "public.png" as CFString, 1, nil)
         else { return (nil, nil) }
         let props: [CFString: Any] = [

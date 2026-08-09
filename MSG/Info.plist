@@ -2,13 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleIdentifier</key>
+	<string>H1D3S1GN.MSG</string>
 	<key>CFBundleIconFile</key>
 	<string></string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>MSG analyzes the system audio output so the now-playing visualizer bars react to the actual sound.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>MSG needs to check Music.app playback state to show now-playing track in the menu bar.</string>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>MSG scans nearby Bluetooth broadcasts to show the correct AirPods icon in the volume HUD, even if the device has been renamed.</string>
 </dict>
 </plist>

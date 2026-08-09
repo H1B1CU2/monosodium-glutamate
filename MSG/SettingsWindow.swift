@@ -64,6 +64,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         w.delegate = self
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // Concentric corners: now that the window is realized (theme frame fully
+        // configured with toolbar/titlebar style), read the radius macOS actually
+        // draws so the inset content card can subtract the gutter from the real
+        // native outer radius instead of a hardcoded guess.
+        SettingsViewModel.shared.windowCornerRadius = w.nativeFrameCornerRadius
         window = w
     }
 
@@ -83,6 +88,26 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 }
 
+// MARK: - Native window corner radius
+
+@available(macOS 14.0, *)
+private extension NSWindow {
+    /// The corner radius macOS draws for this window's frame. Titled windows are
+    /// rounded at the WindowServer level with no public getter, so we read the
+    /// private `_cornerRadius` accessor on the theme frame (contentView.superview).
+    /// Falls back to 16 if the selector is ever unavailable, so the concentric
+    /// card math still yields a reasonable inner radius.
+    var nativeFrameCornerRadius: CGFloat {
+        guard let frame = contentView?.superview else { return 16 }
+        let sel = NSSelectorFromString("_cornerRadius")
+        guard frame.responds(to: sel),
+              let method = class_getInstanceMethod(type(of: frame), sel) else { return 16 }
+        typealias RadiusFn = @convention(c) (AnyObject, Selector) -> CGFloat
+        let radius = unsafeBitCast(method_getImplementation(method), to: RadiusFn.self)(frame, sel)
+        return radius > 0 ? radius : 16
+    }
+}
+
 // MARK: - View model
 
 @available(macOS 14.0, *)
@@ -99,6 +124,11 @@ final class SettingsViewModel: ObservableObject {
     /// e.g. the hardware stats popover — can open Settings on a specific pane.
     @Published var selectedSection: SettingsSection = .spacer
 
+    /// Native OS-drawn window corner radius, measured from the theme frame once
+    /// the settings window exists (see `NSWindow.nativeFrameCornerRadius`). The
+    /// inset content card uses this to stay concentric: cardRadius = value − gutter.
+    @Published var windowCornerRadius: CGFloat = 16
+
     var stackMode: StackMode               { get { s.stackMode }            set { s.stackMode = newValue;            objectWillChange.send() } }
     var animationStyle: AnimationStyle     { get { s.animationStyle }       set { s.animationStyle = newValue;       objectWillChange.send() } }
     var focusDetectionMode: FocusDetectionMode { get { s.focusDetectionMode } set { s.focusDetectionMode = newValue; objectWillChange.send() } }
@@ -107,11 +137,13 @@ final class SettingsViewModel: ObservableObject {
     var musicDisplayMode: MusicDisplayMode { get { s.musicDisplayMode }     set { s.musicDisplayMode = newValue;     objectWillChange.send() } }
     var musicLingerDuration: TimeInterval  { get { s.musicLingerDuration }  set { s.musicLingerDuration = newValue;  objectWillChange.send() } }
     var musicSource: MusicSource            { get { s.musicSource }         set { s.musicSource = newValue;         objectWillChange.send() } }
+    var mediaKeyPriorityMusic: Bool         { get { s.mediaKeyPriorityMusic } set { s.mediaKeyPriorityMusic = newValue; objectWillChange.send() } }
     var mirrorMainDisplay: Bool            { get { s.mirrorMainDisplay }    set { s.mirrorMainDisplay = newValue;    objectWillChange.send() } }
     var cornerRadius: CGFloat              { get { s.cornerRadius }         set { s.cornerRadius = newValue;         objectWillChange.send() } }
     var topCornersEnabled: Bool            { get { s.topCornersEnabled }    set { s.topCornersEnabled = newValue;    objectWillChange.send() } }
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
+    var topCornersFullscreenOnly: Bool     { get { s.topCornersFullscreenOnly } set { s.topCornersFullscreenOnly = newValue; objectWillChange.send() } }
     var cornerGrowEnabled: Bool            { get { s.cornerGrowEnabled }     set { s.cornerGrowEnabled = newValue;     objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var brightFocusAlpha: CGFloat          { get { s.brightFocusAlpha }     set { s.brightFocusAlpha = newValue;     objectWillChange.send() } }
@@ -140,6 +172,7 @@ final class SettingsViewModel: ObservableObject {
     var systemHUDBrightness: Bool  { get { s.systemHUDBrightness }  set { s.systemHUDBrightness = newValue;  objectWillChange.send() } }
     var systemHUDPresentationMode: SystemHUDPresentationMode { get { s.systemHUDPresentationMode } set { s.systemHUDPresentationMode = newValue; objectWillChange.send() } }
     var systemHUDDeviceIcons: Bool { get { s.systemHUDDeviceIcons } set { s.systemHUDDeviceIcons = newValue; objectWillChange.send() } }
+    var inputSourceHUDEnabled: Bool { get { s.inputSourceHUDEnabled } set { s.inputSourceHUDEnabled = newValue; objectWillChange.send() } }
     var showDeveloper: Bool        { get { s.showDeveloper }        set { s.showDeveloper = newValue;        objectWillChange.send() } }
     var hardwareStatsEnabled: Bool        { get { s.hardwareStatsEnabled }      set { s.hardwareStatsEnabled = newValue;      objectWillChange.send() } }
     var hardwareStatsShowCPU: Bool        { get { s.hardwareStatsShowCPU }      set { s.hardwareStatsShowCPU = newValue;      objectWillChange.send() } }
@@ -208,7 +241,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .menubar:      return "Spacer"
         case .spacer:       return "Space Indicator"
         case .hud:          return "HUD Replacer"
-        case .corner:       return "Cornermization"
+        case .corner:       return "Cornermizer"
         case .music:        return "Music Display"
         case .tray:         return "Tray"
         case .dock:         return "Dock Previews"
@@ -423,6 +456,14 @@ struct PaneContainer<Content: View>: View {
 
 // MARK: - Sidebar row
 
+/// Reports each sidebar row's natural (unexpanded) width so the sidebar can
+/// size itself to the longest title instead of a hardcoded constant.
+private struct SidebarRowWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 @available(macOS 14.0, *)
 private struct SidebarRowView: View {
@@ -435,6 +476,11 @@ private struct SidebarRowView: View {
             Label { Text(section.title) } icon: { GradientIcon(section: section) }
                 .padding(.vertical, 6)
                 .padding(.horizontal, 10)
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(key: SidebarRowWidthKey.self, value: geo.size.width)
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     isSelected ? Color.accentColor : Color.clear,
@@ -453,10 +499,18 @@ private struct SidebarRowView: View {
 struct SettingsWindow: View {
     @StateObject private var vm = SettingsViewModel.shared
 
-    /// Concentric corner math: inner card radius = window radius − gutter.
-    private let windowRadius: CGFloat = 26   // macOS 26 window corner radius
+    /// Concentric corner math: inner card radius = outer − padding, where the
+    /// outer is whatever macOS natively draws for the window (measured at window
+    /// creation into `vm.windowCornerRadius`) and the padding is the gutter. We
+    /// never draw our own outer corners.
     private let gutter: CGFloat = 8
-    private var cardRadius: CGFloat { windowRadius - gutter }
+    private var cardRadius: CGFloat { max(0, vm.windowCornerRadius - gutter) }
+
+    /// Sidebar width tracks the longest row (icon + title), measured live via
+    /// `SidebarRowWidthKey` — no hardcoded constant to keep in sync with labels.
+    @State private var sidebarContentWidth: CGFloat = 0
+    private let sidebarRowOuterPadding: CGFloat = 16   // the row's own .horizontal(8) on each side
+    private let minSidebarWidth: CGFloat = 180
 
     var body: some View {
         HStack(spacing: 0) {
@@ -480,7 +534,8 @@ struct SettingsWindow: View {
                 }
                 .padding(.top, 44)   // explicit clearance under the traffic lights
             }
-            .frame(width: 260)
+            .onPreferenceChange(SidebarRowWidthKey.self) { sidebarContentWidth = $0 }
+            .frame(width: max(minSidebarWidth, sidebarContentWidth + sidebarRowOuterPadding))
 
             // Floating content card: opaque body tint so the form stays
             // readable, inset by the gutter so the sidebar chrome shows on
@@ -523,7 +578,7 @@ struct SettingsWindow: View {
         case .menubar:      MenuBarPane(vm: vm)
         case .spacer:       SpacerPane(vm: vm)
         case .hud:          HUDReplacerPane(vm: vm)
-        case .corner:       CornermizationPane(vm: vm)
+        case .corner:       CornermizerPane(vm: vm)
         case .music:        MusicPane(vm: vm)
         case .tray:         TrayPane(vm: vm)
         case .dock:         DockPane(vm: vm)

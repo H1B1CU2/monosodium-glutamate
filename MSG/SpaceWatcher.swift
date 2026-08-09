@@ -144,6 +144,40 @@ final class SpaceWatcher {
         CGSGetActiveSpace(CGSMainConnectionID())
     }
 
+    /// CGS space type for a fullscreen / tiled (Split View) space. A plain
+    /// desktop space is type 0. Verified on macOS 26 against a live fullscreen
+    /// space: `Current Space` = `{type = 4, fs_wid, pid, TileLayoutManager, …}`.
+    private static let fullscreenSpaceType = 4
+
+    /// Display UUIDs whose **current** space is a fullscreen space.
+    ///
+    /// Per-display and free of Accessibility: every display dict from
+    /// `CGSCopyManagedDisplaySpaces` carries its own `Current Space` with a
+    /// `type`. Measured at 0.086 ms/call, so it is fine on a space change or a
+    /// 2 s watchdog pass — but it is ~2000× a `CGSGetActiveSpace` read, so do
+    /// not put it on a per-frame path.
+    ///
+    /// Returns **nil** when CGS can't be read. Callers must treat nil as
+    /// "unknown", never as "no display is fullscreen" — otherwise a failed read
+    /// would silently hide every fullscreen-only top corner.
+    static func fullscreenDisplayUUIDs() -> Set<String>? {
+        guard let raw = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()),
+              let displayDicts = raw as? [[String: Any]] else { return nil }
+
+        var out: Set<String> = []
+        for dict in displayDicts {
+            guard let cs = dict["Current Space"] as? [String: Any],
+                  (cs["type"] as? Int) == fullscreenSpaceType else { continue }
+            var ident = dict["Display Identifier"] as? String ?? ""
+            // CGS reports "Main" rather than a UUID for the primary display in
+            // some configurations — readSpaceInfo() handles the same case.
+            if ident == "Main", let primary = NSScreen.screens.first?.uuid { ident = primary }
+            guard !ident.isEmpty else { continue }
+            out.insert(ident)
+        }
+        return out
+    }
+
     // MARK: - CGS read
 
     static func readSpaceInfo(

@@ -23,7 +23,7 @@ Provides a visual indicator in the macOS menu bar showing active and total deskt
 
 ---
 
-### 2. Cornermization (Screen Rounded Corners)
+### 2. Cornermizer (Screen Rounded Corners)
 Bakes black overlay masks onto the corners of your screen to round hard edges, mimicking the industrial design of modern MacBook panels.
 * **Per-Display Settings** — Configure individual rounding radius (1px to 30px) for your laptop display and external monitors independently.
 * **Precision HUD Slider** — Adjust settings live with active haptic ticks for precise adjustment.
@@ -66,7 +66,6 @@ A battery card that goes beyond a percentage.
 * **Live Detail** — Charge %, charging/plugged state, adapter wattage, and system power draw in one card.
 * **Charge-Limit Marker** — When you're on power and macOS has a charge limit set, a tick on the level bar shows exactly where charging stops — read straight from your *System Settings ▸ Battery* limit.
 * **Energy Mode** — Switch Automatic / Low Power / High Power inline (backed by `pmset powermode`).
-* **Significant-Energy Apps** — An approximated "apps using significant energy" list (per-app CPU + GPU, billed to the responsible app), smoothed with hysteresis so it stays stable instead of flickering.
 
 ---
 

@@ -135,10 +135,10 @@ struct HUDReplacerPane: View {
     }
 }
 
-// MARK: - Cornermization pane
+// MARK: - Cornermizer pane
 
 @available(macOS 14.0, *)
-struct CornermizationPane: View {
+struct CornermizerPane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var lastHaptic: Int = -1
     @State private var screens: [NSScreen] = NSScreen.screens
@@ -160,7 +160,10 @@ struct CornermizationPane: View {
                     radius: vm.cornerRadius,
                     topEnabled: vm.topCornersEnabled,
                     bottomEnabled: vm.bottomCornersEnabled,
-                    underBar: vm.topCornersUnderMenuBar,
+                    // Fullscreen-only corners never sit below a menu bar — there
+                    // isn't one on a fullscreen space — so preview them where
+                    // they will actually appear: at the screen edge.
+                    underBar: vm.topCornersUnderMenuBar && !vm.topCornersFullscreenOnly,
                     wallpaperImage: previewWallpaper
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -184,6 +187,8 @@ struct CornermizationPane: View {
                         Text("Below Menu Bar").tag(true)
                     }
                     .pickerStyle(.segmented)
+                    Toggle("Fullscreen only",
+                           isOn: bind({ vm.topCornersFullscreenOnly }, { vm.topCornersFullscreenOnly = $0 }))
                 }
                 Toggle("Bottom Corners",
                        isOn: bind({ vm.bottomCornersEnabled }, { vm.bottomCornersEnabled = $0 }))
@@ -364,6 +369,10 @@ struct CornermizationPane: View {
                 Text("Below Menu Bar").tag(true)
             }
             .pickerStyle(.segmented)
+            Toggle("Fullscreen only", isOn: bind(
+                { AppSettings.shared.extTopCornersFullscreenOnly(for: uuid) },
+                { AppSettings.shared.setExtTopCornersFullscreenOnly($0, for: uuid); vm.objectWillChange.send() }
+            ))
         }
         Toggle("Bottom Corners", isOn: bind(
             { AppSettings.shared.extBottomCornersEnabled(for: uuid) },
