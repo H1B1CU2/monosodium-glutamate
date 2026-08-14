@@ -27,6 +27,7 @@
 		BB000013 /* TrayHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000113 /* TrayHUDView.swift */; };
 		BB000014 /* TrayPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000114 /* TrayPane.swift */; };
 		BB000015 /* Displaplacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000115 /* Displaplacer.swift */; };
+		BB000090 /* DisplayInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000190 /* DisplayInput.swift */; };
 		BB000016 /* Shared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000116 /* Shared.swift */; };
 		BB000017 /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000117 /* SettingsPanes.swift */; };
 		BB000018 /* SettingsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000118 /* SettingsPreviews.swift */; };
@@ -42,6 +43,7 @@
 		BB000024 /* SystemHUDStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000125 /* SystemHUDStatusItem.swift */; };
 		BB000029 /* AudioSpectrumTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012A /* AudioSpectrumTap.swift */; };
 		BB00002A /* InputSourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012B /* InputSourceMonitor.swift */; };
+		BB00002B /* AppSwitcherPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012C /* AppSwitcherPreview.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +70,7 @@
 		BB000113 /* TrayHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayHUDView.swift; sourceTree = "<group>"; };
 		BB000114 /* TrayPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayPane.swift; sourceTree = "<group>"; };
 		BB000115 /* Displaplacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Displaplacer.swift; sourceTree = "<group>"; };
+		BB000190 /* DisplayInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayInput.swift; sourceTree = "<group>"; };
 		BB000116 /* Shared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared.swift; sourceTree = "<group>"; };
 		BB000117 /* SettingsPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPanes.swift; sourceTree = "<group>"; };
 		BB000118 /* SettingsPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPreviews.swift; sourceTree = "<group>"; };
@@ -85,6 +88,7 @@
 		BB000125 /* SystemHUDStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemHUDStatusItem.swift; sourceTree = "<group>"; };
 		BB00012A /* AudioSpectrumTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSpectrumTap.swift; sourceTree = "<group>"; };
 		BB00012B /* InputSourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceMonitor.swift; sourceTree = "<group>"; };
+		BB00012C /* AppSwitcherPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSwitcherPreview.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -208,6 +212,7 @@
 			isa = PBXGroup;
 			children = (
 				BB000115 /* Displaplacer.swift */,
+				BB000190 /* DisplayInput.swift */,
 			);
 			name = Displaplacer;
 			sourceTree = "<group>";
@@ -228,6 +233,7 @@
 			children = (
 				BB00011C /* DockPreview.swift */,
 				BB00011D /* DockPane.swift */,
+				BB00012C /* AppSwitcherPreview.swift */,
 			);
 			name = Dock;
 			sourceTree = "<group>";
@@ -356,6 +362,7 @@
 				BB000013 /* TrayHUDView.swift in Sources */,
 				BB000014 /* TrayPane.swift in Sources */,
 				BB000015 /* Displaplacer.swift in Sources */,
+				BB000090 /* DisplayInput.swift in Sources */,
 				BB000016 /* Shared.swift in Sources */,
 				BB000017 /* SettingsPanes.swift in Sources */,
 				BB000018 /* SettingsPreviews.swift in Sources */,
@@ -369,6 +376,7 @@
 				BB000024 /* SystemHUDStatusItem.swift in Sources */,
 				BB000029 /* AudioSpectrumTap.swift in Sources */,
 				BB00002A /* InputSourceMonitor.swift in Sources */,
+				BB00002B /* AppSwitcherPreview.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

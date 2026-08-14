@@ -56,6 +56,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.willMiniaturizeNotification, object: w, queue: .main) { [weak self] _ in
             guard let self, let w = self.window else { return }
             w.orderOut(nil)
+            // The hosting view stays in the retained window, so no SwiftUI
+            // onDisappear fires — release editing here or the Cornermizer pane
+            // leaves the desktop on its uncornered preview baseline.
+            WallpaperEngine.shared.endEditing()
             if !AppSettings.shared.dockIcon {
                 NSApp.setActivationPolicy(.accessory)
             }
@@ -73,6 +77,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     var isVisible: Bool { window?.isVisible ?? false }
+
+    /// Same reason as the miniaturize path above: closing the window only orders
+    /// it out (isReleasedWhenClosed = false), so the pane's onDisappear never
+    /// runs and WallpaperEngine would stay latched in editing mode.
+    func windowWillClose(_ notification: Notification) {
+        WallpaperEngine.shared.endEditing()
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         DispatchQueue.main.async {
@@ -134,6 +145,7 @@ final class SettingsViewModel: ObservableObject {
     var focusDetectionMode: FocusDetectionMode { get { s.focusDetectionMode } set { s.focusDetectionMode = newValue; objectWillChange.send() } }
     var displayOrderMode: DisplayOrderMode { get { s.displayOrderMode }     set { s.displayOrderMode = newValue;     objectWillChange.send() } }
     var displayOrder: [Int]                { get { s.displayOrder }         set { s.displayOrder = newValue;         objectWillChange.send() } }
+    var monitorInputAutoEject: Bool        { get { s.monitorInputAutoEject } set { s.monitorInputAutoEject = newValue; objectWillChange.send() } }
     var musicDisplayMode: MusicDisplayMode { get { s.musicDisplayMode }     set { s.musicDisplayMode = newValue;     objectWillChange.send() } }
     var musicLingerDuration: TimeInterval  { get { s.musicLingerDuration }  set { s.musicLingerDuration = newValue;  objectWillChange.send() } }
     var musicSource: MusicSource            { get { s.musicSource }         set { s.musicSource = newValue;         objectWillChange.send() } }
@@ -160,6 +172,9 @@ final class SettingsViewModel: ObservableObject {
     var trayDockSync: Bool                   { get { s.trayDockSync }         set { s.trayDockSync = newValue;         objectWillChange.send() } }
     var trayShowNowPlaying: Bool             { get { s.trayShowNowPlaying }   set { s.trayShowNowPlaying = newValue;   objectWillChange.send() } }
     var dockPreviewEnabled: Bool             { get { s.dockPreviewEnabled }   set { s.dockPreviewEnabled = newValue;   objectWillChange.send() } }
+    var appSwitcherPreviewEnabled: Bool      { get { s.appSwitcherPreviewEnabled } set { s.appSwitcherPreviewEnabled = newValue; objectWillChange.send() } }
+    var appSwitcherPreviewDelay: TimeInterval { get { s.appSwitcherPreviewDelay } set { s.appSwitcherPreviewDelay = newValue; objectWillChange.send() } }
+    var appSwitcherPreviewOffset: CGFloat    { get { s.appSwitcherPreviewOffset } set { s.appSwitcherPreviewOffset = newValue; objectWillChange.send() } }
     var dockPreviewHoverDelay: TimeInterval  { get { s.dockPreviewHoverDelay } set { s.dockPreviewHoverDelay = newValue; objectWillChange.send() } }
     var dockPreviewThumbHeight: CGFloat      { get { s.dockPreviewThumbHeight } set { s.dockPreviewThumbHeight = newValue; objectWillChange.send() } }
     var dockPreviewOffset: CGFloat           { get { s.dockPreviewOffset } set { s.dockPreviewOffset = newValue; objectWillChange.send() } }

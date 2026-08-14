@@ -76,6 +76,57 @@ struct DockPane: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
+
+            Section("App Switcher") {
+                Toggle(isOn: Binding(
+                    get: { vm.appSwitcherPreviewEnabled },
+                    set: {
+                        vm.appSwitcherPreviewEnabled = $0
+                        NotificationCenter.default.post(name: .appSwitcherPreviewChanged, object: nil)
+                    }
+                )) {
+                    Text("Preview in the app switcher")
+                }
+                Text("Hold ⌘ and rest the selection on an app in the ⌘-Tab switcher to see the same card. It layers over the switcher and never intercepts your keys or clicks.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Hold delay")
+                        Spacer()
+                        Text(String(format: "%.2fs", vm.appSwitcherPreviewDelay))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { vm.appSwitcherPreviewDelay },
+                        set: { vm.appSwitcherPreviewDelay = $0 }
+                    ), in: 0.10...1.5, step: 0.05)
+                }
+                .disabled(!vm.appSwitcherPreviewEnabled)
+                Text("How long the selection must rest on one app before its preview appears. Once it's up, tabbing moves it instantly.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Distance from switcher")
+                        Spacer()
+                        Text("\(Int(vm.appSwitcherPreviewOffset)) pt")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { vm.appSwitcherPreviewOffset },
+                        set: { vm.appSwitcherPreviewOffset = $0 }
+                    ), in: -40...120, step: 2)
+                }
+                .disabled(!vm.appSwitcherPreviewEnabled)
+                Text("Adjusts the gap between the switcher and the preview card. The card uses the Dock preview's thumbnail size.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
         }
         .onAppear {
             if let screen = NSScreen.main ?? NSScreen.screens.first {
@@ -87,6 +138,7 @@ struct DockPane: View {
 
 extension Notification.Name {
     static let dockPreviewChanged = Notification.Name("dockPreviewChanged")
+    static let appSwitcherPreviewChanged = Notification.Name("appSwitcherPreviewChanged")
 }
 
 // MARK: - Settings preview scene

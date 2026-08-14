@@ -204,8 +204,12 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         // ── Displaplacer ────────────
         addDisplaplacerSection()
 
+        // ── Monitor Input ───────────
+        addMonitorInputSection()
+
         // ── Quit ────────────────────
         menu.addItem(.separator())
+        addRefreshDisplayItem()
         let openItem = NSMenuItem(title: "Open Settings…", action: #selector(openSettingsAction), keyEquivalent: "s")
         openItem.target = self
         menu.addItem(openItem)
@@ -508,18 +512,120 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
             menu.addItem(item)
         }
 
-        // A monitor that is enumerated and active but showing no picture looks
-        // identical to a working one from software, so there is nothing to detect
-        // and auto-repair — this re-triggers the link the way pulling the cable does.
-        if externals.contains(where: { $0.enabled }) {
-            let fix = NSMenuItem(title: "  Re-link Displays (fix blank screen)",
-                                 action: #selector(relinkDisplays), keyEquivalent: "")
-            fix.target = self
-            fix.indentationLevel = 1
-            fix.isEnabled = totalActive > 1
-            menu.addItem(fix)
-        }
         addSpaceItem()
+    }
+
+    /// DDC/CI input switching. Reads only the engine's cache — a live scan is a
+    /// dozen 60 ms I2C round trips per panel and would stall the menu opening.
+    /// The cache is filled at launch and on every screen-parameter change.
+    private func addMonitorInputSection() {
+        let monitors = DisplayInputEngine.monitors.filter { !$0.inputs.isEmpty }
+        guard !monitors.isEmpty else { return }
+
+        menu.addItem(.separator())
+        addHeaderItem("Monitor Input", to: menu)
+        addSpaceItem()
+
+        for monitor in monitors {
+            // One monitor: hang the inputs straight off the section rather than
+            // making the user open a submenu to reach two items.
+            let target: NSMenu
+            if monitors.count == 1 {
+                target = menu
+            } else {
+                let parent = NSMenuItem(title: "  \(monitor.name)", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                parent.submenu = sub
+                menu.addItem(parent)
+                target = sub
+            }
+
+            let indent = monitors.count == 1 ? 1 : 0
+
+            // Unreachable means the panel is showing another machine: its DDC bus
+            // is silent, so no input row would do anything. Say so, and offer the
+            // one action that still works — reconnecting the display costs no DDC.
+            guard monitor.reachable else {
+                let note = NSMenuItem(title: "  Showing another device", action: nil, keyEquivalent: "")
+                note.isEnabled = false
+                note.indentationLevel = indent
+                target.addItem(note)
+
+                let hint = NSMenuItem(title: "  Press the monitor's input button to return",
+                                      action: nil, keyEquivalent: "")
+                hint.isEnabled = false
+                hint.indentationLevel = indent
+                target.addItem(hint)
+
+                if DisplayInputEngine.isHandoverEjected(monitorKey: monitor.key) {
+                    let fix = NSMenuItem(title: "  Reconnect Display",
+                                         action: #selector(monitorInputReconnect(_:)), keyEquivalent: "")
+                    fix.target = self
+                    fix.indentationLevel = indent
+                    fix.representedObject = MonitorInputChoice(monitorKey: monitor.key, code: 0)
+                    target.addItem(fix)
+                }
+                continue
+            }
+
+            for input in monitor.inputs {
+                // Mark the Mac's own input so it reads as "come back here", not
+                // as another handover target.
+                let title = input.isMac ? "  \(input.label) (this Mac)" : "  \(input.label)"
+                let item = NSMenuItem(title: title,
+                                      action: #selector(monitorInputPicked(_:)), keyEquivalent: "")
+                item.target = self
+                item.indentationLevel = indent
+                item.representedObject = MonitorInputChoice(monitorKey: monitor.key, code: input.code)
+                // Most panels never report their live input (the MSI MP341CQ
+                // answers 0xFF forever), so currentCode is usually nil and no
+                // row gets a checkmark. That is correct — a wrong checkmark is
+                // worse than none.
+                item.state = (monitor.currentCode == input.code) ? .on : .off
+                target.addItem(item)
+            }
+        }
+
+        addSpaceItem()
+    }
+
+    /// Boxed so it can ride in `representedObject`.
+    private final class MonitorInputChoice: NSObject {
+        let monitorKey: String
+        let code: UInt16
+        init(monitorKey: String, code: UInt16) {
+            self.monitorKey = monitorKey
+            self.code = code
+        }
+    }
+
+    @objc private func monitorInputPicked(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? MonitorInputChoice else { return }
+        DisplayInputEngine.selectInput(monitorKey: choice.monitorKey,
+                                       code: choice.code,
+                                       autoEject: settings.monitorInputAutoEject)
+    }
+
+    @objc private func monitorInputReconnect(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? MonitorInputChoice else { return }
+        DisplayInputEngine.reconnectDisplay(monitorKey: choice.monitorKey)
+    }
+
+    // A monitor that is enumerated and active but showing no picture looks identical
+    // to a working one from software, so there is nothing to detect and auto-repair —
+    // this re-triggers the link the way pulling the cable does. It lives in the bottom
+    // section rather than under Displaplacer, and is deliberately not gated on
+    // `displaplacerEnabled`: it's a rescue action, and the state it rescues you from
+    // is exactly the one where you'd rather not go hunting through settings.
+    private func addRefreshDisplayItem() {
+        let online = DisplaplacerEngine.allOnlineDisplays()
+        let hasActiveExternal = online.contains { !$0.isBuiltin && $0.enabled }
+        guard hasActiveExternal, online.filter({ $0.enabled }).count > 1 else { return }
+
+        let fix = NSMenuItem(title: "Refresh Display",
+                             action: #selector(relinkDisplays), keyEquivalent: "")
+        fix.target = self
+        menu.addItem(fix)
     }
 
     @objc private func relinkDisplays() {

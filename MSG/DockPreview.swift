@@ -250,8 +250,7 @@ final class DockHoverController {
             windows: windows,
             thumbHeight: settings.dockPreviewThumbHeight,
             maxContentWidth: maxContentWidth,
-            offset: settings.dockPreviewOffset,
-            anchor: item.frame,
+            placement: .dockTile(anchor: item.frame, offset: settings.dockPreviewOffset),
             onSelect: { [weak self] win in
                 self?.activate(item: item, window: win)
             },
@@ -405,16 +404,49 @@ final class DockHoverController {
     }
 }
 
+// MARK: - PreviewPlacement
+
+/// Where a preview card sits relative to the thing it describes. Both cases keep
+/// the card fully on the anchor's screen; `offset` is the user's extra gap.
+@available(macOS 14.0, *)
+enum PreviewPlacement {
+    /// Adjacent to a Dock tile, on the side facing away from the screen edge the
+    /// Dock hugs (above for a bottom Dock, beside for a left/right one).
+    case dockTile(anchor: CGRect, offset: CGFloat)
+    /// Below the whole app-switcher panel, horizontally centered on the selected
+    /// tile — flipping above the switcher when there is no room beneath it.
+    case appSwitcher(switcher: CGRect, selected: CGRect, offset: CGFloat)
+
+    /// The rect the card belongs to — used to pick the screen it is placed on.
+    var anchorRect: CGRect {
+        switch self {
+        case .dockTile(let anchor, _):       return anchor
+        case .appSwitcher(let switcher, _, _): return switcher
+        }
+    }
+}
+
 // MARK: - DockPreviewPanel
 
 /// Borderless, non-activating floating panel that hosts the SwiftUI preview card
-/// and positions itself adjacent to a Dock tile.
+/// and positions itself against a `PreviewPlacement`. Shared by the Dock hover
+/// preview and the app-switcher preview so both draw the identical card.
+///
+/// `interactive: false` makes the panel click- and hover-through (the app
+/// switcher owns the mouse while it is up, so the card must never intercept it).
 @available(macOS 14.0, *)
-private final class DockPreviewPanel {
+final class DockPreviewPanel {
 
     private var panel: NSPanel?
     private var hosting: NSHostingController<DockPreviewView>?
     private let model = DockPreviewModel()
+    private let interactive: Bool
+    private let level: NSWindow.Level
+
+    init(interactive: Bool = true, level: NSWindow.Level = .statusBar) {
+        self.interactive = interactive
+        self.level = level
+    }
 
     var isVisible: Bool { panel?.isVisible ?? false }
     var frame: CGRect { panel?.frame ?? .zero }
@@ -424,11 +456,10 @@ private final class DockPreviewPanel {
                  windows: [CapturedWindow],
                  thumbHeight: CGFloat,
                  maxContentWidth: CGFloat,
-                 offset: CGFloat,
-                 anchor: CGRect,
-                 onSelect: @escaping (CapturedWindow) -> Void,
-                 onClose: @escaping (CapturedWindow) -> Void,
-                 onHoverChanged: @escaping (Bool) -> Void) {
+                 placement: PreviewPlacement,
+                 onSelect: @escaping (CapturedWindow) -> Void = { _ in },
+                 onClose: @escaping (CapturedWindow) -> Void = { _ in },
+                 onHoverChanged: @escaping (Bool) -> Void = { _ in }) {
 
         if panel == nil { buildPanel() }
         guard let panel, let hosting else { return }
@@ -446,7 +477,7 @@ private final class DockPreviewPanel {
                     self.hosting?.view.layoutSubtreeIfNeeded()
                     if let fitting = self.hosting?.view.fittingSize {
                         let size = NSSize(width: ceil(fitting.width), height: ceil(fitting.height))
-                        let targetFrame = NSRect(origin: self.position(for: size, anchor: anchor, offset: offset),
+                        let targetFrame = NSRect(origin: self.position(for: size, placement: placement),
                                                  size: size)
                         NSAnimationContext.runAnimationGroup { ctx in
                             ctx.duration = 0.22
@@ -481,7 +512,7 @@ private final class DockPreviewPanel {
         hosting.view.layoutSubtreeIfNeeded()
         let fitting = hosting.view.fittingSize
         let size = NSSize(width: ceil(fitting.width), height: ceil(fitting.height))
-        let targetFrame = NSRect(origin: position(for: size, anchor: anchor, offset: offset),
+        let targetFrame = NSRect(origin: position(for: size, placement: placement),
                                  size: size)
 
         if wasVisible {
@@ -493,6 +524,9 @@ private final class DockPreviewPanel {
                 ctx.allowsImplicitAnimation = true
                 panel.animator().setFrame(targetFrame, display: true)
             }
+            // The app switcher re-orders its own window on every Tab, so re-assert
+            // the card's position in the stack even when it is already up.
+            panel.orderFrontRegardless()
         } else {
             panel.setFrame(targetFrame, display: true)
             panel.alphaValue = 0
@@ -529,23 +563,34 @@ private final class DockPreviewPanel {
                         backing: .buffered, defer: false)
         p.contentView = h.view
         p.isFloatingPanel = true
-        p.level = .statusBar
+        p.level = level
         p.hasShadow = true
         p.isOpaque = false
         p.backgroundColor = .clear
         p.isReleasedWhenClosed = false
         p.hidesOnDeactivate = false
-        p.acceptsMouseMovedEvents = true
-        p.ignoresMouseEvents = false
+        p.acceptsMouseMovedEvents = interactive
+        p.ignoresMouseEvents = !interactive
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel = p
     }
 
-    /// Places the card adjacent to the tile on the side facing away from the
-    /// screen edge the Dock hugs (above for a bottom Dock, beside for left/right).
-    private func position(for size: NSSize, anchor: CGRect, offset: CGFloat) -> NSPoint {
+    private func position(for size: NSSize, placement: PreviewPlacement) -> NSPoint {
+        let anchor = placement.anchorRect
         let screen = NSScreen.screens.first { $0.frame.intersects(anchor) }
             ?? NSScreen.main ?? NSScreen.screens[0]
+        switch placement {
+        case .dockTile(let tile, let offset):
+            return positionByDock(size: size, anchor: tile, offset: offset, screen: screen)
+        case .appSwitcher(let switcher, let selected, let offset):
+            return positionBySwitcher(size: size, switcher: switcher, selected: selected,
+                                      offset: offset, screen: screen)
+        }
+    }
+
+    /// Places the card adjacent to the tile on the side facing away from the
+    /// screen edge the Dock hugs (above for a bottom Dock, beside for left/right).
+    private func positionByDock(size: NSSize, anchor: CGRect, offset: CGFloat, screen: NSScreen) -> NSPoint {
         let vf = screen.visibleFrame
         // Base gap between the tile and the card, plus the user `offset` which
         // pushes the card further from the Dock.
@@ -574,6 +619,32 @@ private final class DockPreviewPanel {
             x = min(max(x, vf.minX + 8), screen.frame.maxX - size.width - 8)
             y = min(max(y, vf.minY + 8), vf.maxY - size.height - 8)
         }
+        return NSPoint(x: x, y: y)
+    }
+
+    /// Places the card clear of the whole switcher panel — beneath it by default,
+    /// above it when the card is taller than the room below — and centers it on
+    /// the selected tile so the card visibly "belongs" to the highlighted app.
+    private func positionBySwitcher(size: NSSize, switcher: CGRect, selected: CGRect,
+                                    offset: CGFloat, screen: NSScreen) -> NSPoint {
+        let vf = screen.visibleFrame
+        let gap: CGFloat = 16 + offset
+
+        let x = min(max(selected.midX - size.width / 2, vf.minX + 8), vf.maxX - size.width - 8)
+
+        let below = switcher.minY - gap - size.height
+        let above = switcher.maxY + gap
+        var y: CGFloat
+        if below >= vf.minY + 8 {
+            y = below
+        } else if above + size.height <= vf.maxY - 8 {
+            y = above
+        } else {
+            // Neither side fits: sit as low as the screen allows, overlapping the
+            // switcher rather than falling off the display.
+            y = vf.minY + 8
+        }
+        y = min(max(y, vf.minY + 8), max(vf.minY + 8, vf.maxY - size.height - 8))
         return NSPoint(x: x, y: y)
     }
 }

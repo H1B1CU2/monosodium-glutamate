@@ -217,7 +217,7 @@ struct CornermizerPane: View {
             }
         }
         .onAppear {
-            WallpaperEngine.shared.isEditing = true
+            WallpaperEngine.shared.beginEditing()
             externalChangeDetected = WallpaperEngine.shared.externalChangePending
             loadPreviewWallpaper()
             // Only revert to the clean baseline for preview when there is no
@@ -235,15 +235,13 @@ struct CornermizerPane: View {
             }
         }
         .onDisappear {
-            WallpaperEngine.shared.isEditing = false
-            WallpaperEngine.shared.onExternalChange = nil
-            // showBaseline() was called on appear; sync() re-bakes (covering any
-            // pending edits, including the header toggle) or restores the
-            // baseline if corners are now disabled. An unresolved external
-            // change is left alone — the poll adopts it now that editing ended.
-            if !WallpaperEngine.shared.externalChangePending {
-                WallpaperEngine.shared.sync()
-            }
+            // showBaseline() was called on appear; endEditing() sync()s, which
+            // re-bakes (covering any pending edits, including the header toggle)
+            // or restores the baseline if corners are now disabled.
+            // Note this only fires on pane switches — closing the settings window
+            // leaves the hosting view in place, so the poll's liveness check is
+            // what releases editing in that case.
+            WallpaperEngine.shared.endEditing()
             hasPendingChanges = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
@@ -1761,6 +1759,11 @@ struct GeneralPane: View {
 struct DisplaplacerPane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var externalDisplays: [DisplaplacerEngine.DisplayInfo] = []
+    @State private var inputMonitors: [DisplayInputEngine.Monitor] = []
+    @State private var scanningInputs = false
+    /// Which input row is being renamed, keyed "<monitor key>#<code>".
+    @State private var editingInputID: String?
+    @State private var editingInputName = ""
 
     var body: some View {
         PaneContainer(section: .displaplacer,
@@ -1779,6 +1782,44 @@ struct DisplaplacerPane: View {
             } footer: {
                 Text("Eject removes the display from your workspace. Reconnect restores it.")
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                monitorInputContent
+            } header: {
+                HStack {
+                    Text("Monitor Input")
+                    Spacer()
+                    if scanningInputs {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Rescan") { refreshInputs() }
+                            .font(.caption)
+                    }
+                }
+            } footer: {
+                Text("Switches the monitor's own input, the same as its OSD button. "
+                     + "Choosing an input other than the one this Mac is on will hand "
+                     + "the screen to that device.")
+                    .foregroundStyle(.secondary)
+            }
+
+            if !inputMonitors.isEmpty {
+                Section {
+                    Toggle("Eject display when switching away",
+                           isOn: Binding(get: { vm.monitorInputAutoEject },
+                                         set: { vm.monitorInputAutoEject = $0 }))
+                    .disabled(!hasMacInputMarked)
+                } footer: {
+                    Text(hasMacInputMarked
+                         ? "Hands the monitor over cleanly: windows move to the built-in "
+                           + "display instead of staying on a screen that is now showing "
+                           + "another machine. Use the monitor's input button to return; "
+                           + "MSG then reconnects the display automatically."
+                         : "Mark which input this Mac is plugged into first — otherwise "
+                           + "MSG can't tell a handover from a switch back.")
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -1818,7 +1859,13 @@ struct DisplaplacerPane: View {
                 }
             }
         }
-        .onAppear { refreshDisplays() }
+        .onAppear {
+            refreshDisplays()
+            // Show whatever the launch scan already found, and only pay for a new
+            // scan if it came up empty (no monitor plugged in at launch).
+            inputMonitors = DisplayInputEngine.monitors
+            if inputMonitors.isEmpty && !DisplayInputEngine.hasScanned { refreshInputs() }
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didChangeScreenParametersNotification)
         ) { _ in
@@ -1827,6 +1874,151 @@ struct DisplaplacerPane: View {
             // The delayed second pass catches any late settling (resolution/arrangement).
             refreshDisplays()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { refreshDisplays() }
+            // AppDelegate rescans DDC on the same notification; pick up its result
+            // once that has had time to land rather than scanning a second time.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                inputMonitors = DisplayInputEngine.monitors
+            }
+        }
+    }
+
+    // MARK: Monitor input
+
+    /// Auto-eject is meaningless until MSG knows which input is this Mac, so the
+    /// toggle stays disabled rather than silently doing nothing.
+    private var hasMacInputMarked: Bool {
+        inputMonitors.contains { $0.inputs.contains(where: \.isMac) }
+    }
+
+    @ViewBuilder
+    private var monitorInputContent: some View {
+        if inputMonitors.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(scanningInputs
+                     ? "Checking what your monitors support…"
+                     : "No monitor here supports switching inputs over its cable.")
+                // A monitor currently showing another machine is indistinguishable
+                // from one that can't do this at all — its DDC bus is silent either
+                // way — so say what to do rather than leaving it a dead end.
+                if !scanningInputs {
+                    Text("If your monitor is showing another device right now, switch "
+                         + "it back with its own input button and press Rescan.")
+                        .font(.caption)
+                }
+            }
+            .foregroundStyle(.secondary)
+        } else {
+            ForEach(inputMonitors) { monitor in
+                VStack(alignment: .leading, spacing: 6) {
+                    if inputMonitors.count > 1 {
+                        Text(monitor.name).font(.subheadline)
+                    }
+                    if monitor.reachable {
+                        ForEach(monitor.inputs) { input in
+                            inputRow(monitor: monitor, input: input)
+                        }
+                        if monitor.inputs.contains(where: { !$0.advertised }) {
+                            Text("This monitor didn't list its inputs, so these are the "
+                                 + "common ones. An input it doesn't have simply won't do anything.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        unreachableRow(monitor: monitor)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shown while the panel is displaying another machine. Its DDC bus is silent
+    /// then, so MSG cannot switch it back — only the monitor's own input button
+    /// can. Reconnecting the display is pure CoreGraphics and still works.
+    @ViewBuilder
+    private func unreachableRow(monitor: DisplayInputEngine.Monitor) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Showing another device")
+                Text("Press the monitor's input button to bring it back")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if DisplayInputEngine.isHandoverEjected(monitorKey: monitor.key) {
+                Button("Reconnect") {
+                    DisplayInputEngine.reconnectDisplay(monitorKey: monitor.key)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        inputMonitors = DisplayInputEngine.monitors
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func inputRow(monitor: DisplayInputEngine.Monitor,
+                          input: DisplayInputEngine.Input) -> some View {
+        let rowID = "\(monitor.key)#\(String(format: "%02X", input.code))"
+        let isEditing = editingInputID == rowID
+
+        return HStack(spacing: 10) {
+            if isEditing {
+                TextField("Name this input", text: $editingInputName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { commitRename(monitor: monitor, input: input) }
+                Button("Save") { commitRename(monitor: monitor, input: input) }
+                    .buttonStyle(.bordered)
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(input.label)
+                    // Keep the real port visible when renamed, so "PC" still tells
+                    // you which cable it is.
+                    if input.customName?.isEmpty == false {
+                        Text(input.standardName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                // Marking is a toggle: tapping the marked input clears it, which
+                // is also how you switch the mark off entirely.
+                Button(input.isMac ? "✓ This Mac" : "This Mac") {
+                    DisplayInputEngine.setMacInput(input.isMac ? nil : input.code,
+                                                   monitorKey: monitor.key)
+                    inputMonitors = DisplayInputEngine.monitors
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(input.isMac ? Color.accentColor : .secondary)
+                Button("Rename") {
+                    editingInputName = input.customName ?? ""
+                    editingInputID = rowID
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                Button("Switch") {
+                    DisplayInputEngine.selectInput(monitorKey: monitor.key,
+                                                   code: input.code,
+                                                   autoEject: vm.monitorInputAutoEject)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func commitRename(monitor: DisplayInputEngine.Monitor,
+                              input: DisplayInputEngine.Input) {
+        DisplayInputEngine.setCustomName(editingInputName, monitorKey: monitor.key, code: input.code)
+        inputMonitors = DisplayInputEngine.monitors
+        editingInputID = nil
+        editingInputName = ""
+    }
+
+    private func refreshInputs() {
+        scanningInputs = true
+        DisplayInputEngine.refresh {
+            inputMonitors = DisplayInputEngine.monitors
+            scanningInputs = false
         }
     }
 

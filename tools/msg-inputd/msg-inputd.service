@@ -1,0 +1,31 @@
+[Unit]
+Description=MSG cross-machine input receiver
+Documentation=https://github.com/H1B1CU2/MSG
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/msg-inputd --token-file /etc/msg-inputd/token
+Restart=always
+RestartSec=2
+
+# Root is needed for /dev/uinput. Everything else is taken away: the daemon
+# injects keystrokes, so a compromise of it is a compromise of the whole
+# session, and it has no reason to touch the filesystem or spawn anything.
+User=root
+DeviceAllow=/dev/uinput rw
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -110,8 +110,12 @@ final class AppSettings {
         static let dockPreviewHoverDelay    = "dockPreviewHoverDelay"
         static let dockPreviewThumbHeight   = "dockPreviewThumbHeight"
         static let dockPreviewOffset        = "dockPreviewOffset"
+        static let appSwitcherPreviewEnabled = "appSwitcherPreviewEnabled"
+        static let appSwitcherPreviewDelay   = "appSwitcherPreviewDelay"
+        static let appSwitcherPreviewOffset  = "appSwitcherPreviewOffset"
         static let displaplacerPresets      = "displaplacerPresets"
         static let displaplacerEnabled      = "displaplacerEnabled"
+        static let monitorInputAutoEject    = "monitorInputAutoEject"
         static let menuBarSpacing           = "menuBarSpacing"
         static let menuBarSpacingPadding    = "menuBarSpacingPadding"
         static let showDeveloper            = "showDeveloper"
@@ -282,6 +286,9 @@ final class AppSettings {
     var dockPreviewHoverDelay: TimeInterval { didSet { save() } }
     var dockPreviewThumbHeight: CGFloat { didSet { save() } }
     var dockPreviewOffset: CGFloat   { didSet { save() } }
+    var appSwitcherPreviewEnabled: Bool { didSet { save() } }
+    var appSwitcherPreviewDelay: TimeInterval { didSet { save() } }
+    var appSwitcherPreviewOffset: CGFloat { didSet { save() } }
     // Turning the feature off hides the only UI that can un-eject a display, so
     // restore them first — otherwise a monitor stays dark with no way back to it.
     var displaplacerEnabled: Bool {
@@ -291,6 +298,11 @@ final class AppSettings {
         }
     }
     var displaplacerPresets: [DisplaplacerPreset] { didSet { save() } }
+    /// Hand the monitor to another machine on an input switch: eject it from this
+    /// Mac's workspace so windows move to the built-in display instead of stranding
+    /// on a panel that is now showing something else. Only ever acts when the
+    /// monitor's "This Mac" input has been marked — see DisplayInputEngine.
+    var monitorInputAutoEject: Bool { didSet { save() } }
     var menuBarSpacing: Int        { didSet { save() } }
     var menuBarSpacingPadding: Int { didSet { save() } }
     var showDeveloper: Bool        { didSet { save() } }
@@ -390,8 +402,12 @@ final class AppSettings {
             Key.dockPreviewHoverDelay:   TimeInterval(0.35),
             Key.dockPreviewThumbHeight:  CGFloat(140),
             Key.dockPreviewOffset:       CGFloat(0),
+            Key.appSwitcherPreviewEnabled: true,
+            Key.appSwitcherPreviewDelay:   TimeInterval(0.5),
+            Key.appSwitcherPreviewOffset:  CGFloat(0),
             Key.displaplacerEnabled:     true,
             Key.displaplacerPresets:     Data(),
+            Key.monitorInputAutoEject:   false,
             Key.menuBarSpacing:          MenuBarSpacingManager.systemDefault,
             Key.menuBarSpacingPadding:   MenuBarSpacingManager.systemDefault,
             Key.showDeveloper:           false,
@@ -473,11 +489,15 @@ final class AppSettings {
         dockPreviewHoverDelay = d.object(forKey: Key.dockPreviewHoverDelay) as? Double ?? 0.35
         dockPreviewThumbHeight = CGFloat(d.object(forKey: Key.dockPreviewThumbHeight) as? Double ?? 140)
         dockPreviewOffset    = CGFloat(d.object(forKey: Key.dockPreviewOffset) as? Double ?? 0)
+        appSwitcherPreviewEnabled = d.object(forKey: Key.appSwitcherPreviewEnabled) as? Bool ?? true
+        appSwitcherPreviewDelay = d.object(forKey: Key.appSwitcherPreviewDelay) as? Double ?? 0.5
+        appSwitcherPreviewOffset = CGFloat(d.object(forKey: Key.appSwitcherPreviewOffset) as? Double ?? 0)
         if let data = d.data(forKey: Key.displaplacerPresets),
            let decoded = try? JSONDecoder().decode([DisplaplacerPreset].self, from: data) {
             displaplacerPresets = decoded
         } else { displaplacerPresets = [] }
         displaplacerEnabled  = d.object(forKey: Key.displaplacerEnabled) as? Bool ?? true
+        monitorInputAutoEject = d.object(forKey: Key.monitorInputAutoEject) as? Bool ?? false
         menuBarSpacing        = d.object(forKey: Key.menuBarSpacing) as? Int ?? MenuBarSpacingManager.systemDefault
         menuBarSpacingPadding = d.object(forKey: Key.menuBarSpacingPadding) as? Int ?? MenuBarSpacingManager.systemDefault
         showDeveloper         = d.object(forKey: Key.showDeveloper) as? Bool ?? false
@@ -575,7 +595,11 @@ final class AppSettings {
         d.set(dockPreviewHoverDelay,        forKey: Key.dockPreviewHoverDelay)
         d.set(Double(dockPreviewThumbHeight), forKey: Key.dockPreviewThumbHeight)
         d.set(Double(dockPreviewOffset),    forKey: Key.dockPreviewOffset)
+        d.set(appSwitcherPreviewEnabled,    forKey: Key.appSwitcherPreviewEnabled)
+        d.set(appSwitcherPreviewDelay,      forKey: Key.appSwitcherPreviewDelay)
+        d.set(Double(appSwitcherPreviewOffset), forKey: Key.appSwitcherPreviewOffset)
         d.set(displaplacerEnabled,          forKey: Key.displaplacerEnabled)
+        d.set(monitorInputAutoEject,        forKey: Key.monitorInputAutoEject)
         d.set(menuBarSpacing,               forKey: Key.menuBarSpacing)
         d.set(menuBarSpacingPadding,        forKey: Key.menuBarSpacingPadding)
         d.set(showDeveloper,                forKey: Key.showDeveloper)

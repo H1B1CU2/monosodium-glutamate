@@ -115,13 +115,70 @@ final class WallpaperEngine {
 
     /// Set by Indicator when SystemState detects MC entry/exit.
     /// Suppresses the polling IPC check so we don't contend with WindowServer during MC animations.
-    var isMissionControlActive = false
+    /// Read `mcSuppressionActive`, never this — a latched true takes the engine down for good.
+    var isMissionControlActive = false {
+        didSet {
+            guard isMissionControlActive != oldValue else { return }
+            mcActiveSince = isMissionControlActive ? ProcessInfo.processInfo.systemUptime : 0
+        }
+    }
+    private var mcActiveSince: TimeInterval = 0
+    /// No real Mission Control session justifies suppressing the engine this long.
+    private static let mcSuppressionCeilingSec: TimeInterval = 30
+
+    /// `isMissionControlActive` is edge-driven (cleared only by SystemState's
+    /// didStabilize) and the MC reading itself can latch true — an unnamed
+    /// positive-layer WindowManager window is indistinguishable from Mission
+    /// Control without Screen Recording. It gates the external-change poll *and*
+    /// the space-switch re-apply, so a latch strands the baked corners until
+    /// relaunch. Time-bound it: past the ceiling the reading is not trusted.
+    /// Worst case we re-render the desktop during a genuinely long MC session,
+    /// which is a cosmetic hitch and self-correcting on exit.
+    private var mcSuppressionActive: Bool {
+        isMissionControlActive
+            && ProcessInfo.processInfo.systemUptime - mcActiveSince <= Self.mcSuppressionCeilingSec
+    }
 
     /// True while the Cornermizer pane is open. Suppresses automatic
     /// resolution of external wallpaper changes (the pane shows a confirmation
     /// card instead) and automatic re-bakes from settings changes (the pane
     /// has its own Apply flow).
-    var isEditing = false
+    ///
+    /// Never trust this flag on its own: the pane sets it in `onAppear` and
+    /// clears it in `onDisappear`, and `onDisappear` does NOT fire when the
+    /// settings window is closed or minimised — the controller keeps the window
+    /// and its hosting view alive, so the view never leaves the hierarchy. A
+    /// latched true leaves the desktop on the uncornered preview baseline with
+    /// `sync()` disabled, which reads as "Cornermizer stopped working and the
+    /// toggle won't fix it". `editingWindowIsOpen` makes it self-clearing.
+    private(set) var isEditing = false
+
+    /// Liveness for `isEditing`: whether the settings window is actually on
+    /// screen. Wired at launch; nil (pre-macOS 14, where no pane exists to set
+    /// isEditing) means "no opinion".
+    var editingWindowIsOpen: (() -> Bool)?
+
+    func beginEditing() {
+        isEditing = true
+    }
+
+    /// Leaves editing mode and puts the corners back. Idempotent — called from
+    /// the pane's onDisappear, from the window's close/minimise paths, and from
+    /// the poll when the window went away without either firing.
+    func endEditing() {
+        guard isEditing else { return }
+        isEditing = false
+        onExternalChange = nil
+        // An unresolved external change is left alone — the poll adopts it now
+        // that editing has ended.
+        if !externalChangePending { sync() }
+    }
+
+    private func reconcileEditingState() {
+        guard isEditing, editingWindowIsOpen?() == false else { return }
+        Self.wpLog("editing latched with no settings window — releasing")
+        endEditing()
+    }
 
     // MARK: - Init
 
@@ -147,15 +204,15 @@ final class WallpaperEngine {
             // During Mission Control the desktop is the blurred MC background
             // — calling setDesktopImageURL forces WindowServer to re-render it,
             // causing a visible hitch in the MC animation.
-            guard !self.isMissionControlActive else { return }
+            guard !self.mcSuppressionActive else { return }
             self.checkForExternalChange()
             self.reapplyToAllSpaces()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05)  { [weak self] in
-                guard let self, !self.isMissionControlActive else { return }
+                guard let self, !self.mcSuppressionActive else { return }
                 self.reapplyToAllSpaces()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15)  { [weak self] in
-                guard let self, !self.isMissionControlActive else { return }
+                guard let self, !self.mcSuppressionActive else { return }
                 self.reapplyToAllSpaces()
             }
         }
@@ -524,6 +581,9 @@ final class WallpaperEngine {
 
     private func beginPolling() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            // Before the MC gate below: a latched editing flag must be released
+            // even while the MC reading is suppressing everything else.
+            self?.reconcileEditingState()
             self?.checkForExternalChange()
         }
         pollTimer?.tolerance = 1.0 // sampling - let kernel coalesce
@@ -531,7 +591,7 @@ final class WallpaperEngine {
     }
 
     private func checkForExternalChange() {
-        guard !isMissionControlActive else { return }
+        guard !mcSuppressionActive else { return }
 
         // Re-arm displays released by releaseUnreadableBaselines(): once their
         // wallpaper is readable again they get a baseline back and resume baking.

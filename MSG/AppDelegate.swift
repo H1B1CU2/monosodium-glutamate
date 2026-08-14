@@ -36,6 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return c
     }
 
+    private var _appSwitcherHover: AnyObject?   // AppSwitcherHoverController on macOS 14+
+
+    @available(macOS 14.0, *)
+    private var appSwitcherHover: AppSwitcherHoverController {
+        if let c = _appSwitcherHover as? AppSwitcherHoverController { return c }
+        let c = AppSwitcherHoverController(settings: settings)
+        _appSwitcherHover = c
+        return c
+    }
+
     // MARK: - Corner windows
 
     private var cornerWindows: [CornerWindow] = []
@@ -83,7 +93,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applySystemHUD()
         applyInputSourceHUD()
 
+        // Liveness for WallpaperEngine's editing mode: the Cornermizer pane's
+        // onDisappear does not fire when the settings window is merely closed,
+        // so the engine polls this to release a latched isEditing.
+        if #available(macOS 14.0, *) {
+            WallpaperEngine.shared.editingWindowIsOpen = {
+                SettingsWindowController.shared.isVisible
+            }
+        }
+
         WallpaperEngine.shared.start()
+
+        // Fills the DDC input cache the menu and the settings pane read. The scan
+        // is ~2 s of blocking I2C per panel, so it happens once here in the
+        // background and again only when the display set changes.
+        DisplayInputEngine.refresh()
 
         if #available(macOS 14.0, *), settings.trayEnabled {
             trayPanel.registerHotkey()
@@ -92,6 +116,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if #available(macOS 14.0, *), settings.dockPreviewEnabled {
             dockHover.start()
+        }
+
+        if #available(macOS 14.0, *), settings.appSwitcherPreviewEnabled {
+            appSwitcherHover.start()
         }
 
         NotificationCenter.default.addObserver(forName: .trayEnabledChanged, object: nil, queue: .main) { [weak self] _ in
@@ -110,6 +138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.dockHover.start()
             } else {
                 self.dockHover.stop()
+            }
+        }
+
+        NotificationCenter.default.addObserver(forName: .appSwitcherPreviewChanged, object: nil, queue: .main) { [weak self] _ in
+            guard #available(macOS 14.0, *), let self else { return }
+            if self.settings.appSwitcherPreviewEnabled {
+                self.appSwitcherHover.start()
+            } else {
+                self.appSwitcherHover.stop()
             }
         }
 
@@ -178,6 +215,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.checkScreenArrangement()
             self?.settingsMenu.updateExternalMonitorVisibility()
             self?.scheduleDisplayHeal()
+            // A panel that just appeared has inputs to offer; one that left must
+            // drop out of the menu. Delayed so the link has finished negotiating —
+            // DDC on a half-brought-up display returns nothing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                DisplayInputEngine.refresh()
+            }
         }
 
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
@@ -225,7 +268,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 ad.settingsMenu.updateExternalMonitorVisibility()
                 ad.checkScreenArrangement()
-                if !flags.contains(.beginConfigurationFlag) { DisplayLog.snapshot("reconfig settled") }
+                // A panel handed to another machine comes back through here. Undo
+                // the eject that went with the handover so pressing the monitor's
+                // input button is the only step the user has to take.
+                if !flags.contains(.beginConfigurationFlag) {
+                    DisplayInputEngine.reconnectReturnedHandoverDisplays()
+                    DisplayLog.snapshot("reconfig settled")
+                }
             }
         }, ctx)
 
@@ -730,9 +779,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // slide in flight is deliberately showing hidden corners.
         // A pair older than 4 s is stale — no slide lasts that long — and must not
         // keep the watchdog gated (see the same rule in pollSlideState).
+        // Same for Mission Control: `mcHideCeilingHit` means the reading has been
+        // true past the ceiling, i.e. it is not trustworthy — never let a latched
+        // MC reading switch off the one thing that heals every other latch.
         let pairFresh = menuBarPairActive
             && ProcessInfo.processInfo.systemUptime - menuBarPairSince <= 4
-        guard !indicator.isMissionControl, !pairFresh, slidingDisplays.isEmpty else { return }
+        let mcTrusted = indicator.isMissionControl && !mcHideCeilingHit
+        guard !mcTrusted, !pairFresh, slidingDisplays.isEmpty else { return }
 
         // C2: a window holding a dead NSScreen paints nothing — rebuild instead.
         guard cornerWindowsMatchScreens() else {

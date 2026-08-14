@@ -36,6 +36,7 @@ xcrun -sdk macosx swiftc \
     MissionControlDetector.swift \
     SettingsMenu.swift \
     Displaplacer.swift \
+    DisplayInput.swift \
     MusicMonitor.swift \
     MediaRemoteAdapter.swift \
     MusicPopover.swift \
