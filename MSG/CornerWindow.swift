@@ -13,11 +13,13 @@ final class CornerWindow: NSWindow {
     let targetScreen: NSScreen
     var displayUUID: String? { view.displayUUID }
     private let view: CornerView
+    private let splitWindow: SplitCornerWindow
 
     init(screen: NSScreen, settings: AppSettings) {
         self.targetScreen = screen
         self.settings = settings
         self.view = CornerView(screen: screen, settings: settings)
+        self.splitWindow = SplitCornerWindow(screen: screen, settings: settings)
 
         super.init(
             contentRect: screen.frame,
@@ -51,12 +53,41 @@ final class CornerWindow: NSWindow {
         setFrame(targetScreen.frame, display: true)
         view.targetScreen = targetScreen
         view.needsDisplay = true
+        splitWindow.updateFrame()
     }
 
     func redraw() {
         view.alphaValue = 1
         view.needsDisplay = true
         view.display()
+        splitWindow.redraw()
+    }
+
+    func setSplitViewPaneFrames(_ frames: [CGRect]) {
+        splitWindow.setPaneFrames(frames)
+    }
+
+    func updateSplitViewResizeInteraction(primaryMouseDown: Bool) {
+        splitWindow.updateResizeInteraction(primaryMouseDown: primaryMouseDown)
+    }
+
+    /// The physical display corners must remain above every application window,
+    /// while Split View's *internal* corners must sit below transient popovers.
+    /// Keeping them in separate windows is the only reliable way to satisfy both.
+    func orderOverlaysFront() {
+        splitWindow.orderFrontRegardless()
+        orderFrontRegardless()
+    }
+
+    func orderOverlaysOut() {
+        splitWindow.orderOut(nil)
+        orderOut(nil)
+    }
+
+    func healOverlayOrdering() {
+        if level != Self.cornerLevel { level = Self.cornerLevel }
+        splitWindow.healOrdering()
+        orderOverlaysFront()
     }
 
     /// Hide or show the top corners (Mission Control, or the fullscreen-only mode
@@ -73,6 +104,7 @@ final class CornerWindow: NSWindow {
     func setSkipTop(_ skip: Bool) {
         guard view.skipTopCorners != skip else { return }
         view.skipTopCorners = skip
+        splitWindow.setSkipTop(skip)
         redraw()
     }
 
@@ -119,7 +151,7 @@ final class CornerWindow: NSWindow {
     private func startGrowIn(duration: TimeInterval = 0.25) {
         growTimer?.invalidate()
         let start = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let p = min(1.0, CGFloat((CACurrentMediaTime() - start) / duration))
             self.view.topGrowProgress = max(self.view.topGrowProgress, p)
@@ -137,6 +169,61 @@ final class CornerWindow: NSWindow {
     private var growTimer: Timer?
     private var awaitingSlideGrow = false
     private var slideGrowFallback: DispatchWorkItem?
+}
+
+// MARK: - SplitCornerWindow
+
+/// Split View's internal corner masks. This intentionally lives one level below
+/// `.popUpMenu`: it still covers fullscreen app content, but status-item popovers,
+/// menus, tooltips, and other transient UI remain unobstructed.
+private final class SplitCornerWindow: NSWindow {
+    static let cornerLevel = NSWindow.Level(
+        rawValue: NSWindow.Level.popUpMenu.rawValue - 1
+    )
+
+    private let targetScreen: NSScreen
+    private let cornerView: SplitCornerView
+
+    init(screen: NSScreen, settings: AppSettings) {
+        targetScreen = screen
+        cornerView = SplitCornerView(screen: screen, settings: settings)
+        super.init(contentRect: screen.frame,
+                   styleMask: .borderless,
+                   backing: .buffered,
+                   defer: false)
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = false
+        ignoresMouseEvents = true
+        level = Self.cornerLevel
+        animationBehavior = .none
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        contentView = cornerView
+    }
+
+    func updateFrame() {
+        guard targetScreen.frame.width > 0, targetScreen.frame.height > 0 else { return }
+        setFrame(targetScreen.frame, display: true)
+        cornerView.targetScreen = targetScreen
+        cornerView.needsDisplay = true
+    }
+
+    func redraw() {
+        cornerView.needsDisplay = true
+        cornerView.display()
+    }
+
+    func setPaneFrames(_ frames: [CGRect]) { cornerView.setPaneFrames(frames) }
+
+    func setSkipTop(_ skip: Bool) { cornerView.setSkipTop(skip) }
+
+    func updateResizeInteraction(primaryMouseDown: Bool) {
+        cornerView.updateResizeInteraction(primaryMouseDown: primaryMouseDown)
+    }
+
+    func healOrdering() {
+        if level != Self.cornerLevel { level = Self.cornerLevel }
+    }
 }
 
 // MARK: - CornerView
@@ -186,6 +273,7 @@ final class CornerView: NSView {
 
         let uuid = displayUUID ?? "_default"
         let r = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        let curve = isBuiltin ? settings.cornerCurve : settings.extCornerCurve(for: uuid)
         let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
         let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
         let underBar = isBuiltin ? settings.topCornersUnderMenuBar : settings.extTopCornersUnderMenuBar(for: uuid)
@@ -195,7 +283,7 @@ final class CornerView: NSView {
         // 1512x33 at y=0) and the app's content starts at y=33, exactly as on the
         // desktop. Snapping this to 0 for fullscreen puts the masks on the
         // display's hardware-rounded corner, where they are invisible.
-        let topY: CGFloat = underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0
+        let topY: CGFloat = (underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0) + 1
         // No menu-bar proxy here. `underBar && !NSMenu.menuBarVisible()` used to
         // stand in for "no menu bar, so nothing to sit below", but hiding is the
         // wrong response — an invisible corner mask is the one failure mode with
@@ -223,23 +311,30 @@ final class CornerView: NSView {
         let topR = topShown ? r * Easing.outQuart(min(1, max(0, topGrowProgress))) : 0
         let bottomR = bottomEnabled ? r * Easing.outQuart(min(1, max(0, bottomGrowProgress))) : 0
 
-        let sizeR = ceil(max(r, 64)) + 1
+        let reach = CornerGeometry.reach(for: r, curve: curve)
+        let sizeR = ceil(max(reach, 64)) + 1
 
-        topLeftView.frame = NSRect(x: 0, y: H - topY - sizeR, width: sizeR, height: sizeR)
-        topLeftView.corner(radius: topR, kind: .topLeft)
+        // Give the top masks one point of bleed beyond their logical edge. The
+        // curve still anchors at H-topY, but its antialiasing is no longer cut
+        // by the child view's top boundary on a menu-bar-height inset.
+        topLeftView.frame = NSRect(x: 0, y: H - topY - sizeR,
+                                   width: sizeR, height: sizeR + 1)
+        topLeftView.corner(radius: topR, kind: .topLeft, curve: curve)
         topLeftView.isHidden = !topShown || topR <= 0
 
-        topRightView.frame = NSRect(x: W - sizeR, y: H - topY - sizeR, width: sizeR, height: sizeR)
-        topRightView.corner(radius: topR, kind: .topRight)
+        topRightView.frame = NSRect(x: W - sizeR, y: H - topY - sizeR,
+                                    width: sizeR, height: sizeR + 1)
+        topRightView.corner(radius: topR, kind: .topRight, curve: curve)
         topRightView.isHidden = !topShown || topR <= 0
 
         bottomLeftView.frame = NSRect(x: 0, y: 0, width: sizeR, height: sizeR)
-        bottomLeftView.corner(radius: bottomR, kind: .bottomLeft)
+        bottomLeftView.corner(radius: bottomR, kind: .bottomLeft, curve: curve)
         bottomLeftView.isHidden = !bottomEnabled || bottomR <= 0
 
         bottomRightView.frame = NSRect(x: W - sizeR, y: 0, width: sizeR, height: sizeR)
-        bottomRightView.corner(radius: bottomR, kind: .bottomRight)
+        bottomRightView.corner(radius: bottomR, kind: .bottomRight, curve: curve)
         bottomRightView.isHidden = !bottomEnabled || bottomR <= 0
+
     }
 
     override func layout() {
@@ -257,6 +352,177 @@ final class CornerView: NSView {
     }
 }
 
+// MARK: - SplitCornerView
+
+private final class SplitCornerView: NSView {
+    var targetScreen: NSScreen
+    private let settings: AppSettings
+    private var paneFrames: [CGRect] = []
+    private var cornerViews: [SingleCornerView] = []
+    private var progress: CGFloat = 1
+    private var animationTimer: Timer?
+    private var animationTarget: CGFloat?
+    private var waitingForResizeRelease = false
+    private var skipTopCorners = false
+    private static let animationDuration: TimeInterval = 0.25
+
+    init(screen: NSScreen, settings: AppSettings) {
+        targetScreen = screen
+        self.settings = settings
+        super.init(frame: .zero)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    /// Receives global AppKit frames and stores them in this screen-sized,
+    /// click-through overlay's local coordinates.
+    func setPaneFrames(_ frames: [CGRect]) {
+        let screenOrigin = targetScreen.frame.origin
+        let local = frames.map {
+            CGRect(x: $0.minX - screenOrigin.x,
+                   y: $0.minY - screenOrigin.y,
+                   width: $0.width,
+                   height: $0.height)
+        }.filter { bounds.intersects($0) && $0.width > 0 && $0.height > 0 }
+        guard local != paneFrames else { return }
+        let hadPanes = !paneFrames.isEmpty
+        paneFrames = local
+
+        let requiredCount = local.count * 4
+        while cornerViews.count < requiredCount {
+            let corner = SingleCornerView()
+            cornerViews.append(corner)
+            addSubview(corner)
+        }
+        while cornerViews.count > requiredCount {
+            cornerViews.removeLast().removeFromSuperview()
+        }
+
+        if local.isEmpty {
+            animationTimer?.invalidate()
+            animationTimer = nil
+            animationTarget = nil
+            waitingForResizeRelease = false
+            progress = 1
+        } else if !hadPanes {
+            waitingForResizeRelease = false
+            if settings.cornerGrowEnabled {
+                progress = 0
+                animate(to: 1)
+            } else {
+                progress = 1
+            }
+        } else if settings.cornerGrowEnabled {
+            // Hide immediately while the divider moves, then replay only after
+            // the user releases it.
+            animationTimer?.invalidate()
+            animationTimer = nil
+            animationTarget = nil
+            progress = 0
+            waitingForResizeRelease = true
+        } else {
+            waitingForResizeRelease = false
+            progress = 1
+        }
+        needsLayout = true
+        updateCorners()
+    }
+
+    func updateResizeInteraction(primaryMouseDown: Bool) {
+        guard waitingForResizeRelease, !primaryMouseDown else { return }
+        waitingForResizeRelease = false
+        if settings.cornerGrowEnabled {
+            animate(to: 1)
+        } else {
+            progress = 1
+            display()
+        }
+    }
+
+    func setSkipTop(_ skip: Bool) {
+        guard skipTopCorners != skip else { return }
+        skipTopCorners = skip
+        display()
+    }
+
+    private func animate(to target: CGFloat) {
+        let target = min(1, max(0, target))
+        guard animationTarget != target, abs(progress - target) > 0.001 else { return }
+        animationTimer?.invalidate()
+        let from = progress
+        let start = CACurrentMediaTime()
+        animationTarget = target
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - start
+            let linear = min(1, CGFloat(elapsed / Self.animationDuration))
+            self.progress = from + (target - from) * Easing.outQuart(linear)
+            self.display()
+            if linear >= 1 {
+                timer.invalidate()
+                self.animationTimer = nil
+                self.animationTarget = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    private func updateCorners() {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let uuid = targetScreen.uuid ?? "_default"
+        let isBuiltin = targetScreen.isBuiltin
+        let radius = isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        let curve = isBuiltin ? settings.cornerCurve : settings.extCornerCurve(for: uuid)
+        let topEnabled = isBuiltin ? settings.topCornersEnabled : settings.extTopCornersEnabled(for: uuid)
+        let bottomEnabled = isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
+        let topShown = topEnabled && !skipTopCorners
+        let topRadius = topShown ? radius * progress : 0
+        let bottomRadius = bottomEnabled ? radius * progress : 0
+        let reach = CornerGeometry.reach(for: radius, curve: curve)
+        let size = ceil(max(reach, 64)) + 1
+
+        for (index, pane) in paneFrames.enumerated() {
+            let offset = index * 4
+            let corners: [(SingleCornerView.CornerKind, CGRect, CGFloat, Bool)] = [
+                (.topLeft,
+                 CGRect(x: pane.minX, y: pane.maxY - size, width: size, height: size + 1),
+                 topRadius, topShown),
+                (.topRight,
+                 CGRect(x: pane.maxX - size, y: pane.maxY - size, width: size, height: size + 1),
+                 topRadius, topShown),
+                (.bottomLeft,
+                 CGRect(x: pane.minX, y: pane.minY, width: size, height: size),
+                 bottomRadius, bottomEnabled),
+                (.bottomRight,
+                 CGRect(x: pane.maxX - size, y: pane.minY, width: size, height: size),
+                 bottomRadius, bottomEnabled),
+            ]
+            for (cornerIndex, spec) in corners.enumerated() {
+                let corner = cornerViews[offset + cornerIndex]
+                corner.frame = spec.1
+                corner.corner(radius: spec.2, kind: spec.0, curve: curve)
+                corner.isHidden = !spec.3 || spec.2 <= 0
+            }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateCorners()
+    }
+
+    override func display() {
+        updateCorners()
+        super.display()
+        for corner in cornerViews where !corner.isHidden { corner.display() }
+    }
+
+    deinit { animationTimer?.invalidate() }
+}
+
 // MARK: - SingleCornerView
 
 final class SingleCornerView: NSView {
@@ -264,6 +530,7 @@ final class SingleCornerView: NSView {
 
     private(set) var radius: CGFloat = 0
     private(set) var kind: CornerKind = .topLeft
+    private(set) var curve: CornerCurve = .g1
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -273,10 +540,11 @@ final class SingleCornerView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-    func corner(radius r: CGFloat, kind k: CornerKind) {
-        let changed = radius != r || kind != k
+    func corner(radius r: CGFloat, kind k: CornerKind, curve c: CornerCurve = .g1) {
+        let changed = radius != r || kind != k || curve != c
         radius = r
         kind = k
+        curve = c
         if changed { needsDisplay = true }
     }
 
@@ -288,37 +556,72 @@ final class SingleCornerView: NSView {
         let w = bounds.width
         let h = bounds.height
 
-        switch kind {
-        case .topLeft:
-            let p = NSPoint(x: 0, y: h)
-            path.move(to: p)
-            path.line(to: NSPoint(x: p.x + r, y: p.y))
-            path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y - r),
-                           radius: r, startAngle: 90, endAngle: 180)
-            path.line(to: p)
-        case .topRight:
-            let p = NSPoint(x: w, y: h)
-            path.move(to: p)
-            path.line(to: NSPoint(x: p.x - r, y: p.y))
-            path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y - r),
-                           radius: r, startAngle: 90, endAngle: 0, clockwise: true)
-            path.line(to: p)
-        case .bottomLeft:
-            let p = NSPoint(x: 0, y: 0)
-            path.move(to: p)
-            path.line(to: NSPoint(x: p.x + r, y: p.y))
-            path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y + r),
-                           radius: r, startAngle: 270, endAngle: 180, clockwise: true)
-            path.line(to: p)
-        case .bottomRight:
-            let p = NSPoint(x: w, y: 0)
-            path.move(to: p)
-            path.line(to: NSPoint(x: p.x - r, y: p.y))
-            path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y + r),
-                           radius: r, startAngle: 270, endAngle: 0)
-            path.line(to: p)
+        if curve == .g2 {
+            let cornerPoint: CGPoint
+            let sx: CGFloat
+            let sy: CGFloat
+            switch kind {
+            case .topLeft:
+                cornerPoint = CGPoint(x: 0, y: h); sx = 1; sy = -1
+            case .topRight:
+                cornerPoint = CGPoint(x: w, y: h); sx = -1; sy = -1
+            case .bottomLeft:
+                cornerPoint = CGPoint(x: 0, y: 0); sx = 1; sy = 1
+            case .bottomRight:
+                cornerPoint = CGPoint(x: w, y: 0); sx = -1; sy = 1
+            }
+            path.move(to: cornerPoint)
+            path.line(to: CGPoint(x: cornerPoint.x, y: cornerPoint.y + sy * CornerGeometry.k0 * r))
+            path.curve(
+                to: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k4 * r, y: cornerPoint.y + sy * CornerGeometry.k3 * r),
+                controlPoint1: CGPoint(x: cornerPoint.x, y: cornerPoint.y + sy * CornerGeometry.k1 * r),
+                controlPoint2: CGPoint(x: cornerPoint.x, y: cornerPoint.y + sy * CornerGeometry.k2 * r)
+            )
+            path.curve(
+                to: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k3 * r, y: cornerPoint.y + sy * CornerGeometry.k4 * r),
+                controlPoint1: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k6 * r, y: cornerPoint.y + sy * CornerGeometry.k5 * r),
+                controlPoint2: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k5 * r, y: cornerPoint.y + sy * CornerGeometry.k6 * r)
+            )
+            path.curve(
+                to: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k0 * r, y: cornerPoint.y),
+                controlPoint1: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k2 * r, y: cornerPoint.y),
+                controlPoint2: CGPoint(x: cornerPoint.x + sx * CornerGeometry.k1 * r, y: cornerPoint.y)
+            )
+            path.line(to: cornerPoint)
+            path.close()
+        } else {
+            switch kind {
+            case .topLeft:
+                let p = NSPoint(x: 0, y: h)
+                path.move(to: p)
+                path.line(to: NSPoint(x: p.x + r, y: p.y))
+                path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y - r),
+                               radius: r, startAngle: 90, endAngle: 180)
+                path.line(to: p)
+            case .topRight:
+                let p = NSPoint(x: w, y: h)
+                path.move(to: p)
+                path.line(to: NSPoint(x: p.x - r, y: p.y))
+                path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y - r),
+                               radius: r, startAngle: 90, endAngle: 0, clockwise: true)
+                path.line(to: p)
+            case .bottomLeft:
+                let p = NSPoint(x: 0, y: 0)
+                path.move(to: p)
+                path.line(to: NSPoint(x: p.x + r, y: p.y))
+                path.appendArc(withCenter: NSPoint(x: p.x + r, y: p.y + r),
+                               radius: r, startAngle: 270, endAngle: 180, clockwise: true)
+                path.line(to: p)
+            case .bottomRight:
+                let p = NSPoint(x: w, y: 0)
+                path.move(to: p)
+                path.line(to: NSPoint(x: p.x - r, y: p.y))
+                path.appendArc(withCenter: NSPoint(x: p.x - r, y: p.y + r),
+                               radius: r, startAngle: 270, endAngle: 0)
+                path.line(to: p)
+            }
+            path.close()
         }
-        path.close()
         path.fill()
     }
 }

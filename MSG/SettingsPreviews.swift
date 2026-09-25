@@ -2,6 +2,112 @@ import SwiftUI
 import AppKit
 import Combine
 
+// MARK: - Preview animation clock
+//
+// Every animated settings preview draws through `PreviewTimeline` rather than
+// `TimelineView(.animation)`.
+//
+// `.animation` asks SwiftUI to re-run the body on every display frame and has
+// no idle state: it keeps ticking at the panel's refresh rate (120 Hz on a
+// ProMotion display) for as long as the view tree exists, whether or not
+// anything in it is actually moving. The settings window is retained after
+// close (`isReleasedWhenClosed = false`, and the yellow button only calls
+// `orderOut`), so its NSHostingView — and every preview inside it — outlives
+// the window being on screen. Eight `.animation` timelines then pin the main
+// thread in CATransaction/RenderBox/Metal while nothing is visible at all;
+// measured at 22-36% CPU with the window ordered out.
+//
+// Two gates fix that:
+//   1. `PreviewAnimationGate.shared` follows the settings window's real
+//      visibility (driven by SettingsWindowController) and parks the schedule
+//      when it is hidden.
+//   2. Even when visible, previews run at `previewAnimationFPS`, not vsync.
+//
+// CONSTRAINT: the gate is app-wide and is driven only by the settings window.
+// Every current `PreviewTimeline` lives in a settings pane, so that is correct
+// today. A preview shown anywhere else — a popover, the tray panel — would be
+// parked by the wrong window's visibility. Give it its own gate instance if
+// that ever happens.
+//
+// Tried and rejected: a per-view NSViewRepresentable probe that watched each
+// view's own window, which would have removed the constraint above. It measured
+// 70-75% CPU with the window open, against 17% for this design, and the cost
+// did not track frame rate — so the probe itself, not the redraw, was the
+// expense. Not worth re-attempting without a profiler pointing at it.
+
+/// Frame rate for live settings previews while the window is actually visible.
+///
+/// These are small decorative loops at preview scale; 30 Hz reads as smooth
+/// there and costs a quarter of a 120 Hz panel's frames. Raise it here if the
+/// visualiser bars or the dock scene look steppy on your display.
+let previewAnimationFPS: Double = 30
+
+/// Shared on/off switch for every preview animation in the settings window.
+@available(macOS 14.0, *)
+final class PreviewAnimationGate: ObservableObject {
+    static let shared = PreviewAnimationGate()
+    /// Driven by `SettingsWindowController` from window visibility/occlusion.
+    @Published var isRunning: Bool = false
+    private init() {}
+}
+
+/// Fixed-rate timeline that can be parked entirely.
+///
+/// When `paused`, it yields the start date once and then ends the sequence, so
+/// SwiftUI renders one final frame and stops scheduling updates instead of
+/// spinning. Flipping the gate rebuilds the `TimelineView` (see the `.id`
+/// below), which restarts the sequence.
+@available(macOS 14.0, *)
+struct PreviewAnimationSchedule: TimelineSchedule {
+    let fps: Double
+    let paused: Bool
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        if paused {
+            var delivered = false
+            return AnyIterator {
+                if delivered { return nil }
+                delivered = true
+                return startDate
+            }
+        }
+        let step = 1.0 / max(1.0, fps)
+        var next = startDate
+        return AnyIterator {
+            defer { next = next.addingTimeInterval(step) }
+            return next
+        }
+    }
+}
+
+/// Drop-in replacement for `TimelineView(.animation)` in settings previews.
+@available(macOS 14.0, *)
+struct PreviewTimeline<Content: View>: View {
+    @ObservedObject private var gate = PreviewAnimationGate.shared
+    private let fps: Double
+    private let content: (Date) -> Content
+
+    init(fps: Double = previewAnimationFPS,
+         @ViewBuilder content: @escaping (Date) -> Content) {
+        self.fps = fps
+        self.content = content
+    }
+
+    var body: some View {
+        // `.id` forces a fresh TimelineView when the gate flips: a parked
+        // schedule has already returned nil from its iterator, and only a
+        // rebuild starts a new one.
+        //
+        // Note for future edits: this rebuild resets any `@State` declared
+        // inside `content`. Keep animation state in the enclosing view (as
+        // AnimatedPillDotsRow does) rather than in the closure.
+        TimelineView(PreviewAnimationSchedule(fps: fps, paused: !gate.isRunning)) { timeline in
+            content(timeline.date)
+        }
+        .id(gate.isRunning)
+    }
+}
+
 // MARK: - Corner Preview
 
 @available(macOS 14.0, *)
@@ -10,6 +116,7 @@ struct CornerPreviewView: View {
     let topEnabled: Bool
     let bottomEnabled: Bool
     let underBar: Bool
+    var curve: CornerCurve = .g1
     var wallpaperImage: NSImage? = nil
 
     var body: some View {
@@ -18,6 +125,7 @@ struct CornerPreviewView: View {
             spaceCount: 4, activeSpace: 2,
             showMusic: false, screenCount: 1,
             cornerRadius: radius,
+            cornerCurve: curve,
             topCornersEnabled: topEnabled,
             bottomCornersEnabled: bottomEnabled,
             underMenuBar: underBar,
@@ -186,8 +294,8 @@ struct SystemHUDPreviewScene: View {
                 )
             }
             VStack(spacing: 0) {
-                TimelineView(.animation) { timeline in
-                    let anim = hudAnim(at: timeline.date)
+                PreviewTimeline { now in
+                    let anim = hudAnim(at: now)
                     HStack(spacing: 12) {
                         Spacer()
                         if presentationMode == .separate {
@@ -504,8 +612,8 @@ struct MusicPopoverScene: View {
             Text("Miss Summer — temp.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(Color.black.opacity(0.85))
-            TimelineView(.animation) { timeline in
-                let t = timeline.date.timeIntervalSinceReferenceDate
+            PreviewTimeline { now in
+                let t = now.timeIntervalSinceReferenceDate
                 HStack(spacing: 2) {
                     ForEach(0..<audioVisualizerBandCount, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 1)
@@ -524,10 +632,11 @@ struct MusicPopoverScene: View {
     }
 
     private var popoverAnimatedView: some View {
-        TimelineView(.animation) { timeline in
+        PreviewTimeline { now in
+            let anim = popoverAnim(at: now)
             MusicPopoverPreview(width: popoverWidth)
-                .opacity(popoverAnim(at: timeline.date).opacity)
-                .offset(x: 20, y: popoverAnim(at: timeline.date).offsetY)
+                .opacity(anim.opacity)
+                .offset(x: 20, y: anim.offsetY)
         }
     }
 
@@ -551,6 +660,7 @@ struct DisplayPreviewView: View {
     let showMusic: Bool
     let screenCount: Int
     var cornerRadius: CGFloat = 0
+    var cornerCurve: CornerCurve = .g1
     var topCornersEnabled: Bool = false
     var bottomCornersEnabled: Bool = false
     var underMenuBar: Bool = false
@@ -613,24 +723,59 @@ struct DisplayPreviewView: View {
     private func drawCorners(ctx: inout GraphicsContext, size: CGSize) {
         let r = cornerRadius, c = Color.black.opacity(0.65), ty = underMenuBar ? menuBarH : CGFloat(0)
 
-        func pie(_ path: inout Path, _ p: CGPoint, _ dx: CGFloat, _ center: CGPoint, _ start: Double, _ delta: Double) {
-            path.move(to: p)
-            path.addLine(to: CGPoint(x: p.x + dx, y: p.y))
-            path.addRelativeArc(center: center, radius: r, startAngle: .degrees(start), delta: .degrees(delta))
-            path.closeSubpath()
-        }
+        if cornerCurve == .g2 {
+            func g2Corner(_ corner: CGPoint, _ dx: CGFloat, _ dy: CGFloat) -> Path {
+                var path = Path()
+                path.move(to: corner)
+                path.addLine(to: CGPoint(x: corner.x, y: corner.y + dy * CornerGeometry.k0 * r))
+                path.addCurve(
+                    to: CGPoint(x: corner.x + dx * CornerGeometry.k4 * r, y: corner.y + dy * CornerGeometry.k3 * r),
+                    control1: CGPoint(x: corner.x, y: corner.y + dy * CornerGeometry.k1 * r),
+                    control2: CGPoint(x: corner.x, y: corner.y + dy * CornerGeometry.k2 * r)
+                )
+                path.addCurve(
+                    to: CGPoint(x: corner.x + dx * CornerGeometry.k3 * r, y: corner.y + dy * CornerGeometry.k4 * r),
+                    control1: CGPoint(x: corner.x + dx * CornerGeometry.k6 * r, y: corner.y + dy * CornerGeometry.k5 * r),
+                    control2: CGPoint(x: corner.x + dx * CornerGeometry.k5 * r, y: corner.y + dy * CornerGeometry.k6 * r)
+                )
+                path.addCurve(
+                    to: CGPoint(x: corner.x + dx * CornerGeometry.k0 * r, y: corner.y),
+                    control1: CGPoint(x: corner.x + dx * CornerGeometry.k2 * r, y: corner.y),
+                    control2: CGPoint(x: corner.x + dx * CornerGeometry.k1 * r, y: corner.y)
+                )
+                path.addLine(to: corner)
+                path.closeSubpath()
+                return path
+            }
 
-        if topCornersEnabled {
-            var tl = Path(); pie(&tl, CGPoint(x: 0, y: ty), r, CGPoint(x: r, y: ty + r), 270, -90)
-            ctx.fill(tl, with: .color(c))
-            var tr = Path(); pie(&tr, CGPoint(x: size.width, y: ty), -r, CGPoint(x: size.width - r, y: ty + r), 270, 90)
-            ctx.fill(tr, with: .color(c))
-        }
-        if bottomCornersEnabled {
-            var bl = Path(); pie(&bl, CGPoint(x: 0, y: size.height), r, CGPoint(x: r, y: size.height - r), 90, 90)
-            ctx.fill(bl, with: .color(c))
-            var br = Path(); pie(&br, CGPoint(x: size.width, y: size.height), -r, CGPoint(x: size.width - r, y: size.height - r), 90, -90)
-            ctx.fill(br, with: .color(c))
+            if topCornersEnabled {
+                ctx.fill(g2Corner(CGPoint(x: 0, y: ty), 1, 1), with: .color(c))
+                ctx.fill(g2Corner(CGPoint(x: size.width, y: ty), -1, 1), with: .color(c))
+            }
+            if bottomCornersEnabled {
+                ctx.fill(g2Corner(CGPoint(x: 0, y: size.height), 1, -1), with: .color(c))
+                ctx.fill(g2Corner(CGPoint(x: size.width, y: size.height), -1, -1), with: .color(c))
+            }
+        } else {
+            func pie(_ path: inout Path, _ p: CGPoint, _ dx: CGFloat, _ center: CGPoint, _ start: Double, _ delta: Double) {
+                path.move(to: p)
+                path.addLine(to: CGPoint(x: p.x + dx, y: p.y))
+                path.addRelativeArc(center: center, radius: r, startAngle: .degrees(start), delta: .degrees(delta))
+                path.closeSubpath()
+            }
+
+            if topCornersEnabled {
+                var tl = Path(); pie(&tl, CGPoint(x: 0, y: ty), r, CGPoint(x: r, y: ty + r), 270, -90)
+                ctx.fill(tl, with: .color(c))
+                var tr = Path(); pie(&tr, CGPoint(x: size.width, y: ty), -r, CGPoint(x: size.width - r, y: ty + r), 270, 90)
+                ctx.fill(tr, with: .color(c))
+            }
+            if bottomCornersEnabled {
+                var bl = Path(); pie(&bl, CGPoint(x: 0, y: size.height), r, CGPoint(x: r, y: size.height - r), 90, 90)
+                ctx.fill(bl, with: .color(c))
+                var br = Path(); pie(&br, CGPoint(x: size.width, y: size.height), -r, CGPoint(x: size.width - r, y: size.height - r), 90, -90)
+                ctx.fill(br, with: .color(c))
+            }
         }
     }
 }
@@ -772,8 +917,8 @@ struct AnimatedPillDotsRow: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
-            let frac = fractionalActive(at: timeline.date)
+        PreviewTimeline { now in
+            let frac = fractionalActive(at: now)
             Canvas { ctx, _ in draw(ctx: &ctx, frac: frac) }
                 .frame(width: renderWidth, height: dims.rowH)
         }
@@ -857,8 +1002,8 @@ struct PreviewMusicPill: View {
             Text("Miss Summer — temp.")
                 .font(.system(size: 8))
                 .foregroundColor(Color.black.opacity(0.85))
-            TimelineView(.animation) { timeline in
-                let t = timeline.date.timeIntervalSinceReferenceDate
+            PreviewTimeline { now in
+                let t = now.timeIntervalSinceReferenceDate
                 HStack(spacing: 1) {
                     ForEach(0..<audioVisualizerBandCount, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 0.75)

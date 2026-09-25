@@ -1,22 +1,20 @@
 {
-  "fill" : "automatic",
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:0.03529,0.03529,0.04706,1.00000"
+  },
   "groups" : [
     {
       "layers" : [
         {
-          "blend-mode" : "plus-darker",
-          "fill" : {
-            "solid" : "display-p3:1.00000,0.24482,0.03828,1.00000"
-          },
           "glass" : true,
           "image-name" : "Untitled 2 3.png",
-          "name" : "Untitled 2 3",
+          "name" : "Molecule",
           "opacity" : 1,
           "position" : {
-            "scale" : 1,
+            "scale" : 0.58,
             "translation-in-points" : [
               0,
-              49.16485688793182
+              0
             ]
           }
         }

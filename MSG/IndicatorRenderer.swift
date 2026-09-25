@@ -1,5 +1,113 @@
 import AppKit
 
+// MARK: - Shared Space-pill pipeline
+
+/// The animation and drawing core used by both the native status item and the
+/// tiling control bar. Keeping the timing, easing, geometry interpolation and
+/// final AppKit drawing here prevents the two indicators from drifting apart.
+struct SpacePillMetrics {
+    let dotD: CGFloat
+    let pillW: CGFloat
+    let pillH: CGFloat
+    let clampedIdx: CGFloat
+    let countFloat: CGFloat
+    let rowStretch: CGFloat
+    let stretch: CGFloat
+
+    private var pL: CGFloat { floor(clampedIdx) }
+    private var pH: CGFloat { ceil(clampedIdx) }
+    private var frac: CGFloat { clampedIdx - floor(clampedIdx) }
+
+    private func dotAlpha(_ i: Int) -> CGFloat {
+        CGFloat(i) > floor(countFloat) ? (countFloat - floor(countFloat)) : 1.0
+    }
+
+    func width(_ i: Int) -> CGFloat {
+        let iF = CGFloat(i)
+        if pL == pH { return iF == pL ? (pillW + rowStretch + stretch) : dotD * dotAlpha(i) }
+        if iF == pL { return dotD + (pillW + rowStretch - dotD + stretch) * (1.0 - frac) }
+        if iF == pH { return dotD + (pillW + rowStretch - dotD + stretch) * frac }
+        return dotD * dotAlpha(i)
+    }
+
+    func height(_ i: Int) -> CGFloat {
+        let iF = CGFloat(i)
+        if pL == pH { return iF == pL ? pillH : dotD }
+        if iF == pL { return dotD + (pillH - dotD) * (1.0 - frac) }
+        if iF == pH { return dotD + (pillH - dotD) * frac }
+        return dotD
+    }
+
+    func fill(_ i: Int, bright: NSColor, dim: NSColor, rowAlpha: CGFloat) -> NSColor {
+        let iF = CGFloat(i)
+        let alpha: CGFloat
+        if pL == pH { alpha = iF == pL ? 1.0 : 0.0 }
+        else if iF == pL { alpha = 1.0 - frac }
+        else if iF == pH { alpha = frac }
+        else { alpha = 0 }
+        let color = dim.blended(withFraction: alpha, of: bright) ?? dim
+        return color.withAlphaComponent(color.alphaComponent * rowAlpha * dotAlpha(i))
+    }
+}
+
+enum SpacePillAnimationPipeline {
+    static var frameInterval: TimeInterval { DisplayRate.interval }
+
+    static func duration(style: AnimationStyle, from oldSpace: Int, to newSpace: Int) -> TimeInterval {
+        let distance = max(1, abs(newSpace - oldSpace))
+        let base: TimeInterval = style == .liquid ? 0.75 : 0.30
+        return base * (1.0 + Double(distance - 1) * 0.5)
+    }
+
+    static func easedProgress(_ raw: CGFloat, style: AnimationStyle) -> CGFloat {
+        style == .liquid ? Easing.spring(raw) : Easing.inOutQuart(raw)
+    }
+
+    static func stretch(progress: CGFloat, style: AnimationStyle) -> CGFloat {
+        style == .liquid ? sin(progress * .pi) * 4.0 : 0.0
+    }
+
+    static func rowWidth(metrics: SpacePillMetrics, count: Int, spacing: CGFloat) -> CGFloat {
+        var width: CGFloat = 0
+        for i in 1...max(1, count) {
+            width += metrics.width(i)
+            if i > 1 { width += spacing }
+        }
+        return width
+    }
+
+    /// Draws the interpolated pill/dot row and returns the trailing x position.
+    /// Coordinates are supplied by the host, so this works in both flipped and
+    /// non-flipped AppKit views.
+    @discardableResult
+    static func drawRow(
+        metrics: SpacePillMetrics,
+        count: Int,
+        spacing: CGFloat,
+        originX: CGFloat,
+        originY: CGFloat,
+        rowHeight: CGFloat,
+        bright: NSColor,
+        dim: NSColor,
+        rowAlpha: CGFloat,
+        direction: CGFloat
+    ) -> CGFloat {
+        let safeCount = max(1, count)
+        var x = originX + metrics.stretch * direction * 0.35
+        for i in 1...safeCount {
+            let width = metrics.width(i)
+            let height = metrics.height(i)
+            let rect = NSRect(x: x, y: originY + (rowHeight - height) / 2,
+                              width: width, height: height)
+            metrics.fill(i, bright: bright, dim: dim, rowAlpha: rowAlpha).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: height / 2, yRadius: height / 2).fill()
+            x += width
+            if i < safeCount { x += spacing }
+        }
+        return x
+    }
+}
+
 /// Pure drawing functions for the menu‑bar indicator. Reads animation
 /// state from the `Indicator` reference it's handed each call.
 final class IndicatorRenderer {
@@ -51,51 +159,6 @@ final class IndicatorRenderer {
             brightNonFocus: base.withAlphaComponent(settings.brightNonFocusAlpha),
             dimNonFocus:    base.withAlphaComponent(settings.dimNonFocusAlpha)
         )
-    }
-
-    /// Pill/dot geometry for one display row. `countFloat` is fractional only
-    /// during a layout morph (inline path); the grid path passes an integer
-    /// count, which collapses `dotAlpha` to 1 and matches the old grid math.
-    private struct PillMetrics {
-        let dotD: CGFloat
-        let pillW: CGFloat
-        let pillH: CGFloat
-        let clampedIdx: CGFloat
-        let countFloat: CGFloat
-        let rowStretch: CGFloat
-        let stretch: CGFloat      // liquid stretch on the animating pill (0 otherwise)
-
-        private var pL: CGFloat { floor(clampedIdx) }
-        private var pH: CGFloat { ceil(clampedIdx) }
-        private var frac: CGFloat { clampedIdx - floor(clampedIdx) }
-        private func dotAlpha(_ i: Int) -> CGFloat {
-            CGFloat(i) > floor(countFloat) ? (countFloat - floor(countFloat)) : 1.0
-        }
-
-        func width(_ i: Int) -> CGFloat {
-            let iF = CGFloat(i)
-            if pL == pH { return iF == pL ? (pillW + rowStretch + stretch) : dotD * dotAlpha(i) }
-            if iF == pL { return dotD + (pillW + rowStretch - dotD + stretch) * (1.0 - frac) }
-            if iF == pH { return dotD + (pillW + rowStretch - dotD + stretch) * frac }
-            return dotD * dotAlpha(i)
-        }
-        func height(_ i: Int) -> CGFloat {
-            let iF = CGFloat(i)
-            if pL == pH { return iF == pL ? pillH : dotD }
-            if iF == pL { return dotD + (pillH - dotD) * (1.0 - frac) }
-            if iF == pH { return dotD + (pillH - dotD) * frac }
-            return dotD
-        }
-        func fill(_ i: Int, bright: NSColor, dim: NSColor, rowAlpha: CGFloat) -> NSColor {
-            let iF = CGFloat(i)
-            let alpha: CGFloat
-            if pL == pH { alpha = iF == pL ? 1.0 : 0.0 }
-            else if iF == pL { alpha = 1.0 - frac }
-            else if iF == pH { alpha = frac }
-            else { alpha = 0 }
-            let c = dim.blended(withFraction: alpha, of: bright) ?? dim
-            return c.withAlphaComponent(c.alphaComponent * rowAlpha * dotAlpha(i))
-        }
     }
 
     // MARK: - Width helpers
@@ -190,9 +253,10 @@ final class IndicatorRenderer {
         let _spacePillProg   = animatingDisplay >= 0 ? spacePillProgress  : indicator.animSpacePillProgress
 
         // Liquid stretch: active pill widens during slide, peaking at midpoint
-        let isLiquid = animationStyle == .liquid
         let pillHasAnim = _spacePillActive >= 0
-        let pillStretchBase: CGFloat = (pillHasAnim && isLiquid) ? sin(_spacePillProg * .pi) * 4 : 0
+        let pillStretchBase: CGFloat = pillHasAnim
+            ? SpacePillAnimationPipeline.stretch(progress: _spacePillProg, style: animationStyle)
+            : 0
         let pillDir: CGFloat = _spacePillNew > _spacePillOld ? 1 : -1
 
         let textProgress: CGFloat = 1.0
@@ -378,17 +442,15 @@ final class IndicatorRenderer {
                     let rowNaturalW = countFloat * dotD + max(0, countFloat - 1) * sp + (pillW - dotD)
                     let rowStretch = max(0, naturalW - rowNaturalW) * stackProgress
 
-                    let metrics = PillMetrics(
+                    let metrics = SpacePillMetrics(
                         dotD: dotD, pillW: pillW, pillH: pillH,
                         clampedIdx: clampedPillIdx, countFloat: countFloat,
                         rowStretch: rowStretch, stretch: isAnim ? pillStretchBase : 0
                     )
 
-                    var totalRowW: CGFloat = 0
-                    for i in 1...count {
-                        totalRowW += metrics.width(i)
-                        if i > 1 { totalRowW += sp }
-                    }
+                    let totalRowW = SpacePillAnimationPipeline.rowWidth(
+                        metrics: metrics, count: count, spacing: sp
+                    )
 
                     let inlineX = inlineStartX + inlineXPos
                     let stackedX = (fixedW - totalRowW) / 2
@@ -399,20 +461,12 @@ final class IndicatorRenderer {
                         palette.dimFocus.withAlphaComponent(rowAlpha * (1.0 - stackProgress)).set()
                         NSBezierPath(roundedRect: sepRect, xRadius: 0.75, yRadius: 0.75).fill()
                     }
-                    // Directional stretch offset: smear toward destination
-                    let stretchShift = isAnim ? pillStretchBase * pillDir * 0.35 : 0
-                    x += stretchShift
-
-                    for i in 1...count {
-                        let w = metrics.width(i)
-                        let h = metrics.height(i)
-                        let rect = NSRect(x: x, y: rowY + (rowH - h) / 2, width: w, height: h)
-                        let path = NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2)
-                        metrics.fill(i, bright: bright, dim: dim, rowAlpha: rowAlpha).setFill()
-                        path.fill()
-                        x += w
-                        if i < count { x += sp }
-                    }
+                    x = SpacePillAnimationPipeline.drawRow(
+                        metrics: metrics, count: count, spacing: sp,
+                        originX: x, originY: rowY, rowHeight: rowH,
+                        bright: bright, dim: dim, rowAlpha: rowAlpha,
+                        direction: isAnim ? pillDir : 0
+                    )
                     inlineXPos += rowNaturalW + (isAnim ? pillStretchBase : 0) + 16
                 }
             }
@@ -433,9 +487,10 @@ final class IndicatorRenderer {
         renderFocusOnly: Bool = false,
         animationStyle: AnimationStyle = .liquid
     ) {
-        let isLiquid = animationStyle == .liquid
         let pillHasAnim = spacePillActive >= 0
-        let pillStretchBase: CGFloat = (pillHasAnim && isLiquid) ? sin(spacePillProgress * .pi) * 4 : 0
+        let pillStretchBase: CGFloat = pillHasAnim
+            ? SpacePillAnimationPipeline.stretch(progress: spacePillProgress, style: animationStyle)
+            : 0
         let pillDir: CGFloat = spacePillNew > spacePillOld ? 1 : -1
         let totalRows = gridRows.count
         let totalGridH = CGFloat(totalRows) * gridRowH + CGFloat(max(0, totalRows - 1)) * gridGap
@@ -488,23 +543,18 @@ final class IndicatorRenderer {
                     clampedPillIdx = CGFloat(display.current)
                 }
                 let clamped = max(1.0, min(countFloat, clampedPillIdx))
-                let metrics = PillMetrics(
+                let metrics = SpacePillMetrics(
                     dotD: gridDotD, pillW: gridPillW, pillH: gridPillH,
                     clampedIdx: clamped, countFloat: countFloat,
                     rowStretch: perDisplayStretch, stretch: isAnimDisplay ? pillStretchBase : 0
                 )
 
-                let stretchShift = isAnimDisplay ? pillStretchBase * pillDir * 0.35 : 0
-                var px = x + stretchShift
-                for i in 1...count {
-                    let w = metrics.width(i)
-                    let h = metrics.height(i)
-                    let rect = NSRect(x: px, y: rowY + (gridRowH - h) / 2, width: w, height: h)
-                    metrics.fill(i, bright: bright, dim: dim, rowAlpha: 1.0).setFill()
-                    NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2).fill()
-                    px += w
-                    if i < count { px += gridSp }
-                }
+                let px = SpacePillAnimationPipeline.drawRow(
+                    metrics: metrics, count: count, spacing: gridSp,
+                    originX: x, originY: rowY, rowHeight: gridRowH,
+                    bright: bright, dim: dim, rowAlpha: 1.0,
+                    direction: isAnimDisplay ? pillDir : 0
+                )
                 x = px + (relIdx < row.displayIndices.count - 1 ? 16 : 0)
             }
         }
@@ -667,17 +717,17 @@ final class IndicatorRenderer {
 
     /// Icon + rounded level bar that replaces the native macOS volume/brightness
     /// OSD. `value` is 0…1; `muted` dims the fill and forces the slash icon.
-    func makeSystemHUDFrame(kind: SystemHUDKind, value: CGFloat, muted: Bool, audioOutputKind: AudioOutputKind? = nil) -> NSImage {
-        let imgH: CGFloat = 22
-        let v = max(0, min(1, value))
-        let color = menuBarTextColor
-
+    /// The volume/brightness glyph for a HUD state — shared by this renderer
+    /// and the tiling bar's Space Indicator, so both HUDs always agree.
+    static func systemHUDIcon(kind: SystemHUDKind, value v: CGFloat, muted: Bool,
+                              audioOutputKind: AudioOutputKind?, deviceIcons: Bool,
+                              pointSize: CGFloat, color: NSColor) -> NSImage? {
         let symbolName: String
         switch kind {
         case .brightness:
             symbolName = v < 0.5 ? "sun.min.fill" : "sun.max.fill"
         case .volume:
-            if settings.systemHUDDeviceIcons, let audioOutputKind {
+            if deviceIcons, let audioOutputKind {
                 switch audioOutputKind {
                 case .airPodsPro: symbolName = "airpodspro"
                 case .airPods:    symbolName = "airpods"
@@ -695,8 +745,37 @@ final class IndicatorRenderer {
             else if v < 0.66   { symbolName = "speaker.wave.2.fill" }
             else               { symbolName = "speaker.wave.3.fill" }
         }
-        let icon = systemSymbol(symbolName, pointSize: 12, color: color)
-            ?? fallbackVolumeSymbol(for: symbolName, pointSize: 12, color: color)
+
+        func symbol(_ name: String) -> NSImage? {
+            let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+            let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+            img?.isTemplate = false
+            return img
+        }
+        // Older systems lack the AirPods glyphs; fall back to the nearest one.
+        switch symbolName {
+        case "airpodspro": return symbol(symbolName) ?? symbol("airpods") ?? symbol("headphones")
+        case "airpods":    return symbol(symbolName) ?? symbol("headphones")
+        default:           return symbol(symbolName)
+        }
+    }
+
+    /// Whether a HUD glyph is centered in its slot rather than bottom-anchored.
+    /// The sun symbols radiate from their middle and differ in size (min 14pt,
+    /// max 16pt), so the shared bottom anchor that keeps the speaker family
+    /// steady left them a point high and, for sun.min, a point left.
+    static func centersSystemHUDIcon(kind: SystemHUDKind) -> Bool {
+        kind == .brightness
+    }
+
+    func makeSystemHUDFrame(kind: SystemHUDKind, value: CGFloat, muted: Bool, audioOutputKind: AudioOutputKind? = nil) -> NSImage {
+        let imgH: CGFloat = 22
+        let v = max(0, min(1, value))
+        let color = menuBarTextColor
+
+        let icon = Self.systemHUDIcon(kind: kind, value: v, muted: muted, audioOutputKind: audioOutputKind,
+                                      deviceIcons: settings.systemHUDDeviceIcons, pointSize: 12, color: color)
 
         // Reserve a fixed-width slot for the icon so the HUD's overall width never
         // changes as the symbol swaps (speaker.wave.1 → .3, slash, etc.), which
@@ -723,8 +802,12 @@ final class IndicatorRenderer {
                 // since narrower variants report extra invisible padding reserved
                 // for the wider ones (e.g. speaker.fill leaves room for the waves).
                 let referenceIconHeight: CGFloat = 14
-                let ix = pad + 1
-                let iy = (imgH - referenceIconHeight) / 2
+                var ix = pad + 1
+                var iy = (imgH - referenceIconHeight) / 2
+                if Self.centersSystemHUDIcon(kind: kind) {
+                    ix = pad + (iconSlotW - icon.size.width) / 2
+                    iy = (imgH - icon.size.height) / 2
+                }
                 icon.draw(in: NSRect(x: ix, y: iy, width: icon.size.width, height: icon.size.height))
             }
             let tx = pad + iconSlotW + gap
@@ -746,13 +829,22 @@ final class IndicatorRenderer {
 
     // MARK: - Input Source (keyboard language) Frame
 
+    /// SF Symbol globe image tinted to `color` for the input source HUD.
+    static func inputSourceHUDIcon(pointSize: CGFloat = 12, color: NSColor) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        let img = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        img?.isTemplate = false
+        return img
+    }
+
     /// Globe icon + input source name, shown when the keyboard layout changes.
     /// Same visual language as the system HUD frame: fixed icon slot on the
     /// left, content to the right, 22pt tall.
     func makeInputSourceHUDFrame(name: String) -> NSImage {
         let imgH: CGFloat = 22
         let color = menuBarTextColor
-        let icon = systemSymbol("globe", pointSize: 12, color: color)
+        let icon = Self.inputSourceHUDIcon(pointSize: 12, color: color)
 
         let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
         let attr = NSAttributedString(string: name, attributes: [.font: font, .foregroundColor: color])
@@ -791,18 +883,6 @@ final class IndicatorRenderer {
         let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
         img?.isTemplate = false
         return img
-    }
-
-    private func fallbackVolumeSymbol(for name: String, pointSize: CGFloat, color: NSColor) -> NSImage? {
-        switch name {
-        case "airpodspro":
-            return systemSymbol("airpods", pointSize: pointSize, color: color)
-                ?? systemSymbol("headphones", pointSize: pointSize, color: color)
-        case "airpods":
-            return systemSymbol("headphones", pointSize: pointSize, color: color)
-        default:
-            return nil
-        }
     }
 
     // MARK: - Colors

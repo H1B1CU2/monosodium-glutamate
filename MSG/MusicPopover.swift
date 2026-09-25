@@ -1,11 +1,17 @@
 import AppKit
 import CoreImage
 
+final class MusicPopoverPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 final class MusicPopover {
     private let monitor: MusicMonitor
-    private let window: NSWindow
+    private let window: MusicPopoverPanel
     private var closeMonitor: Any?
     private var pollTimer: Timer?
+    private var spaceObserver: NSObjectProtocol?
     private weak var titleLabel: NSTextField?
     private weak var artistLabel: NSTextField?
     private weak var volumeBar: VolumeBar?
@@ -25,15 +31,33 @@ final class MusicPopover {
         volumeBar = volBar
         touchPad = pad
 
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                          styleMask: [.borderless, .nonactivatingPanel],
-                          backing: .buffered, defer: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.level = .popUpMenu
-        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary, .canJoinAllSpaces]
-        window.contentView = root
+        let p = MusicPopoverPanel(
+            contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.level = .popUpMenu
+        if #available(macOS 13.0, *) {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
+        } else {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
+        p.contentView = root
+        window = p
+
+        spaceObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.close() }
+    }
+
+    deinit {
+        if let o = spaceObserver { NotificationCenter.default.removeObserver(o) }
     }
 
     private var didRetainPolling = false
@@ -60,14 +84,30 @@ final class MusicPopover {
         touchPad?.frame.size.width = padW
         volumeBar?.frame.origin.x = 12 + padW + 4
 
-        guard let buttonWindow = button.window else { return }
-        let buttonFrame = buttonWindow.convertToScreen(button.bounds)
-        let screen = buttonWindow.screen ?? NSScreen.screens[0]
-        let popX = min(max(buttonFrame.midX - winW / 2, screen.visibleFrame.minX),
-                       screen.visibleFrame.maxX - winW)
-        let popY = buttonFrame.minY - 2
+        let screen = button.window?.screen
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        let buttonRect = button.convert(button.bounds, to: nil)
+        let buttonFrame = button.window?.convertToScreen(buttonRect) ?? .zero
+
+        let popX: CGFloat
+        let popY: CGFloat
+        if buttonFrame != .zero {
+            let minX = screen?.visibleFrame.minX ?? 0
+            let maxX = (screen?.visibleFrame.maxX ?? 1400) - winW
+            popX = min(max(buttonFrame.midX - winW / 2, minX), maxX)
+            popY = buttonFrame.minY - 2
+        } else {
+            let mouse = NSEvent.mouseLocation
+            popX = mouse.x - winW / 2
+            popY = (screen?.frame.maxY ?? mouse.y) - NSStatusBar.system.thickness - 2
+        }
         window.setFrameTopLeftPoint(NSPoint(x: popX, y: popY))
-        window.orderFront(nil)
+        if let btnWin = button.window, window.parent != btnWin {
+            btnWin.addChildWindow(window, ordered: .above)
+        }
+        window.orderFrontRegardless()
 
         closeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self, self.window.isVisible else { return }
@@ -95,6 +135,9 @@ final class MusicPopover {
         }
         pollTimer?.invalidate(); pollTimer = nil
         if let m = closeMonitor { NSEvent.removeMonitor(m); closeMonitor = nil }
+        if let parent = window.parent {
+            parent.removeChildWindow(window)
+        }
         window.orderOut(nil)
     }
 

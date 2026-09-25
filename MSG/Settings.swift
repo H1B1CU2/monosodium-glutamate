@@ -13,6 +13,11 @@ enum AnimationStyle: String, CaseIterable {
     case solid  = "Solid"
 }
 
+enum TilingControlBarMode: String, CaseIterable {
+    case fullWidth = "Full Width"
+    case hybridNotch = "Hybrid Notch"
+}
+
 enum DisplayOrderMode: String, CaseIterable {
     case physicalDetection = "Physical Display Detection"
     case prioritizeMain    = "Prioritize Main Display"
@@ -46,6 +51,32 @@ enum SystemHUDPresentationMode: String, CaseIterable {
     case separate = "Separate Menu Bar"
 }
 
+enum CornerCurve: String, CaseIterable, Codable {
+    case g1 = "g1"
+    case g2 = "g2"
+
+    var label: String {
+        switch self {
+        case .g1: return "G1 (Circular)"
+        case .g2: return "G2 (Continuous)"
+        }
+    }
+}
+
+enum CornerGeometry {
+    static let k0: CGFloat = 1.52866495
+    static let k1: CGFloat = 1.08849001
+    static let k2: CGFloat = 0.86840701
+    static let k3: CGFloat = 0.63149399
+    static let k4: CGFloat = 0.07491140
+    static let k5: CGFloat = 0.37282401
+    static let k6: CGFloat = 0.16906001
+
+    static func reach(for radius: CGFloat, curve: CornerCurve) -> CGFloat {
+        curve == .g2 ? radius * k0 : radius
+    }
+}
+
 // MARK: - Fake Display
 
 struct FakeDisplay: Codable, Identifiable, Equatable {
@@ -66,17 +97,21 @@ final class AppSettings {
     enum Category {
         case corners        // overlay redraw
         case indicator      // status bar render
+        case tiling         // tiling engine and top control bar
         case structural     // rebuild windows/menus
     }
 
     private enum Key {
         static let cornerRadius             = "cornerRadius"
+        static let cornerCurve              = "cornerCurve"
         static let topCornersEnabled        = "topCornersEnabled"
         static let bottomCornersEnabled     = "bottomCornersEnabled"
         static let topCornersUnderMenuBar   = "topCornersUnderMenuBar"
         static let topCornersFullscreenOnly = "topCornersFullscreenOnly"
         static let cornerGrowEnabled        = "cornerGrowEnabled"
+        static let lidOpeningGlassEnabled   = "lidOpeningGlassEnabled"
         static let extCornerRadius          = "extCornerRadius"
+        static let extCornerCurve           = "extCornerCurve"
         static let extTopCornersEnabled     = "extTopCornersEnabled"
         static let extBottomCornersEnabled  = "extBottomCornersEnabled"
         static let extTopCornersUnderMenuBar = "extTopCornersUnderMenuBar"
@@ -103,16 +138,37 @@ final class AppSettings {
         static let dimFocusAlpha            = "dimFocusAlpha"
         static let brightNonFocusAlpha      = "brightNonFocusAlpha"
         static let dimNonFocusAlpha         = "dimNonFocusAlpha"
-        static let trayEnabled              = "trayEnabled"
-        static let trayDockSync             = "trayDockSync"
-        static let trayShowNowPlaying       = "trayShowNowPlaying"
         static let dockPreviewEnabled       = "dockPreviewEnabled"
         static let dockPreviewHoverDelay    = "dockPreviewHoverDelay"
         static let dockPreviewThumbHeight   = "dockPreviewThumbHeight"
         static let dockPreviewOffset        = "dockPreviewOffset"
+        static let notchPreviewEnabled      = "notchPreviewEnabled"
+        static let notchPreviewHoverDelay   = "notchPreviewHoverDelay"
+        static let notchPreviewThumbHeight  = "notchPreviewThumbHeight"
+        static let notchPreviewShowOtherSpaces = "notchPreviewShowOtherSpaces"
+        static let notchShowDock             = "notchShowDock"
+        static let appSwitcherLayout         = "appSwitcherLayout"
+        static let appSwitcherShowDock       = "appSwitcherShowDock"
         static let appSwitcherPreviewEnabled = "appSwitcherPreviewEnabled"
         static let appSwitcherPreviewDelay   = "appSwitcherPreviewDelay"
         static let appSwitcherPreviewOffset  = "appSwitcherPreviewOffset"
+        static let appSwitcherStartAtCurrent = "appSwitcherStartAtCurrent"
+        static let appSwitcherMaxPerRow      = "appSwitcherMaxPerRow"
+        static let tilingEnabled              = "tilingEnabled"
+        static let tilingShowControlBar       = "tilingShowControlBar"
+        static let tilingControlBarMode       = "tilingControlBarMode"
+        static let tilingControlBarScope      = "tilingControlBarScope"
+        static let tilingPillScope            = "tilingPillScope"
+        static let tilingOneAppPerDeskspace   = "tilingOneAppPerDeskspace"
+        static let tilingAutoDeleteEmptySpaces = "tilingAutoDeleteEmptySpaces"
+        static let tilingPadding              = "tilingPadding"
+        static let tilingStablePreviewResize  = "tilingStablePreviewResize"
+        static let tilingSwipeDownCyclesTabs  = "tilingSwipeDownCyclesTabs"
+        static let tilingSwipeSwitchesSpaces  = "tilingSwipeSwitchesSpaces"
+        static let tilingSpaceSwipeFingers    = "tilingSpaceSwipeFingers"
+        static let tilingControlBarPreviews   = "tilingControlBarPreviews"
+        static let tilingControlBarDuoBatteryWifi = "tilingControlBarDuoBatteryWifi"
+        static let tilingMasterRatios         = "tilingMasterRatios"
         static let displaplacerPresets      = "displaplacerPresets"
         static let displaplacerEnabled      = "displaplacerEnabled"
         static let monitorInputAutoEject    = "monitorInputAutoEject"
@@ -145,14 +201,20 @@ final class AppSettings {
         static let hardwareStatsTempRaw        = "hardwareStatsTempRaw"
         static let hardwareStatsFanRaw         = "hardwareStatsFanRaw"
         static let hardwareStatsPowerRaw       = "hardwareStatsPowerRaw"
+        static let hardwareStatsPowerSamples   = "hardwareStatsPowerSamples"
         static let hardwareStatsBatteryStyle   = "hardwareStatsBatteryStyle"
         static let hardwareStatsModuleOrder    = "hardwareStatsModuleOrder"
         static let hardwareStatsHiddenCards    = "hardwareStatsHiddenCards"
+        static let hardwareStatsColumns        = "hardwareStatsColumns"
+        static let hardwareStatsCardColumns    = "hardwareStatsCardColumns"
+        static let hardwareStatsBatteryCardSpan = "hardwareStatsBatteryCardSpan"
+        static let hardwareStatsBatteryCardSide = "hardwareStatsBatteryCardSide"
         static let systemHUDEnabled            = "systemHUDEnabled"
         static let systemHUDVolume             = "systemHUDVolume"
         static let systemHUDBrightness         = "systemHUDBrightness"
         static let systemHUDPresentationMode   = "systemHUDPresentationMode"
         static let systemHUDDeviceIcons        = "systemHUDDeviceIcons"
+        static let systemHUDInTilingBar        = "systemHUDInTilingBar"
         static let inputSourceHUDEnabled       = "inputSourceHUDEnabled"
         static let mediaKeyPriorityMusic       = "mediaKeyPriorityMusic"
     }
@@ -165,6 +227,9 @@ final class AppSettings {
     // MARK: Corners
     var cornerRadius: CGFloat {
         didSet { save(); if mirrorMainDisplay { extCornerRadius = cornerRadius }; onChange?(.corners) }
+    }
+    var cornerCurve: CornerCurve {
+        didSet { save(); if mirrorMainDisplay { extCornerCurve = cornerCurve }; onChange?(.corners) }
     }
     var topCornersEnabled: Bool {
         didSet { save(); if mirrorMainDisplay { extTopCornersEnabled = topCornersEnabled }; onChange?(.corners) }
@@ -187,6 +252,10 @@ final class AppSettings {
     var cornerGrowEnabled: Bool {
         didSet { save(); onChange?(.corners) }
     }
+    /// Angle-driven full-screen glass shown briefly when a MacBook lid opens.
+    var lidOpeningGlassEnabled: Bool {
+        didSet { save(); onChange?(.corners) }
+    }
 
     // MARK: External corners (per-display via UUID)
 
@@ -200,6 +269,17 @@ final class AppSettings {
     }
     func setExtCornerRadius(_ v: CGFloat, for uuid: String) {
         UserDefaults.standard.set(Float(v), forKey: extKey(Key.extCornerRadius, uuid: uuid))
+        onChange?(.corners)
+    }
+    func extCornerCurve(for uuid: String) -> CornerCurve {
+        if mirrorMainDisplay { return cornerCurve }
+        let key = extKey(Key.extCornerCurve, uuid: uuid)
+        guard let raw = UserDefaults.standard.string(forKey: key),
+              let curve = CornerCurve(rawValue: raw) else { return extCornerCurve }
+        return curve
+    }
+    func setExtCornerCurve(_ v: CornerCurve, for uuid: String) {
+        UserDefaults.standard.set(v.rawValue, forKey: extKey(Key.extCornerCurve, uuid: uuid))
         onChange?(.corners)
     }
     func extTopCornersEnabled(for uuid: String) -> Bool {
@@ -238,6 +318,7 @@ final class AppSettings {
 
     // Stored fallbacks for code that doesn't use UUIDs
     var extCornerRadius: CGFloat = 10       { didSet { save(); onChange?(.corners) } }
+    var extCornerCurve: CornerCurve = .g1   { didSet { save(); onChange?(.corners) } }
     var extTopCornersEnabled: Bool = true   { didSet { save(); onChange?(.corners) } }
     var extBottomCornersEnabled: Bool = true { didSet { save(); onChange?(.corners) } }
     var extTopCornersUnderMenuBar: Bool = false { didSet { save(); onChange?(.corners) } }
@@ -248,6 +329,7 @@ final class AppSettings {
             save()
             if mirrorMainDisplay {
                 extCornerRadius = cornerRadius
+                extCornerCurve = cornerCurve
                 extTopCornersEnabled = topCornersEnabled
                 extBottomCornersEnabled = bottomCornersEnabled
                 extTopCornersUnderMenuBar = topCornersUnderMenuBar
@@ -279,16 +361,68 @@ final class AppSettings {
     var dimFocusAlpha: CGFloat       { didSet { save(); onChange?(.indicator) } }
     var brightNonFocusAlpha: CGFloat { didSet { save(); onChange?(.indicator) } }
     var dimNonFocusAlpha: CGFloat    { didSet { save(); onChange?(.indicator) } }
-    var trayEnabled: Bool            { didSet { save(); onChange?(.structural) } }
-    var trayDockSync: Bool           { didSet { save() } }
-    var trayShowNowPlaying: Bool     { didSet { save() } }
     var dockPreviewEnabled: Bool     { didSet { save() } }
     var dockPreviewHoverDelay: TimeInterval { didSet { save() } }
     var dockPreviewThumbHeight: CGFloat { didSet { save() } }
     var dockPreviewOffset: CGFloat   { didSet { save() } }
+    var notchPreviewEnabled: Bool     { didSet { save() } }
+    var notchPreviewHoverDelay: TimeInterval { didSet { save() } }
+    var notchPreviewThumbHeight: CGFloat { didSet { save() } }
+    var notchPreviewShowOtherSpaces: Bool { didSet { save() } }
+    var notchShowDock: Bool { didSet { save() } }
+    var appSwitcherMode: String { didSet { save() } }
+    var appSwitcherLayout: String { didSet { save() } }
+    var appSwitcherShowDock: Bool { didSet { save() } }
+    /// How the replacement switcher treats multiple displays:
+    /// `"all"` (one list), `"current"` (only the display under the pointer),
+    /// `"grouped"` (every window, split into a section per display).
+    var appSwitcherDisplayMode: String { didSet { save() } }
+    var appSwitcherGroupBySpace: Bool { didSet { save() } }
+    var appSwitcherStartAtCurrent: Bool { didSet { save() } }
+    var appSwitcherMaxPerRow: Int { didSet { save() } }
     var appSwitcherPreviewEnabled: Bool { didSet { save() } }
     var appSwitcherPreviewDelay: TimeInterval { didSet { save() } }
     var appSwitcherPreviewOffset: CGFloat { didSet { save() } }
+
+    // MARK: Tiling
+    var tilingEnabled: Bool { didSet { save(); onChange?(.tiling) } }
+    var tilingShowControlBar: Bool { didSet { save(); onChange?(.tiling) } }
+    var tilingControlBarMode: TilingControlBarMode { didSet { save(); onChange?(.tiling) } }
+    var tilingControlBarScope: TilingControlBarScope { didSet { save(); onChange?(.tiling) } }
+    var tilingPillScope: TilingPillScope { didSet { save(); onChange?(.tiling) } }
+    var tilingOneAppPerDeskspace: Bool { didSet { save(); onChange?(.tiling) } }
+    var tilingAutoDeleteEmptySpaces: Bool { didSet { save(); onChange?(.tiling) } }
+    /// One value drives both the outer display inset and inner window gaps.
+    var tilingPadding: CGFloat { didSet { save(); onChange?(.tiling) } }
+    /// Alternative interaction that previews geometry and commits once on release.
+    var tilingStablePreviewResize: Bool { didSet { save(); onChange?(.tiling) } }
+    /// A vertical three-finger swipe flips through the tabbed windows: up
+    /// forward, down back. Stored under its original key, from when only a
+    /// swipe down did anything.
+    var tilingSwipeCyclesTabs: Bool { didSet { save(); onChange?(.tiling) } }
+    /// A horizontal three-finger swipe opens the deskspace preview HUD and switches spaces.
+    var tilingSwipeSwitchesSpaces: Bool { didSet { save(); onChange?(.tiling) } }
+    /// Fingers (3 or 4) for the deskspace swipe. Four leaves three free for
+    /// macOS's own swipe between spaces.
+    var tilingSpaceSwipeFingers: Int { didSet { save(); onChange?(.tiling) } }
+    /// Hovering a window icon in the top control bar previews that window,
+    /// and the preview can be dragged onto the desktop to move the window here.
+    var tilingControlBarPreviews: Bool { didSet { save(); onChange?(.tiling) } }
+    /// An iPhone Duo-style merged battery gauge and Wi-Fi icon on the tiling bar.
+    var tilingControlBarDuoBatteryWifi: Bool { didSet { save(); onChange?(.tiling) } }
+
+    func tilingMasterRatio(for displayUUID: String) -> CGFloat {
+        let stored = UserDefaults.standard.dictionary(forKey: Key.tilingMasterRatios)?[displayUUID] as? NSNumber
+        return min(0.8, max(0.2, CGFloat(stored?.doubleValue ?? 0.5)))
+    }
+
+    func setTilingMasterRatio(_ ratio: CGFloat, for displayUUID: String) {
+        let clamped = min(0.8, max(0.2, ratio))
+        var stored = UserDefaults.standard.dictionary(forKey: Key.tilingMasterRatios) ?? [:]
+        guard abs(CGFloat((stored[displayUUID] as? NSNumber)?.doubleValue ?? -1) - clamped) >= 0.001 else { return }
+        stored[displayUUID] = Double(clamped)
+        UserDefaults.standard.set(stored, forKey: Key.tilingMasterRatios)
+    }
     // Turning the feature off hides the only UI that can un-eject a display, so
     // restore them first — otherwise a monitor stays dark with no way back to it.
     var displaplacerEnabled: Bool {
@@ -332,15 +466,41 @@ final class AppSettings {
     var hardwareStatsTempRaw: Bool         { didSet { save(); onChange?(.structural) } }
     var hardwareStatsFanRaw: Bool          { didSet { save(); onChange?(.structural) } }
     var hardwareStatsPowerRaw: Bool        { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsPowerSamples: Int     { didSet { save(); HardwareMonitor.shared.trimPowerHistory(); onChange?(.structural) } }
     /// "bar" | "number" | "icon" (native-style battery glyph)
     var hardwareStatsBatteryStyle: String  { didSet { save(); onChange?(.structural) } }
     /// Canonical module ids in their default order.
-    static let hardwareModuleIDs = ["cpu", "gpu", "memory", "temp", "fan", "power", "battery", "fps"]
+    static let hardwareModuleIDs = HardwareCardLayout.modules
+    /// Module ids that render as grid cards inside popover columns.
+    static let hardwareGridCardIDs = HardwareCardLayout.statistics
     /// Order the modules render in, left→right. Sanitized on load to always
     /// hold exactly the known ids (see `hardwareModuleIDs`).
-    var hardwareStatsModuleOrder: [String] { didSet { save(); onChange?(.structural) } }
+    var hardwareStatsModuleOrder: [String] { didSet { hardwareLayoutChanged() } }
     /// Module ids whose popover detail card is hidden (empty = all shown).
     var hardwareStatsHiddenCards: [String] { didSet { save(); onChange?(.structural) } }
+    /// Number of columns for popover cards (1...3).
+    var hardwareStatsColumns: Int          { didSet { save(); onChange?(.structural) } }
+    /// Multi-column layout for popover grid cards (1 to 3 columns).
+    var hardwareStatsCardColumns: [[String]] { didSet { hardwareLayoutChanged() } }
+    /// "2x2" | "full" (card size for battery in popover)
+    var hardwareStatsBatteryCardSpan: String { didSet { hardwareLayoutChanged() } }
+    /// "left" | "right" (which side battery card is placed when 2x2)
+    var hardwareStatsBatteryCardSide: String { didSet { hardwareLayoutChanged() } }
+
+    private var applyingHardwareLayout = false
+    private func hardwareLayoutChanged() {
+        guard !applyingHardwareLayout else { return }
+        save(); onChange?(.structural)
+    }
+    func applyHardwareLayout(_ layout: HardwareCardLayout) {
+        applyingHardwareLayout = true
+        hardwareStatsModuleOrder = layout.order
+        hardwareStatsCardColumns = layout.columns
+        hardwareStatsBatteryCardSpan = layout.batterySpan
+        hardwareStatsBatteryCardSide = layout.batterySide
+        applyingHardwareLayout = false
+        hardwareLayoutChanged()
+    }
 
     // System HUD (replace native volume/brightness OSD)
     var systemHUDEnabled: Bool    { didSet { save(); onChange?(.structural) } }
@@ -348,6 +508,10 @@ final class AppSettings {
     var systemHUDBrightness: Bool { didSet { save() } }
     var systemHUDPresentationMode: SystemHUDPresentationMode { didSet { save(); onChange?(.structural) } }
     var systemHUDDeviceIcons: Bool { didSet { save() } }
+    /// Dynamic mode only: while the tiling control bar is showing, the HUD
+    /// morphs out of its Space Indicator instead of the menu bar's, which the
+    /// bar covers.
+    var systemHUDInTilingBar: Bool { didSet { save() } }
 
     // Keyboard language HUD (space indicator morphs into the input source name)
     var inputSourceHUDEnabled: Bool { didSet { save(); onChange?(.structural) } }
@@ -364,12 +528,15 @@ final class AppSettings {
         let d = UserDefaults.standard
         d.register(defaults: [
             Key.cornerRadius:           CGFloat(10),
+            Key.cornerCurve:            CornerCurve.g1.rawValue,
             Key.topCornersEnabled:      true,
             Key.bottomCornersEnabled:   true,
             Key.topCornersUnderMenuBar: false,
             Key.topCornersFullscreenOnly: true,
             Key.cornerGrowEnabled:      true,
+            Key.lidOpeningGlassEnabled: true,
             Key.extCornerRadius:        CGFloat(10),
+            Key.extCornerCurve:         CornerCurve.g1.rawValue,
             Key.extTopCornersEnabled:    true,
             Key.extBottomCornersEnabled: true,
             Key.extTopCornersUnderMenuBar: false,
@@ -395,16 +562,36 @@ final class AppSettings {
             Key.dimFocusAlpha:           CGFloat(0.55),
             Key.brightNonFocusAlpha:     CGFloat(0.55),
             Key.dimNonFocusAlpha:        CGFloat(0.55),
-            Key.trayEnabled:             true,
-            Key.trayDockSync:            true,
-            Key.trayShowNowPlaying:      true,
             Key.dockPreviewEnabled:      true,
             Key.dockPreviewHoverDelay:   TimeInterval(0.35),
             Key.dockPreviewThumbHeight:  CGFloat(140),
             Key.dockPreviewOffset:       CGFloat(0),
+            Key.notchPreviewEnabled:     true,
+            Key.notchPreviewHoverDelay:  TimeInterval(0.25),
+            Key.notchPreviewThumbHeight: CGFloat(140),
+            Key.notchPreviewShowOtherSpaces: true,
+            Key.notchShowDock:             true,
+            Key.appSwitcherLayout:         "grid",
+            Key.appSwitcherShowDock:       false,
             Key.appSwitcherPreviewEnabled: true,
             Key.appSwitcherPreviewDelay:   TimeInterval(0.5),
             Key.appSwitcherPreviewOffset:  CGFloat(0),
+            Key.appSwitcherStartAtCurrent: false,
+            Key.appSwitcherMaxPerRow:      5,
+            Key.tilingEnabled:             false,
+            Key.tilingShowControlBar:      true,
+            Key.tilingControlBarMode:      TilingControlBarMode.fullWidth.rawValue,
+            Key.tilingControlBarScope:     TilingControlBarScope.currentSpace.rawValue,
+            Key.tilingPillScope:           TilingPillScope.currentSpace.rawValue,
+            Key.tilingOneAppPerDeskspace:  true,
+            Key.tilingAutoDeleteEmptySpaces: false,
+            Key.tilingPadding:             CGFloat(4),
+            Key.tilingStablePreviewResize: false,
+            Key.tilingSwipeDownCyclesTabs: true,
+            Key.tilingSwipeSwitchesSpaces: true,
+            Key.tilingSpaceSwipeFingers: 3,
+            Key.tilingControlBarPreviews:  true,
+            Key.tilingControlBarDuoBatteryWifi: true,
             Key.displaplacerEnabled:     true,
             Key.displaplacerPresets:     Data(),
             Key.monitorInputAutoEject:   false,
@@ -446,17 +633,21 @@ final class AppSettings {
             Key.systemHUDBrightness:     true,
             Key.systemHUDPresentationMode: SystemHUDPresentationMode.dynamic.rawValue,
             Key.systemHUDDeviceIcons:    true,
+            Key.systemHUDInTilingBar:    false,
             Key.inputSourceHUDEnabled:   true,
             Key.mediaKeyPriorityMusic:   false,
         ])
 
         cornerRadius             = CGFloat(d.float(forKey: Key.cornerRadius))
+        cornerCurve              = CornerCurve(rawValue: d.string(forKey: Key.cornerCurve) ?? "") ?? .g1
         topCornersEnabled        = d.bool(forKey: Key.topCornersEnabled)
         bottomCornersEnabled     = d.bool(forKey: Key.bottomCornersEnabled)
         topCornersUnderMenuBar   = d.bool(forKey: Key.topCornersUnderMenuBar)
         topCornersFullscreenOnly = d.bool(forKey: Key.topCornersFullscreenOnly)
         cornerGrowEnabled        = d.bool(forKey: Key.cornerGrowEnabled)
+        lidOpeningGlassEnabled   = d.object(forKey: Key.lidOpeningGlassEnabled) as? Bool ?? true
         extCornerRadius          = CGFloat(d.float(forKey: Key.extCornerRadius))
+        extCornerCurve           = CornerCurve(rawValue: d.string(forKey: Key.extCornerCurve) ?? "") ?? .g1
         extTopCornersEnabled     = d.bool(forKey: Key.extTopCornersEnabled)
         extBottomCornersEnabled  = d.bool(forKey: Key.extBottomCornersEnabled)
         extTopCornersUnderMenuBar = d.bool(forKey: Key.extTopCornersUnderMenuBar)
@@ -482,16 +673,41 @@ final class AppSettings {
         dimFocusAlpha        = CGFloat(d.float(forKey: Key.dimFocusAlpha))
         brightNonFocusAlpha  = CGFloat(d.float(forKey: Key.brightNonFocusAlpha))
         dimNonFocusAlpha     = CGFloat(d.float(forKey: Key.dimNonFocusAlpha))
-        trayEnabled          = d.bool(forKey: Key.trayEnabled)
-        trayDockSync         = d.object(forKey: Key.trayDockSync) as? Bool ?? true
-        trayShowNowPlaying   = d.object(forKey: Key.trayShowNowPlaying) as? Bool ?? true
         dockPreviewEnabled   = d.object(forKey: Key.dockPreviewEnabled) as? Bool ?? true
         dockPreviewHoverDelay = d.object(forKey: Key.dockPreviewHoverDelay) as? Double ?? 0.35
         dockPreviewThumbHeight = CGFloat(d.object(forKey: Key.dockPreviewThumbHeight) as? Double ?? 140)
         dockPreviewOffset    = CGFloat(d.object(forKey: Key.dockPreviewOffset) as? Double ?? 0)
+        notchPreviewEnabled  = d.object(forKey: Key.notchPreviewEnabled) as? Bool ?? true
+        notchPreviewHoverDelay = d.object(forKey: Key.notchPreviewHoverDelay) as? Double ?? 0.25
+        notchPreviewThumbHeight = CGFloat(d.object(forKey: Key.notchPreviewThumbHeight) as? Double ?? 140)
+        notchPreviewShowOtherSpaces = d.object(forKey: Key.notchPreviewShowOtherSpaces) as? Bool ?? true
+        notchShowDock = d.object(forKey: Key.notchShowDock) as? Bool ?? true
+        appSwitcherMode = d.string(forKey: "appSwitcherMode") ?? "replacement"
+        let storedLayout = d.string(forKey: Key.appSwitcherLayout) ?? d.string(forKey: "appSwitcherLayout") ?? "grid"
+        let validLayouts = ["grid", "singleRow", "spacePerRow"]
+        appSwitcherLayout = validLayouts.contains(storedLayout) ? storedLayout : "grid"
+        appSwitcherShowDock = d.object(forKey: Key.appSwitcherShowDock) as? Bool ?? false
+        appSwitcherDisplayMode = d.string(forKey: "appSwitcherDisplayMode") ?? "all"
+        appSwitcherGroupBySpace = d.object(forKey: "appSwitcherGroupBySpace") as? Bool ?? true
+        appSwitcherStartAtCurrent = d.object(forKey: Key.appSwitcherStartAtCurrent) as? Bool ?? false
+        appSwitcherMaxPerRow = max(3, min(6, d.object(forKey: Key.appSwitcherMaxPerRow) as? Int ?? 5))
         appSwitcherPreviewEnabled = d.object(forKey: Key.appSwitcherPreviewEnabled) as? Bool ?? true
         appSwitcherPreviewDelay = d.object(forKey: Key.appSwitcherPreviewDelay) as? Double ?? 0.5
         appSwitcherPreviewOffset = CGFloat(d.object(forKey: Key.appSwitcherPreviewOffset) as? Double ?? 0)
+        tilingEnabled = d.object(forKey: Key.tilingEnabled) as? Bool ?? false
+        tilingShowControlBar = d.object(forKey: Key.tilingShowControlBar) as? Bool ?? true
+        tilingControlBarMode = TilingControlBarMode(rawValue: d.string(forKey: Key.tilingControlBarMode) ?? "") ?? .fullWidth
+        tilingControlBarScope = TilingControlBarScope(rawValue: d.string(forKey: Key.tilingControlBarScope) ?? "") ?? .currentSpace
+        tilingPillScope = TilingPillScope(rawValue: d.string(forKey: Key.tilingPillScope) ?? "") ?? .currentSpace
+        tilingOneAppPerDeskspace = d.object(forKey: Key.tilingOneAppPerDeskspace) as? Bool ?? true
+        tilingAutoDeleteEmptySpaces = d.object(forKey: Key.tilingAutoDeleteEmptySpaces) as? Bool ?? false
+        tilingPadding = max(0, CGFloat(d.object(forKey: Key.tilingPadding) as? Double ?? 4))
+        tilingStablePreviewResize = d.object(forKey: Key.tilingStablePreviewResize) as? Bool ?? false
+        tilingSwipeCyclesTabs = d.object(forKey: Key.tilingSwipeDownCyclesTabs) as? Bool ?? true
+        tilingSwipeSwitchesSpaces = d.object(forKey: Key.tilingSwipeSwitchesSpaces) as? Bool ?? true
+        tilingSpaceSwipeFingers = (d.object(forKey: Key.tilingSpaceSwipeFingers) as? Int) == 4 ? 4 : 3
+        tilingControlBarPreviews = d.object(forKey: Key.tilingControlBarPreviews) as? Bool ?? true
+        tilingControlBarDuoBatteryWifi = d.object(forKey: Key.tilingControlBarDuoBatteryWifi) as? Bool ?? true
         if let data = d.data(forKey: Key.displaplacerPresets),
            let decoded = try? JSONDecoder().decode([DisplaplacerPreset].self, from: data) {
             displaplacerPresets = decoded
@@ -525,14 +741,45 @@ final class AppSettings {
         hardwareStatsTempRaw      = d.object(forKey: Key.hardwareStatsTempRaw) as? Bool ?? false
         hardwareStatsFanRaw       = d.object(forKey: Key.hardwareStatsFanRaw) as? Bool ?? false
         hardwareStatsPowerRaw     = d.object(forKey: Key.hardwareStatsPowerRaw) as? Bool ?? false
+        hardwareStatsPowerSamples = d.object(forKey: Key.hardwareStatsPowerSamples) as? Int ?? 120
         hardwareStatsBatteryStyle = d.string(forKey: Key.hardwareStatsBatteryStyle) ?? "bar"
+        // If power was enabled in menu bar and battery wasn't, migrate to battery with watts style
+        if (d.object(forKey: Key.hardwareStatsShowPower) as? Bool ?? false) &&
+           !(d.object(forKey: Key.hardwareStatsShowBattery) as? Bool ?? false) {
+            hardwareStatsShowBattery = true
+            hardwareStatsBatteryStyle = "watts"
+        }
         // Keep known ids in the saved order, then append any known id that's
         // missing (e.g. after adding a module) and drop anything unrecognized.
-        let savedOrder = (d.stringArray(forKey: Key.hardwareStatsModuleOrder) ?? [])
-            .filter { AppSettings.hardwareModuleIDs.contains($0) }
+        // Map any legacy "power" id to "battery" and deduplicate.
+        var seenOrder = Set<String>()
+        var savedOrder: [String] = []
+        for id in (d.stringArray(forKey: Key.hardwareStatsModuleOrder) ?? []) {
+            let mapped = id == "power" ? "battery" : id
+            if AppSettings.hardwareModuleIDs.contains(mapped) && seenOrder.insert(mapped).inserted {
+                savedOrder.append(mapped)
+            }
+        }
         hardwareStatsModuleOrder = savedOrder + AppSettings.hardwareModuleIDs.filter { !savedOrder.contains($0) }
-        hardwareStatsHiddenCards = (d.stringArray(forKey: Key.hardwareStatsHiddenCards) ?? [])
-            .filter { AppSettings.hardwareModuleIDs.contains($0) }
+
+        var seenHidden = Set<String>()
+        var savedHidden: [String] = []
+        for id in (d.stringArray(forKey: Key.hardwareStatsHiddenCards) ?? []) {
+            let mapped = id == "power" ? "battery" : id
+            if AppSettings.hardwareModuleIDs.contains(mapped) && seenHidden.insert(mapped).inserted {
+                savedHidden.append(mapped)
+            }
+        }
+        hardwareStatsHiddenCards = savedHidden
+
+        hardwareStatsColumns     = max(1, min(3, d.object(forKey: Key.hardwareStatsColumns) as? Int ?? 2))
+        hardwareStatsCardColumns = HardwareCardLayout.normalize(
+            d.array(forKey: Key.hardwareStatsCardColumns) as? [[String]]
+                ?? [["cpu", "memory"], ["gpu", "temp", "fps"]])
+        let savedBatterySpan = d.string(forKey: Key.hardwareStatsBatteryCardSpan) ?? "2x2"
+        hardwareStatsBatteryCardSpan = ["2x2", "full"].contains(savedBatterySpan) ? savedBatterySpan : "2x2"
+        let savedBatterySide = d.string(forKey: Key.hardwareStatsBatteryCardSide) ?? "left"
+        hardwareStatsBatteryCardSide = ["left", "right"].contains(savedBatterySide) ? savedBatterySide : "left"
         let savedFanPreset = d.string(forKey: Key.hardwareStatsFanPreset) ?? "default"
         hardwareStatsFanPreset = ["performance", "silent"].contains(savedFanPreset) ? savedFanPreset : "default"
         let decodedFanCurves = (try? JSONDecoder().decode([String: [[Double]]].self,
@@ -550,6 +797,7 @@ final class AppSettings {
         systemHUDBrightness = d.object(forKey: Key.systemHUDBrightness) as? Bool ?? true
         systemHUDPresentationMode = SystemHUDPresentationMode(rawValue: d.string(forKey: Key.systemHUDPresentationMode) ?? "") ?? .dynamic
         systemHUDDeviceIcons = d.object(forKey: Key.systemHUDDeviceIcons) as? Bool ?? true
+        systemHUDInTilingBar = d.object(forKey: Key.systemHUDInTilingBar) as? Bool ?? false
         inputSourceHUDEnabled = d.object(forKey: Key.inputSourceHUDEnabled) as? Bool ?? true
         mediaKeyPriorityMusic = d.object(forKey: Key.mediaKeyPriorityMusic) as? Bool ?? false
     }
@@ -558,12 +806,15 @@ final class AppSettings {
         onUIChange?()
         let d = UserDefaults.standard
         d.set(Float(cornerRadius),          forKey: Key.cornerRadius)
+        d.set(cornerCurve.rawValue,         forKey: Key.cornerCurve)
         d.set(topCornersEnabled,            forKey: Key.topCornersEnabled)
         d.set(bottomCornersEnabled,         forKey: Key.bottomCornersEnabled)
         d.set(topCornersUnderMenuBar,       forKey: Key.topCornersUnderMenuBar)
         d.set(topCornersFullscreenOnly,     forKey: Key.topCornersFullscreenOnly)
         d.set(cornerGrowEnabled,            forKey: Key.cornerGrowEnabled)
+        d.set(lidOpeningGlassEnabled,       forKey: Key.lidOpeningGlassEnabled)
         d.set(Float(extCornerRadius),       forKey: Key.extCornerRadius)
+        d.set(extCornerCurve.rawValue,      forKey: Key.extCornerCurve)
         d.set(extTopCornersEnabled,         forKey: Key.extTopCornersEnabled)
         d.set(extBottomCornersEnabled,      forKey: Key.extBottomCornersEnabled)
         d.set(extTopCornersUnderMenuBar,    forKey: Key.extTopCornersUnderMenuBar)
@@ -588,16 +839,39 @@ final class AppSettings {
         d.set(Float(dimFocusAlpha),         forKey: Key.dimFocusAlpha)
         d.set(Float(brightNonFocusAlpha),   forKey: Key.brightNonFocusAlpha)
         d.set(Float(dimNonFocusAlpha),      forKey: Key.dimNonFocusAlpha)
-        d.set(trayEnabled,                  forKey: Key.trayEnabled)
-        d.set(trayDockSync,                 forKey: Key.trayDockSync)
-        d.set(trayShowNowPlaying,           forKey: Key.trayShowNowPlaying)
         d.set(dockPreviewEnabled,           forKey: Key.dockPreviewEnabled)
         d.set(dockPreviewHoverDelay,        forKey: Key.dockPreviewHoverDelay)
         d.set(Double(dockPreviewThumbHeight), forKey: Key.dockPreviewThumbHeight)
         d.set(Double(dockPreviewOffset),    forKey: Key.dockPreviewOffset)
+        d.set(notchPreviewEnabled,          forKey: Key.notchPreviewEnabled)
+        d.set(notchPreviewHoverDelay,       forKey: Key.notchPreviewHoverDelay)
+        d.set(Double(notchPreviewThumbHeight), forKey: Key.notchPreviewThumbHeight)
+        d.set(notchPreviewShowOtherSpaces,   forKey: Key.notchPreviewShowOtherSpaces)
+        d.set(notchShowDock,                 forKey: Key.notchShowDock)
+        d.set(appSwitcherMode, forKey: "appSwitcherMode")
+        d.set(appSwitcherLayout, forKey: Key.appSwitcherLayout)
+        d.set(appSwitcherShowDock, forKey: Key.appSwitcherShowDock)
+        d.set(appSwitcherDisplayMode, forKey: "appSwitcherDisplayMode")
+        d.set(appSwitcherGroupBySpace, forKey: "appSwitcherGroupBySpace")
+        d.set(appSwitcherStartAtCurrent, forKey: Key.appSwitcherStartAtCurrent)
+        d.set(appSwitcherMaxPerRow, forKey: Key.appSwitcherMaxPerRow)
         d.set(appSwitcherPreviewEnabled,    forKey: Key.appSwitcherPreviewEnabled)
         d.set(appSwitcherPreviewDelay,      forKey: Key.appSwitcherPreviewDelay)
         d.set(Double(appSwitcherPreviewOffset), forKey: Key.appSwitcherPreviewOffset)
+        d.set(tilingEnabled,                  forKey: Key.tilingEnabled)
+        d.set(tilingShowControlBar,           forKey: Key.tilingShowControlBar)
+        d.set(tilingControlBarMode.rawValue,   forKey: Key.tilingControlBarMode)
+        d.set(tilingControlBarScope.rawValue,  forKey: Key.tilingControlBarScope)
+        d.set(tilingPillScope.rawValue,         forKey: Key.tilingPillScope)
+        d.set(tilingOneAppPerDeskspace,         forKey: Key.tilingOneAppPerDeskspace)
+        d.set(tilingAutoDeleteEmptySpaces,      forKey: Key.tilingAutoDeleteEmptySpaces)
+        d.set(Double(tilingPadding),          forKey: Key.tilingPadding)
+        d.set(tilingStablePreviewResize,       forKey: Key.tilingStablePreviewResize)
+        d.set(tilingSwipeCyclesTabs,       forKey: Key.tilingSwipeDownCyclesTabs)
+        d.set(tilingSwipeSwitchesSpaces,   forKey: Key.tilingSwipeSwitchesSpaces)
+        d.set(tilingSpaceSwipeFingers,     forKey: Key.tilingSpaceSwipeFingers)
+        d.set(tilingControlBarPreviews,        forKey: Key.tilingControlBarPreviews)
+        d.set(tilingControlBarDuoBatteryWifi,  forKey: Key.tilingControlBarDuoBatteryWifi)
         d.set(displaplacerEnabled,          forKey: Key.displaplacerEnabled)
         d.set(monitorInputAutoEject,        forKey: Key.monitorInputAutoEject)
         d.set(menuBarSpacing,               forKey: Key.menuBarSpacing)
@@ -627,9 +901,14 @@ final class AppSettings {
         d.set(hardwareStatsTempRaw,          forKey: Key.hardwareStatsTempRaw)
         d.set(hardwareStatsFanRaw,           forKey: Key.hardwareStatsFanRaw)
         d.set(hardwareStatsPowerRaw,         forKey: Key.hardwareStatsPowerRaw)
+        d.set(hardwareStatsPowerSamples,     forKey: Key.hardwareStatsPowerSamples)
         d.set(hardwareStatsBatteryStyle,     forKey: Key.hardwareStatsBatteryStyle)
         d.set(hardwareStatsModuleOrder,      forKey: Key.hardwareStatsModuleOrder)
         d.set(hardwareStatsHiddenCards,      forKey: Key.hardwareStatsHiddenCards)
+        d.set(hardwareStatsColumns,          forKey: Key.hardwareStatsColumns)
+        d.set(hardwareStatsCardColumns,      forKey: Key.hardwareStatsCardColumns)
+        d.set(hardwareStatsBatteryCardSpan,  forKey: Key.hardwareStatsBatteryCardSpan)
+        d.set(hardwareStatsBatteryCardSide,  forKey: Key.hardwareStatsBatteryCardSide)
         d.set(hardwareStatsFanPreset,       forKey: Key.hardwareStatsFanPreset)
         if let data = try? JSONEncoder().encode(hardwareStatsFanCurves) {
             d.set(data, forKey: Key.hardwareStatsFanCurves)
@@ -641,6 +920,7 @@ final class AppSettings {
         d.set(systemHUDBrightness, forKey: Key.systemHUDBrightness)
         d.set(systemHUDPresentationMode.rawValue, forKey: Key.systemHUDPresentationMode)
         d.set(systemHUDDeviceIcons, forKey: Key.systemHUDDeviceIcons)
+        d.set(systemHUDInTilingBar, forKey: Key.systemHUDInTilingBar)
         d.set(inputSourceHUDEnabled, forKey: Key.inputSourceHUDEnabled)
         d.set(mediaKeyPriorityMusic, forKey: Key.mediaKeyPriorityMusic)
     }

@@ -8,3 +8,5 @@ xcuserdata/
 *.xcuserstate
 .claude/settings.local.json
 .claude/worktrees/
+__pycache__/
+/main

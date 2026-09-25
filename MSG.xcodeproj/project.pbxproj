@@ -22,10 +22,6 @@
 		BB00000D /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010D /* SettingsWindow.swift */; };
 		BB00000E /* WallpaperEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010E /* WallpaperEngine.swift */; };
 		BB00000F /* MissionControlDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00010F /* MissionControlDetector.swift */; };
-		BB000011 /* TrayState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000111 /* TrayState.swift */; };
-		BB000012 /* TrayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000112 /* TrayPanel.swift */; };
-		BB000013 /* TrayHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000113 /* TrayHUDView.swift */; };
-		BB000014 /* TrayPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000114 /* TrayPane.swift */; };
 		BB000015 /* Displaplacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000115 /* Displaplacer.swift */; };
 		BB000090 /* DisplayInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000190 /* DisplayInput.swift */; };
 		BB000016 /* Shared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000116 /* Shared.swift */; };
@@ -44,6 +40,21 @@
 		BB000029 /* AudioSpectrumTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012A /* AudioSpectrumTap.swift */; };
 		BB00002A /* InputSourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012B /* InputSourceMonitor.swift */; };
 		BB00002B /* AppSwitcherPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012C /* AppSwitcherPreview.swift */; };
+		BB00002C /* LidOpeningGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012D /* LidOpeningGlass.swift */; };
+		BB00002D /* WindowPreviewDragController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012E /* WindowPreviewDragController.swift */; };
+		BB00002E /* NotchPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00012F /* NotchPreview.swift */; };
+		BB00002F /* TilingResizeOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000130 /* TilingResizeOverlay.swift */; };
+		BB009001 /* HardwareCardLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB009101 /* HardwareCardLayout.swift */; };
+		BB009002 /* HardwarePopoverEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB009102 /* HardwarePopoverEditor.swift */; };
+		BB009003 /* FanHelperShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB009103 /* FanHelperShared.swift */; };
+		BB009004 /* FanControlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB009104 /* FanControlClient.swift */; };
+		BB00A001 /* TilingLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A101 /* TilingLayout.swift */; };
+		BB00A005 /* TilingFramePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A105 /* TilingFramePipeline.swift */; };
+		BB00A006 /* TilingDisplayClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A106 /* TilingDisplayClock.swift */; };
+		D9120000000000000000000B /* TilingMenuBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9120000000000000000000F /* TilingMenuBar.swift */; };
+		BB00A002 /* TilingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A102 /* TilingController.swift */; };
+		BB00A003 /* TilingControlBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A103 /* TilingControlBar.swift */; };
+		BB00A004 /* TilingPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00A104 /* TilingPane.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,10 +76,6 @@
 		BB00010D /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		BB00010E /* WallpaperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperEngine.swift; sourceTree = "<group>"; };
 		BB00010F /* MissionControlDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MissionControlDetector.swift; sourceTree = "<group>"; };
-		BB000111 /* TrayState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayState.swift; sourceTree = "<group>"; };
-		BB000112 /* TrayPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayPanel.swift; sourceTree = "<group>"; };
-		BB000113 /* TrayHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayHUDView.swift; sourceTree = "<group>"; };
-		BB000114 /* TrayPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrayPane.swift; sourceTree = "<group>"; };
 		BB000115 /* Displaplacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Displaplacer.swift; sourceTree = "<group>"; };
 		BB000190 /* DisplayInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayInput.swift; sourceTree = "<group>"; };
 		BB000116 /* Shared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared.swift; sourceTree = "<group>"; };
@@ -89,6 +96,21 @@
 		BB00012A /* AudioSpectrumTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSpectrumTap.swift; sourceTree = "<group>"; };
 		BB00012B /* InputSourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceMonitor.swift; sourceTree = "<group>"; };
 		BB00012C /* AppSwitcherPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSwitcherPreview.swift; sourceTree = "<group>"; };
+		BB00012D /* LidOpeningGlass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LidOpeningGlass.swift; sourceTree = "<group>"; };
+		BB00012E /* WindowPreviewDragController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowPreviewDragController.swift; sourceTree = "<group>"; };
+		BB00012F /* NotchPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchPreview.swift; sourceTree = "<group>"; };
+		BB000130 /* TilingResizeOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingResizeOverlay.swift; sourceTree = "<group>"; };
+		BB009101 /* HardwareCardLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareCardLayout.swift; sourceTree = "<group>"; };
+		BB009102 /* HardwarePopoverEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwarePopoverEditor.swift; sourceTree = "<group>"; };
+		BB009103 /* FanHelperShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanHelperShared.swift; sourceTree = "<group>"; };
+		BB009104 /* FanControlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanControlClient.swift; sourceTree = "<group>"; };
+		BB00A101 /* TilingLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingLayout.swift; sourceTree = "<group>"; };
+		BB00A105 /* TilingFramePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingFramePipeline.swift; sourceTree = "<group>"; };
+		BB00A106 /* TilingDisplayClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingDisplayClock.swift; sourceTree = "<group>"; };
+		D9120000000000000000000F /* TilingMenuBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingMenuBar.swift; sourceTree = "<group>"; };
+		BB00A102 /* TilingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingController.swift; sourceTree = "<group>"; };
+		BB00A103 /* TilingControlBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingControlBar.swift; sourceTree = "<group>"; };
+		BB00A104 /* TilingPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilingPane.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -111,8 +133,9 @@
 				BBA00002 /* Spacer */,
 				BBA00003 /* Cornermizer */,
 				BBA00004 /* Music */,
-				BBA00005 /* Tray */,
+				BBA00005 /* Windows */,
 				BBA00008 /* Dock */,
+				BBA0000B /* Tiling */,
 				BBA00006 /* Displaplacer */,
 				BBA0000A /* Hardware */,
 				BBA00007 /* Settings */,
@@ -178,6 +201,7 @@
 			isa = PBXGroup;
 			children = (
 				BB000106 /* CornerWindow.swift */,
+				BB00012D /* LidOpeningGlass.swift */,
 				BB00010E /* WallpaperEngine.swift */,
 			);
 			name = Cornermizer;
@@ -196,16 +220,14 @@
 			name = Music;
 			sourceTree = "<group>";
 		};
-		BBA00005 /* Tray */ = {
+		BBA00005 /* Windows */ = {
 			isa = PBXGroup;
 			children = (
-				BB000111 /* TrayState.swift */,
-				BB000112 /* TrayPanel.swift */,
-				BB000113 /* TrayHUDView.swift */,
-				BB000114 /* TrayPane.swift */,
 				BB00011B /* WindowPreviewCapture.swift */,
+				BB00012E /* WindowPreviewDragController.swift */,
+				BB00012F /* NotchPreview.swift */,
 			);
-			name = Tray;
+			name = Windows;
 			sourceTree = "<group>";
 		};
 		BBA00006 /* Displaplacer */ = {
@@ -242,10 +264,29 @@
 			isa = PBXGroup;
 			children = (
 				BB00011F /* HardwareMonitor.swift */,
+				BB009101 /* HardwareCardLayout.swift */,
+				BB009102 /* HardwarePopoverEditor.swift */,
+				BB009103 /* FanHelperShared.swift */,
+				BB009104 /* FanControlClient.swift */,
 				BB000120 /* HardwareStatusItem.swift */,
 				BB000124 /* FanControlHelper.c */,
 			);
 			name = Hardware;
+			sourceTree = "<group>";
+		};
+		BBA0000B /* Tiling */ = {
+			isa = PBXGroup;
+			children = (
+				BB00A101 /* TilingLayout.swift */,
+				BB00A105 /* TilingFramePipeline.swift */,
+				BB00A106 /* TilingDisplayClock.swift */,
+				D9120000000000000000000F /* TilingMenuBar.swift */,
+				BB00A102 /* TilingController.swift */,
+				BB00A103 /* TilingControlBar.swift */,
+				BB000130 /* TilingResizeOverlay.swift */,
+				BB00A104 /* TilingPane.swift */,
+			);
+			name = Tiling;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -357,10 +398,6 @@
 				BB00000D /* SettingsWindow.swift in Sources */,
 				BB00000E /* WallpaperEngine.swift in Sources */,
 				BB00000F /* MissionControlDetector.swift in Sources */,
-				BB000011 /* TrayState.swift in Sources */,
-				BB000012 /* TrayPanel.swift in Sources */,
-				BB000013 /* TrayHUDView.swift in Sources */,
-				BB000014 /* TrayPane.swift in Sources */,
 				BB000015 /* Displaplacer.swift in Sources */,
 				BB000090 /* DisplayInput.swift in Sources */,
 				BB000016 /* Shared.swift in Sources */,
@@ -371,12 +408,27 @@
 				BB00001B /* DockPreview.swift in Sources */,
 				BB00001C /* DockPane.swift in Sources */,
 				BB00001E /* HardwareMonitor.swift in Sources */,
+				BB009001 /* HardwareCardLayout.swift in Sources */,
+				BB009002 /* HardwarePopoverEditor.swift in Sources */,
+				BB009003 /* FanHelperShared.swift in Sources */,
+				BB009004 /* FanControlClient.swift in Sources */,
 				BB00001F /* HardwareStatusItem.swift in Sources */,
 				BB000022 /* SystemHUDMonitor.swift in Sources */,
 				BB000024 /* SystemHUDStatusItem.swift in Sources */,
 				BB000029 /* AudioSpectrumTap.swift in Sources */,
 				BB00002A /* InputSourceMonitor.swift in Sources */,
 				BB00002B /* AppSwitcherPreview.swift in Sources */,
+				BB00002C /* LidOpeningGlass.swift in Sources */,
+				BB00002D /* WindowPreviewDragController.swift in Sources */,
+				BB00002E /* NotchPreview.swift in Sources */,
+				BB00002F /* TilingResizeOverlay.swift in Sources */,
+				BB00A001 /* TilingLayout.swift in Sources */,
+				BB00A005 /* TilingFramePipeline.swift in Sources */,
+				BB00A006 /* TilingDisplayClock.swift in Sources */,
+				D9120000000000000000000B /* TilingMenuBar.swift in Sources */,
+				BB00A002 /* TilingController.swift in Sources */,
+				BB00A003 /* TilingControlBar.swift in Sources */,
+				BB00A004 /* TilingPane.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -323,7 +323,7 @@ final class WallpaperEngine {
                   let state = screens[uuid] else { continue }
             let current = Self.wallpaperURL(for: screen)
             let showsBake = current.map { Self.isMSGFile(url: $0) } ?? false
-            if bottomCornersWanted(for: screen, uuid: uuid) {
+            if bakeWanted(for: screen, uuid: uuid) {
                 if !showsBake || bakedSignature[uuid] != signature(for: screen, uuid: uuid, state: state) {
                     Self.wpLog("sync: stale -> rebake (cur=\(Self.wpName(current)) showsBake=\(showsBake) sigMatch=\(bakedSignature[uuid] == signature(for: screen, uuid: uuid, state: state)))")
                     staleDisplays.insert(uuid)
@@ -355,14 +355,38 @@ final class WallpaperEngine {
         return screen.isBuiltin ? settings.bottomCornersEnabled : settings.extBottomCornersEnabled(for: uuid)
     }
 
+    /// Height (points) of the strip under the menu bar to paint black, or 0.
+    ///
+    /// macOS picks menu bar item colors from the wallpaper beneath the bar:
+    /// over a light wallpaper it draws dark glyphs. MSG's control bar paints
+    /// that strip black, so those dark glyphs vanished — every other app's
+    /// menu bar item, the clock and Control Center disappeared on a display
+    /// with a light wallpaper. Baking the strip black (it's hidden under the
+    /// bar anyway) makes macOS draw light glyphs, as over a dark wallpaper.
+    private func menuBarStripHeight(for screen: NSScreen) -> CGFloat {
+        guard settings.tilingEnabled, settings.tilingShowControlBar else { return 0 }
+        let reserved = screen.frame.maxY - screen.visibleFrame.maxY
+        return max(NSStatusBar.system.thickness, reserved).rounded(.up) + 2
+    }
+
+    /// A display gets MSG's baked wallpaper for its bottom corners, the
+    /// menu bar strip, or both.
+    private func bakeWanted(for screen: NSScreen, uuid: String) -> Bool {
+        bottomCornersWanted(for: screen, uuid: uuid) || menuBarStripHeight(for: screen) > 0
+    }
+
     private func signature(for screen: NSScreen, uuid: String, state: ScreenState) -> String {
         let radius = screen.isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+        let curve = screen.isBuiltin ? settings.cornerCurve : settings.extCornerCurve(for: uuid)
         return [
             state.baselineURL.path,
             String(state.placement.rawValue),
             String(describing: radius),
+            curve.rawValue,
             String(describing: screen.frame.size),
             String(describing: screen.backingScaleFactor),
+            bottomCornersWanted(for: screen, uuid: uuid) ? "c" : "-",
+            "mb\(Int(menuBarStripHeight(for: screen)))",
         ].joined(separator: "|")
     }
 
@@ -448,8 +472,11 @@ final class WallpaperEngine {
         let sourceURL: URL
         let placement: Placement
         let radius: CGFloat
+        let curve: CornerCurve
         let signature: String
         let toggle: Bool
+        let corners: Bool
+        let menuBarStrip: CGFloat
     }
 
     /// Applies corner masks to the cached baseline wallpapers and sets them as
@@ -465,22 +492,26 @@ final class WallpaperEngine {
             guard let uuid = screen.uuid,
                   displays?.contains(uuid) ?? true,
                   var state = screens[uuid],
-                  bottomCornersWanted(for: screen, uuid: uuid) else { continue }
+                  bakeWanted(for: screen, uuid: uuid) else { continue }
             // Choose the a/b slot from what is actually on the desktop, never from
             // a counter. Rewriting the file the desktop is currently showing makes
             // macOS reload it in place and the wallpaper visibly flickers — and a
             // plain toggle resets to its default on every launch, so a relaunch
             // wrote the displayed slot again. Reading the screen is immune to that.
             let shown = Self.wallpaperURL(for: screen)?.lastPathComponent
-            state.toggle = (shown != Self.bakeFileName(uuid: uuid, toggle: true))
+            state.toggle = !(shown?.hasPrefix("\(uuid)_a") ?? false)
             screens[uuid] = state
             let radius = screen.isBuiltin ? settings.cornerRadius : settings.extCornerRadius(for: uuid)
+            let curve = screen.isBuiltin ? settings.cornerCurve : settings.extCornerCurve(for: uuid)
             jobs.append(BakeJob(
                 screen: screen, uuid: uuid,
                 sourceURL: state.baselineURL, placement: state.placement,
                 radius: radius,
+                curve: curve,
                 signature: signature(for: screen, uuid: uuid, state: state),
-                toggle: state.toggle
+                toggle: state.toggle,
+                corners: bottomCornersWanted(for: screen, uuid: uuid),
+                menuBarStrip: menuBarStripHeight(for: screen)
             ))
         }
         guard !jobs.isEmpty else { return }
@@ -508,13 +539,20 @@ final class WallpaperEngine {
             )
             ctx.draw(cg, in: drawRect)
 
-            let r = job.radius * job.screen.backingScaleFactor
             ctx.setFillColor(CGColor.black)
-            Self.fillCorner(ctx: ctx, x: 0,          y: 0, r: r, dx:  1, dy:  1)
-            Self.fillCorner(ctx: ctx, x: CGFloat(w), y: 0, r: r, dx: -1, dy:  1)
+            if job.corners {
+                let r = job.radius * job.screen.backingScaleFactor
+                Self.fillCorner(ctx: ctx, x: 0,          y: 0, r: r, dx:  1, dy:  1, curve: job.curve)
+                Self.fillCorner(ctx: ctx, x: CGFloat(w), y: 0, r: r, dx: -1, dy:  1, curve: job.curve)
+            }
+            if job.menuBarStrip > 0 {
+                // CG's origin is the bottom-left: the menu bar strip is the top rows.
+                let stripH = job.menuBarStrip * job.screen.backingScaleFactor
+                ctx.fill(CGRect(x: 0, y: h - stripH, width: w, height: stripH))
+            }
 
             guard let out = ctx.makeImage() else { continue }
-            let (outURL, _) = Self.exportPNG(image: out, uuid: job.uuid, toggle: job.toggle)
+            let outURL = Self.exportPNG(image: out, uuid: job.uuid, toggle: job.toggle)
             guard let outURL else { continue }
 
             DispatchQueue.main.async { [weak self] in
@@ -529,6 +567,8 @@ final class WallpaperEngine {
                 Self.wpLog("bake done -> \(Self.wpName(outURL))")
                 Self.setWallpaper(url: outURL, for: job.screen)
                 self.lastBakedURLs[job.uuid] = outURL
+                let shown = NSScreen.screens.compactMap { Self.wallpaperURL(for: $0) }
+                Self.pruneBakes(uuid: job.uuid, keeping: Set(shown + [outURL]))
                 self.bakedSignature[job.uuid] = job.signature
                 // Persist the fingerprint too, so the next launch knows this
                 // desktop is already correct and skips the redundant re-bake.
@@ -774,7 +814,20 @@ final class WallpaperEngine {
     }
 
     static func setWallpaper(url: URL, for screen: NSScreen) {
-        wpLog("setWallpaper -> \(wpName(url))  (was \(wpName(wallpaperURL(for: screen))))")
+        let current = wallpaperURL(for: screen)
+        // `activeSpaceDidChange` deliberately retries the apply because the
+        // newly selected Space can briefly keep its old wallpaper. Once the
+        // target is already installed, however, another
+        // `setDesktopImageURL` is not a harmless no-op: WindowServer rebuilds
+        // the desktop layer and invalidates Mission Control's cached Space
+        // composition. Repeating that on every switch leaves the Spaces bar
+        // showing wallpaper-only thumbnails even though those Spaces contain
+        // windows.
+        guard needsWallpaperWrite(current: current, target: url) else {
+            wpLog("setWallpaper SKIPPED (already current): \(wpName(url))")
+            return
+        }
+        wpLog("setWallpaper -> \(wpName(url))  (was \(wpName(current)))")
         do {
             try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:])
         } catch {
@@ -792,6 +845,18 @@ final class WallpaperEngine {
                 propagateToAllSpacesInDB(url: url, displayUUID: uuid)
             }
         }
+    }
+
+    /// File URLs obtained from NSWorkspace are not guaranteed to have the same
+    /// spelling (for example, `..` components) as the URL retained by the
+    /// engine. Compare their standardized paths so retries only reach
+    /// WindowServer when the desktop really needs to change.
+    static func needsWallpaperWrite(current: URL?, target: URL) -> Bool {
+        guard let current else { return true }
+        if current.isFileURL, target.isFileURL {
+            return current.standardizedFileURL.path != target.standardizedFileURL.path
+        }
+        return current.absoluteString != target.absoluteString
     }
 
     /// Writes the wallpaper URL to every space row for this display in the Dock
@@ -886,25 +951,58 @@ final class WallpaperEngine {
     /// baking so the desktop never has its current file rewritten in place.
     /// Filename for a bake slot. Shared so the slot chosen in `bake()` and the
     /// file written here can never drift apart.
+    ///
+    /// Every bake also gets a unique suffix. macOS caches desktop pictures by
+    /// URL: rewriting `uuid_a.png` with new pixels and re-applying that URL on
+    /// a Space switch reads as "no change", so a Desktop that last decoded the
+    /// old contents kept showing them — the Space switcher (which reads the
+    /// file) and the actual desktop then disagreed.
     static func bakeFileName(uuid: String, toggle: Bool) -> String {
-        "\(uuid)_\(toggle ? "a" : "b").png"
+        let stamp = String(UInt64(Date().timeIntervalSince1970 * 1000), radix: 36)
+        return "\(uuid)_\(toggle ? "a" : "b")_\(stamp).png"
     }
 
-    static func exportPNG(image: CGImage, uuid: String, toggle: Bool) -> (URL?, URL?) {
+    /// Unique names mean bakes accumulate; keep the newest few per display
+    /// (Spaces not yet re-pointed may still reference the previous one) and
+    /// anything a screen is showing right now.
+    static func pruneBakes(uuid: String, keeping keep: Set<URL>) {
+        let fm = FileManager.default
+        let files = ((try? fm.contentsOfDirectory(at: wallpaperDir(),
+                                                   includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("\(uuid)_") && $0.pathExtension == "png" }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a > b
+            }
+        let keepPaths = Set(keep.map(\.standardizedFileURL.path))
+        // Spaces only move to a new bake when visited, so the wallpaper store
+        // can still name an older file for a Desktop not shown since. Deleting
+        // that would blank the Desktop. The store nests each choice as a binary
+        // plist blob with the URL in plain ASCII, so a byte search finds it.
+        let storePath = NSHomeDirectory() + "/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+        guard let store = fm.contents(atPath: storePath) else { return }
+        for file in files.dropFirst(3) where !keepPaths.contains(file.standardizedFileURL.path) {
+            guard let name = file.lastPathComponent.data(using: .utf8),
+                  store.range(of: name) == nil else { continue }
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    static func exportPNG(image: CGImage, uuid: String, toggle: Bool) -> URL? {
         let dir = wallpaperDir()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let outURL = dir.appendingPathComponent(bakeFileName(uuid: uuid, toggle: toggle))
-        let altURL = dir.appendingPathComponent(bakeFileName(uuid: uuid, toggle: !toggle))
         guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, "public.png" as CFString, 1, nil)
-        else { return (nil, nil) }
+        else { return nil }
         let props: [CFString: Any] = [
             kCGImagePropertyPNGDictionary: [
                 kCGImagePropertyPNGSoftware as String: signature
             ]
         ]
         CGImageDestinationAddImage(dest, image, props as CFDictionary)
-        guard CGImageDestinationFinalize(dest) else { return (nil, nil) }
-        return (outURL, altURL)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return outURL
     }
 
     static func isMSGFile(url: URL) -> Bool {
@@ -920,16 +1018,39 @@ final class WallpaperEngine {
 
     // MARK: - Drawing
 
-    static func fillCorner(ctx: CGContext, x: CGFloat, y: CGFloat, r: CGFloat, dx: CGFloat, dy: CGFloat) {
-        let sa: CGFloat = dy < 0 ? .pi / 2 : .pi * 1.5
-        let ea: CGFloat = dx > 0 ? .pi : 0
-        ctx.move(to: CGPoint(x: x, y: y))
-        ctx.addLine(to: CGPoint(x: x + dx * r, y: y))
-        ctx.addArc(center: CGPoint(x: x + dx * r, y: y + dy * r),
-                   radius: r, startAngle: sa, endAngle: ea,
-                   clockwise: dx * dy > 0)
-        ctx.closePath()
-        ctx.fillPath()
+    static func fillCorner(ctx: CGContext, x: CGFloat, y: CGFloat, r: CGFloat, dx: CGFloat, dy: CGFloat, curve: CornerCurve = .g1) {
+        if curve == .g2 {
+            ctx.move(to: CGPoint(x: x, y: y))
+            ctx.addLine(to: CGPoint(x: x, y: y + dy * CornerGeometry.k0 * r))
+            ctx.addCurve(
+                to: CGPoint(x: x + dx * CornerGeometry.k4 * r, y: y + dy * CornerGeometry.k3 * r),
+                control1: CGPoint(x: x, y: y + dy * CornerGeometry.k1 * r),
+                control2: CGPoint(x: x, y: y + dy * CornerGeometry.k2 * r)
+            )
+            ctx.addCurve(
+                to: CGPoint(x: x + dx * CornerGeometry.k3 * r, y: y + dy * CornerGeometry.k4 * r),
+                control1: CGPoint(x: x + dx * CornerGeometry.k6 * r, y: y + dy * CornerGeometry.k5 * r),
+                control2: CGPoint(x: x + dx * CornerGeometry.k5 * r, y: y + dy * CornerGeometry.k6 * r)
+            )
+            ctx.addCurve(
+                to: CGPoint(x: x + dx * CornerGeometry.k0 * r, y: y),
+                control1: CGPoint(x: x + dx * CornerGeometry.k2 * r, y: y),
+                control2: CGPoint(x: x + dx * CornerGeometry.k1 * r, y: y)
+            )
+            ctx.addLine(to: CGPoint(x: x, y: y))
+            ctx.closePath()
+            ctx.fillPath()
+        } else {
+            let sa: CGFloat = dy < 0 ? .pi / 2 : .pi * 1.5
+            let ea: CGFloat = dx > 0 ? .pi : 0
+            ctx.move(to: CGPoint(x: x, y: y))
+            ctx.addLine(to: CGPoint(x: x + dx * r, y: y))
+            ctx.addArc(center: CGPoint(x: x + dx * r, y: y + dy * r),
+                       radius: r, startAngle: sa, endAngle: ea,
+                       clockwise: dx * dy > 0)
+            ctx.closePath()
+            ctx.fillPath()
+        }
     }
 
     // MARK: - Helpers

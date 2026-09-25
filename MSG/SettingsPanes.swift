@@ -26,24 +26,25 @@ struct SpacerPane: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("Indicator") {
+            Section("Appearance") {
                 Picker("Animation", selection: Binding(get: { vm.animationStyle }, set: { vm.animationStyle = $0 })) {
                     ForEach(AnimationStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 if stackVisible {
-                    Picker("Stack Mode", selection: Binding(get: { vm.stackMode }, set: { vm.stackMode = $0 })) {
+                    Picker("Display layout", selection: Binding(get: { vm.stackMode }, set: { vm.stackMode = $0 })) {
                         ForEach(StackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
+                }
+                Picker("Display order", selection: Binding(get: { vm.displayOrderMode }, set: { vm.displayOrderMode = $0 })) {
+                    ForEach(DisplayOrderMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
             }
 
             Section("Behavior") {
-                Picker("Focus Detection", selection: Binding(get: { vm.focusDetectionMode }, set: { vm.focusDetectionMode = $0 })) {
+                Picker("Follow active display", selection: Binding(get: { vm.focusDetectionMode }, set: { vm.focusDetectionMode = $0 })) {
                     ForEach(FocusDetectionMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                Picker("Display Order", selection: Binding(get: { vm.displayOrderMode }, set: { vm.displayOrderMode = $0 })) {
-                    ForEach(DisplayOrderMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
+
             }
 
         }
@@ -84,47 +85,43 @@ struct HUDReplacerPane: View {
                     ForEach(SystemHUDPresentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                if vm.systemHUDPresentationMode == .dynamic {
+                    SettingsToggleRow("Use tiling bar Space Indicator",
+                        detail: "While the tiling control bar is showing, its Space Indicator changes into the HUD and back, instead of the menu bar's.",
+                        isOn: Binding(get: { vm.systemHUDInTilingBar }, set: { vm.systemHUDInTilingBar = $0 }))
+                }
             } header: {
-                Text("Mode")
+                Text("Presentation")
             } footer: {
-                Text("Dynamic temporarily replaces the space indicator. Separate Menu Bar shows the HUD in its own status item while leaving the space indicator alone.")
+                Text("Dynamic uses the Space Indicator. Separate Menu Bar uses its own icon.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
 
-            Section("Keys") {
-                Toggle("Volume",
-                       isOn: Binding(get: { vm.systemHUDVolume }, set: { vm.systemHUDVolume = $0 }))
-                Toggle("Brightness (built-in display)",
-                       isOn: Binding(get: { vm.systemHUDBrightness }, set: { vm.systemHUDBrightness = $0 }))
+            Section("Volume & brightness") {
+                SettingsToggleRow("Volume", detail: "Show a HUD when you adjust sound volume.",
+                    isOn: Binding(get: { vm.systemHUDVolume }, set: { vm.systemHUDVolume = $0 }))
+                if vm.systemHUDVolume {
+                    Toggle("Match icon to sound device",
+                        isOn: Binding(get: { vm.systemHUDDeviceIcons }, set: { vm.systemHUDDeviceIcons = $0 }))
+                }
+                SettingsToggleRow("Built-in brightness", detail: "Show a HUD when you adjust the built-in display.",
+                    isOn: Binding(get: { vm.systemHUDBrightness }, set: { vm.systemHUDBrightness = $0 }))
+            }
+
+            Section("Keyboard") {
+                SettingsToggleRow("Show input language", detail: "Briefly show TH or ENG in the Space Indicator when switching languages. Works independently of the HUD switch.",
+                    isOn: Binding(get: { vm.inputSourceHUDEnabled }, set: { vm.inputSourceHUDEnabled = $0 }))
             }
 
             Section {
-                Toggle("Show keyboard language on switch",
-                       isOn: Binding(get: { vm.inputSourceHUDEnabled }, set: { vm.inputSourceHUDEnabled = $0 }))
-            } header: {
-                Text("Keyboard Language")
+                Button("Manage Accessibility permission…") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             } footer: {
-                Text("When you switch the keyboard input source, the space indicator briefly morphs into the language's short name (TH, ENG), then morphs back. Works independently of the volume/brightness HUD and needs no extra permissions.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-
-            Section {
-                Toggle("Use current sound device icon",
-                       isOn: Binding(get: { vm.systemHUDDeviceIcons }, set: { vm.systemHUDDeviceIcons = $0 }))
-            } header: {
-                Text("Volume Icon")
-            } footer: {
-                Text("AirPods Pro uses the AirPods Pro symbol, headphones use headphones, and built-in speakers keep the speaker symbol.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-
-            Section {
-                Text("Requires Accessibility permission in System Settings > Privacy & Security > Accessibility. Relaunch MSG after granting it.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                Text("Volume and brightness controls need Accessibility access. Relaunch MSG after granting it.")
             }
         }
         .onAppear {
@@ -164,6 +161,7 @@ struct CornermizerPane: View {
                     // isn't one on a fullscreen space — so preview them where
                     // they will actually appear: at the screen edge.
                     underBar: vm.topCornersUnderMenuBar && !vm.topCornersFullscreenOnly,
+                    curve: vm.cornerCurve,
                     wallpaperImage: previewWallpaper
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -175,7 +173,7 @@ struct CornermizerPane: View {
 
             Section(MacModel.name) {
                 if hasExternals {
-                    Toggle("Apply to all displays",
+                    SettingsToggleRow("Use the same corners on every display", detail: "External displays follow the settings below.",
                            isOn: bind({ vm.mirrorMainDisplay }, { vm.mirrorMainDisplay = $0 }))
                 }
                 Toggle("Top Corners",
@@ -187,7 +185,7 @@ struct CornermizerPane: View {
                         Text("Below Menu Bar").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("Fullscreen only",
+                    SettingsToggleRow("Only in full screen", detail: "Show top corners only while an app is full screen.",
                            isOn: bind({ vm.topCornersFullscreenOnly }, { vm.topCornersFullscreenOnly = $0 }))
                 }
                 Toggle("Bottom Corners",
@@ -195,6 +193,12 @@ struct CornermizerPane: View {
                 if radiusVisible {
                     radiusSlider(value: bind({ Double(vm.cornerRadius) },
                                              { vm.cornerRadius = CGFloat($0) }))
+                    Picker("Curve", selection: bind({ vm.cornerCurve },
+                                                    { vm.cornerCurve = $0 })) {
+                        Text("G1 (Circular)").tag(CornerCurve.g1)
+                        Text("G2 (Continuous)").tag(CornerCurve.g2)
+                    }
+                    .pickerStyle(.segmented)
                 }
             }
 
@@ -212,7 +216,7 @@ struct CornermizerPane: View {
             }
 
             Section("Animation") {
-                Toggle("Grow-in animation",
+                SettingsToggleRow("Animate corners", detail: "Ease corners into view when they appear.",
                        isOn: bind({ vm.cornerGrowEnabled }, { vm.cornerGrowEnabled = $0 }))
             }
         }
@@ -367,7 +371,7 @@ struct CornermizerPane: View {
                 Text("Below Menu Bar").tag(true)
             }
             .pickerStyle(.segmented)
-            Toggle("Fullscreen only", isOn: bind(
+            SettingsToggleRow("Only in full screen", detail: "Show top corners only while an app is full screen.", isOn: bind(
                 { AppSettings.shared.extTopCornersFullscreenOnly(for: uuid) },
                 { AppSettings.shared.setExtTopCornersFullscreenOnly($0, for: uuid); vm.objectWillChange.send() }
             ))
@@ -381,6 +385,14 @@ struct CornermizerPane: View {
                 { Double(AppSettings.shared.extCornerRadius(for: uuid)) },
                 { AppSettings.shared.setExtCornerRadius(CGFloat($0), for: uuid); vm.objectWillChange.send() }
             ))
+            Picker("Curve", selection: bind(
+                { AppSettings.shared.extCornerCurve(for: uuid) },
+                { AppSettings.shared.setExtCornerCurve($0, for: uuid); vm.objectWillChange.send() }
+            )) {
+                Text("G1 (Circular)").tag(CornerCurve.g1)
+                Text("G2 (Continuous)").tag(CornerCurve.g2)
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -400,6 +412,49 @@ struct CornermizerPane: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 44, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Lid Glass pane
+
+@available(macOS 14.0, *)
+struct LidGlassPane: View {
+    @ObservedObject var vm: SettingsViewModel
+
+    var body: some View {
+        PaneContainer(
+            section: .lidGlass,
+            headerToggle: Binding(
+                get: { vm.lidOpeningGlassEnabled },
+                set: { vm.lidOpeningGlassEnabled = $0 }
+            )
+        ) {
+            Section("Preview") {
+                Button {
+                    NotificationCenter.default.post(name: .previewLidOpeningGlass,
+                                                    object: nil)
+                } label: {
+                    Label("Play Full-Screen Preview", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(!vm.lidOpeningGlassEnabled)
+            }
+
+            Section("Opening Effect") {
+                LabeledContent("Style", value: "iPhone Duo Glass")
+                Text("The glass starts when a closed MacBook wakes, then its blur and moving reflection follow the physical lid angle until the display is open.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
+                Text("The effect appears over your desktop after macOS wakes. macOS does not allow MSG to draw over the login screen.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -436,7 +491,7 @@ struct MusicPane: View {
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
             }
 
-            Section {
+            Section("Playback") {
                 Picker("Source", selection: Binding(
                     get: { vm.musicSource },
                     set: { vm.musicSource = $0 }
@@ -447,15 +502,16 @@ struct MusicPane: View {
                 }
             }
 
-            Section {
-                Picker("Mode", selection: Binding(
+            Section("Appearance") {
+                Picker("Display", selection: Binding(
                     get: { vm.musicDisplayMode },
                     set: { vm.musicDisplayMode = $0 }
                 )) {
                     ForEach(MusicDisplayMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
+                if vm.musicDisplayMode == .dynamic {
                 HStack {
-                    Text("Linger after pause")
+                    Text("Keep visible after pausing")
                     Slider(value: Binding(
                         get: { vm.musicLingerDuration },
                         set: { vm.musicLingerDuration = $0 }
@@ -467,23 +523,22 @@ struct MusicPane: View {
                             lastHaptic = i
                         }
                     }
-                    .disabled(vm.musicDisplayMode != .dynamic)
                     Text("\(Int(vm.musicLingerDuration))s")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(width: 32, alignment: .trailing)
                 }
-                .opacity(vm.musicDisplayMode != .dynamic ? 0.45 : 1)
-                .animation(.easeInOut(duration: 0.15), value: vm.musicDisplayMode)
+                }
+
             }
 
             Section {
-                Toggle("Send media keys to Apple Music",
+                SettingsToggleRow("Prefer Apple Music", detail: "Keep keyboard playback controls on Music while it is playing.",
                        isOn: Binding(get: { vm.mediaKeyPriorityMusic }, set: { vm.mediaKeyPriorityMusic = $0 }))
             } header: {
                 Text("Media Keys")
             } footer: {
-                Text("When Music is playing, the play/pause, next and previous keys control it instead of whichever app macOS picked as Now Playing — so a video in a browser tab can't steal them. Needs Accessibility permission. Only the keyboard's media keys are affected; headphone buttons still follow macOS.")
+                Text("While Apple Music plays, keyboard media keys control it instead of browser videos. Requires Accessibility. Headphone buttons still follow macOS.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
@@ -731,6 +786,7 @@ struct HardwarePane: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var stats = HardwareStats()
     @State private var timer: Timer?
+    @State private var previewMode: String = "menubar"
     /// Row the dragged module is currently hovering, for the insertion line.
     /// `orderEndTarget` marks the drop zone that sends a module to the end.
     @State private var dropTargetID: String?
@@ -740,10 +796,29 @@ struct HardwarePane: View {
         PaneContainer(section: .hardware,
                       headerToggle: Binding(get: { vm.hardwareStatsEnabled },
                                             set: { vm.hardwareStatsEnabled = $0 })) {
-            Section("Preview") {
-                previewCard
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                    .listRowBackground(Color.clear)
+            Section {
+                if previewMode == "menubar" {
+                    previewCard
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                        .listRowBackground(Color.clear)
+                } else {
+                    popoverPreviewCard
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                        .listRowBackground(Color.clear)
+                }
+            } header: {
+                HStack {
+                    Text("Preview")
+                    Spacer()
+                    Picker("Preview Mode", selection: $previewMode) {
+                        Text("Menu Bar").tag("menubar")
+                        Text("Popover").tag("popover")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 170)
+                }
             }
 
             if vm.hardwareStatsEnabled {
@@ -754,14 +829,16 @@ struct HardwarePane: View {
                     }
                     orderEndZone
                 } header: {
-                    Text("Order & Visibility")
+                    Text("Modules")
                 } footer: {
-                    Text("Drag the ≡ handle to reorder. Menu shows the module in the menu bar; Card shows its detail card in the popover.")
+                    Text("Drag ≡ or use ▲▼ to reorder. Menu controls the menu bar; Card controls the popover. Both share the same order.")
                 }
 
-                Section("Options") {
+                Section("Module settings") {
                     ForEach(AppSettings.hardwareModuleIDs, id: \.self) { id in
-                        moduleGroup(for: id)
+                        DisclosureGroup(moduleTitle(id)) {
+                            moduleGroup(for: id)
+                        }
                     }
                 }
 
@@ -783,6 +860,10 @@ struct HardwarePane: View {
                         Text("Green").tag("green")
                     }
                     .pickerStyle(.segmented)
+
+                }
+
+                Section {
                     HStack {
                         Text("Update every")
                         Slider(value: $vm.hardwareStatsInterval, in: 1...10, step: 1)
@@ -791,6 +872,10 @@ struct HardwarePane: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 24, alignment: .trailing)
                     }
+                } header: {
+                    Text("Refresh")
+                } footer: {
+                    Text("Longer intervals reduce background work.")
                 }
 
                 Section("Fans") {
@@ -1013,6 +1098,18 @@ struct HardwarePane: View {
 
     /// The toggle row (and any sub-settings) for one module id, shown in the
     /// Modules section. Arrangement lives in the separate Order section.
+    private func moduleTitle(_ id: String) -> String {
+        switch id {
+        case "cpu": return "CPU"
+        case "gpu": return "GPU"
+        case "memory": return "Memory"
+        case "temp": return "Temperature"
+        case "fan": return "Fans"
+        case "battery": return "Battery & Power"
+        default: return id.capitalized
+        }
+    }
+
     @ViewBuilder
     private func moduleGroup(for id: String) -> some View {
         switch id {
@@ -1051,14 +1148,30 @@ struct HardwarePane: View {
         case "fan":
             moduleRow("Fan", live: fanLive,
                       isOn: $vm.hardwareStatsShowFan, raw: $vm.hardwareStatsFanRaw)
-        case "power":
-            moduleRow("Power", live: powerLive,
-                      isOn: $vm.hardwareStatsShowPower, raw: $vm.hardwareStatsPowerRaw)
         case "battery":
-            moduleRow("Battery", live: batteryLive,
+            let pwrSuffix = powerLive != "—" ? " · \(powerLive)" : ""
+            moduleRow("Battery & Power", live: "\(batteryLive)\(pwrSuffix)",
                       isOn: $vm.hardwareStatsShowBattery, raw: nil,
                       style: $vm.hardwareStatsBatteryStyle)
             if vm.hardwareStatsShowBattery {
+                Picker("Menu Bar Display", selection: $vm.hardwareStatsBatteryStyle) {
+                    Text("Bar").tag("bar")
+                    Text("Percent").tag("number")
+                    Text("Icon").tag("icon")
+                    Text("Watts").tag("watts")
+                }
+                .pickerStyle(.segmented)
+
+
+                HStack {
+                    Text("Power samples")
+                    Slider(value: $vm.hardwareStatsPowerSamples, in: 20...300, step: 10)
+                    Text("\(Int(vm.hardwareStatsPowerSamples))")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+
                 Toggle("Separate menu bar item", isOn: $vm.hardwareStatsBatterySeparate)
                 if vm.hardwareStatsBatterySeparate {
                     Text("Shows a larger battery icon in its own menu bar item with a dedicated popover.")
@@ -1074,25 +1187,51 @@ struct HardwarePane: View {
         }
     }
 
+    private var cardLayout: HardwareCardLayout {
+        HardwareCardLayout(columns: vm.hardwareStatsCardColumns, order: vm.hardwareStatsModuleOrder,
+                           batterySpan: vm.hardwareStatsBatteryCardSpan, batterySide: vm.hardwareStatsBatteryCardSide)
+    }
+
+    private func applyModuleOrder(_ order: [String]) {
+        var layout = cardLayout
+        layout.setModuleOrder(order)
+        vm.applyHardwareLayout(layout)
+    }
+
     // MARK: - Order (drag to reorder)
 
-    /// One draggable row in the Order section: a grip, the module name, and a
-    /// "Hidden" hint when it's toggled off. An accent insertion line appears
-    /// above the row a drag is hovering. `.onMove` only works in a `List`; this
-    /// pane is a `Form`, so reordering is driven by general drag-and-drop.
     @ViewBuilder
     private func orderRow(_ id: String) -> some View {
-        HStack(spacing: 10) {
-            // Only the handle starts a drag, so the toggles stay tappable.
+        HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal")
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .draggable(id) {
-                    Label(moduleDisplayName(id), systemImage: "line.3.horizontal").padding(6)
-                }
+                .frame(width: 18, height: 18)
+
             Text(moduleDisplayName(id))
                 .fontWeight(.medium)
+
             Spacer(minLength: 8)
+
+            Button(action: { moveModuleUp(id) }) {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(vm.hardwareStatsModuleOrder.first == id)
+            .help("Move Up")
+
+            Button(action: { moveModuleDown(id) }) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(vm.hardwareStatsModuleOrder.last == id)
+            .help("Move Down")
+            .padding(.trailing, 4)
+
             Toggle("", isOn: menuBarBinding(id))
                 .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                 .frame(width: orderToggleColumn)
@@ -1101,6 +1240,9 @@ struct HardwarePane: View {
                 .frame(width: orderToggleColumn)
         }
         .contentShape(Rectangle())
+        .draggable(id) {
+            Label(moduleDisplayName(id), systemImage: "line.3.horizontal").padding(6)
+        }
         .overlay(alignment: .top) { insertionLine(for: id) }
         .dropDestination(for: String.self) { items, _ in
             dropTargetID = nil
@@ -1110,9 +1252,12 @@ struct HardwarePane: View {
             if hovering { dropTargetID = id }
             else if dropTargetID == id { dropTargetID = nil }
         }
+        .contextMenu {
+            Button("Move Up") { moveModuleUp(id) }
+            Button("Move Down") { moveModuleDown(id) }
+        }
     }
 
-    /// Column captions aligned above the Menu / Card toggles.
     private var orderColumnHeader: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
@@ -1134,7 +1279,6 @@ struct HardwarePane: View {
         case "memory":  return $vm.hardwareStatsShowMemory
         case "temp":    return $vm.hardwareStatsShowTemp
         case "fan":     return $vm.hardwareStatsShowFan
-        case "power":   return $vm.hardwareStatsShowPower
         case "battery": return $vm.hardwareStatsShowBattery
         case "fps":     return $vm.hardwareStatsShowFPS
         default:        return .constant(false)
@@ -1187,7 +1331,7 @@ struct HardwarePane: View {
         order.remove(at: from)
         let insertAt = order.firstIndex(of: target) ?? order.count
         order.insert(dragged, at: insertAt)
-        vm.hardwareStatsModuleOrder = order
+        applyModuleOrder(order)
         return true
     }
 
@@ -1197,8 +1341,32 @@ struct HardwarePane: View {
         guard let from = order.firstIndex(of: dragged), from != order.count - 1 else { return false }
         order.remove(at: from)
         order.append(dragged)
-        vm.hardwareStatsModuleOrder = order
+        applyModuleOrder(order)
         return true
+    }
+
+    @discardableResult
+    private func moveModuleToTop(_ dragged: String) -> Bool {
+        var order = vm.hardwareStatsModuleOrder
+        guard let from = order.firstIndex(of: dragged), from != 0 else { return false }
+        order.remove(at: from)
+        order.insert(dragged, at: 0)
+        applyModuleOrder(order)
+        return true
+    }
+
+    private func moveModuleUp(_ id: String) {
+        var order = vm.hardwareStatsModuleOrder
+        guard let idx = order.firstIndex(of: id), idx > 0 else { return }
+        order.swapAt(idx, idx - 1)
+        applyModuleOrder(order)
+    }
+
+    private func moveModuleDown(_ id: String) {
+        var order = vm.hardwareStatsModuleOrder
+        guard let idx = order.firstIndex(of: id), idx < order.count - 1 else { return }
+        order.swapAt(idx, idx + 1)
+        applyModuleOrder(order)
     }
 
     private func moduleDisplayName(_ id: String) -> String {
@@ -1208,8 +1376,7 @@ struct HardwarePane: View {
         case "memory": return "Memory"
         case "temp": return "Temperature"
         case "fan": return "Fan"
-        case "power": return "Power"
-        case "battery": return "Battery"
+        case "battery": return "Battery & Power"
         case "fps": return "FPS"
         default: return id.uppercased()
         }
@@ -1229,7 +1396,7 @@ struct HardwarePane: View {
                 showTemp: vm.hardwareStatsShowTemp,
                 showFPS: vm.hardwareStatsShowFPS,
                 showFan: vm.hardwareStatsShowFan,
-                showPower: vm.hardwareStatsShowPower,
+                showPower: false,
                 showBattery: vm.hardwareStatsShowBattery && !batterySeparate,
                 cpuRaw: vm.hardwareStatsCPURaw,
                 gpuRaw: vm.hardwareStatsGPURaw,
@@ -1274,6 +1441,50 @@ struct HardwarePane: View {
         .padding(.vertical, 14)
     }
 
+    @State private var popoverPreviewHeight: CGFloat = 420
+
+    private var popoverPreviewCard: some View {
+        VStack(spacing: 12) {
+            HardwarePopoverEditor(stats: stats, layout: cardLayout,
+                                  hiddenCards: Set(vm.hardwareStatsHiddenCards),
+                                  onMove: { vm.applyHardwareLayout($0) },
+                                  onHeightChange: { popoverPreviewHeight = $0 })
+                .frame(width: cardLayout.columns.count >= 3 ? 368 : 248,
+                       height: popoverPreviewHeight)
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+            Text("Drag above or below a card to reorder. Drag to a side edge to add a column or place Battery beside the statistics. The blue line marks the drop position.")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack {
+                Picker("Columns", selection: Binding(
+                    get: { cardLayout.columns.count },
+                    set: { count in
+                        var layout = cardLayout
+                        layout.setColumnCount(count)
+                        vm.applyHardwareLayout(layout)
+                    })) {
+                        Text("1").tag(1)
+                        Text("2").tag(2)
+                        Text("3").tag(3)
+                    }
+                Picker("Battery", selection: Binding(
+                    get: { cardLayout.batterySpan },
+                    set: { span in
+                        var layout = cardLayout
+                        layout.batterySpan = span
+                        if span == "2x2" { layout.setColumnCount(3) }
+                        vm.applyHardwareLayout(layout)
+                    })) {
+                        Text("Full width").tag("full")
+                        Text("Beside statistics").tag("2x2")
+                    }
+            }
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
     /// Size of the standalone battery status item's larger icon, mirroring
     /// HardwareBarView.intrinsicContentSize's solo-battery-icon branch.
     private var separateBatteryPreviewSize: CGSize {
@@ -1293,7 +1504,6 @@ struct HardwarePane: View {
             vm.hardwareStatsShowTemp,
             vm.hardwareStatsShowFPS,
             vm.hardwareStatsShowFan,
-            vm.hardwareStatsShowPower,
             vm.hardwareStatsShowBattery && !batterySeparate,
         ].filter { $0 }.count)
         return hardwarePreviewSize(count: count)
@@ -1414,7 +1624,7 @@ struct DeveloperPane: View {
 
     var body: some View {
         PaneContainer(section: .developer) {
-            Section {
+            Section("Simulated displays") {
                 ForEach(vm.fakeDisplays) { display in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1465,27 +1675,29 @@ struct DeveloperPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section {
-                opacitySlider(label: "Bright Focus",
+            Section("Active display opacity") {
+                opacitySlider(label: "Bright",
                               value: Binding(get: { Double(vm.brightFocusAlpha) },
                                              set: { vm.brightFocusAlpha = CGFloat($0) }),
                               haptic: $lastHapticBF)
-                opacitySlider(label: "Dim Focus",
+                opacitySlider(label: "Dim",
                               value: Binding(get: { Double(vm.dimFocusAlpha) },
                                              set: { vm.dimFocusAlpha = CGFloat($0) }),
                               haptic: $lastHapticDF)
-                opacitySlider(label: "Bright Non-Focus",
+            }
+            Section {
+                opacitySlider(label: "Bright",
                               value: Binding(get: { Double(vm.brightNonFocusAlpha) },
                                              set: { vm.brightNonFocusAlpha = CGFloat($0) }),
                               haptic: $lastHapticBN)
-                opacitySlider(label: "Dim Non-Focus",
+                opacitySlider(label: "Dim",
                               value: Binding(get: { Double(vm.dimNonFocusAlpha) },
                                              set: { vm.dimNonFocusAlpha = CGFloat($0) }),
                               haptic: $lastHapticDN)
             } header: {
-                Text("Indicator Opacity")
+                Text("Other displays opacity")
             } footer: {
-                Text("Fine-tune per-state opacities of the space indicator. Values are alpha multipliers.")
+                Text("Adjust indicator opacity for active and inactive displays.")
             }
 
             Section {
@@ -1553,15 +1765,17 @@ struct MenuBarPane: View {
             } header: {
                 Text("Spacing")
             } footer: {
-                Text("Tightens the gap and click area around every menu bar icon, system-wide. macOS reads this value when each item launches, so a logout or restart may be required for all icons to update.")
+                Text("Applies to all menu bar icons. Some icons update only after logging out or restarting.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
 
-            Section {
-                Button("Apply") {
+            Section("Apply changes") {
+                HStack {
+                Button("Apply spacing") {
                     MenuBarSpacingManager.applyAndOfferLogout(spacing: vm.menuBarSpacing, padding: vm.menuBarSpacingPadding)
                 }
+                .buttonStyle(.borderedProminent)
                 Button("Reset to Default") {
                     vm.menuBarSpacing = MenuBarSpacingManager.systemDefault
                     vm.menuBarSpacingPadding = MenuBarSpacingManager.systemDefault
@@ -1569,6 +1783,8 @@ struct MenuBarPane: View {
                     MenuBarSpacingManager.restartMenuBar()
                 }
                 .foregroundStyle(.secondary)
+                Spacer()
+                }
             }
         }
     }
@@ -1585,6 +1801,8 @@ struct GeneralPane: View {
         return false
     }()
     @State private var showResetConfirm = false
+    @State private var accessibilityGranted = AXIsProcessTrusted()
+    @State private var screenRecordingGranted = CGPreflightScreenCaptureAccess()
 
     private var versionString: String {
         let d = Bundle.main.infoDictionary
@@ -1600,7 +1818,45 @@ struct GeneralPane: View {
 
     var body: some View {
         PaneContainer(section: .general) {
+            Section("Startup") {
+                if #available(macOS 13.0, *) {
+                    Toggle("Launch at login", isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { _, on in
+                            if #available(macOS 13.0, *) {
+                                do {
+                                    if on { try SMAppService.mainApp.register() }
+                                    else  { try SMAppService.mainApp.unregister() }
+                                } catch { NSLog("SMAppService: \(error)") }
+                            }
+                        }
+                }
+                SettingsToggleRow("Show MSG in Dock", detail: "Keep the app icon in the Dock while MSG is running.",
+                       isOn: Binding(get: { vm.dockIcon }, set: { vm.dockIcon = $0 }))
+
+            }
+
+            Section("Permissions") {
+                LabeledContent("Accessibility") {
+                    permissionView(granted: accessibilityGranted, urlKey: "Privacy_Accessibility")
+                }
+                LabeledContent("Screen Recording") {
+                    permissionView(granted: screenRecordingGranted, urlKey: "Privacy_ScreenCapture")
+                }
+            }
+
+            Section("Updates") {
+                Toggle("Check for updates automatically",
+                       isOn: Binding(get: { vm.autoUpdate }, set: { vm.autoUpdate = $0 }))
+                Picker("Update channel", selection: Binding(get: { vm.updateChannel }, set: { vm.updateChannel = $0 })) {
+                    Text("Stable").tag("stable")
+                    Text("Beta").tag("beta")
+                    Text("Nightly").tag("nightly")
+                }
+                .disabled(!vm.autoUpdate)
+            }
+
             Section {
+                DisclosureGroup("About MSG") {
                 VStack(spacing: 8) {
                     if let img = colorScheme == .dark
                         ? (NSImage(named: "AppIcon-Dark") ?? NSImage(named: NSImage.applicationIconName))
@@ -1649,48 +1905,16 @@ struct GeneralPane: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 12)
+                }
             }
             .listRowBackground(Color.clear)
 
-            Section("Behavior") {
-                if #available(macOS 13.0, *) {
-                    Toggle("Launch at login", isOn: $launchAtLogin)
-                        .onChange(of: launchAtLogin) { _, on in
-                            if #available(macOS 13.0, *) {
-                                do {
-                                    if on { try SMAppService.mainApp.register() }
-                                    else  { try SMAppService.mainApp.unregister() }
-                                } catch { NSLog("SMAppService: \(error)") }
-                            }
-                        }
-                }
-                Toggle("Show in Dock",
-                       isOn: Binding(get: { vm.dockIcon }, set: { vm.dockIcon = $0 }))
-                Toggle("Show Developer section",
-                       isOn: Binding(get: { vm.showDeveloper }, set: { vm.showDeveloper = $0 }))
+            Section("Advanced") {
+                    Toggle("Show Developer section",
+                           isOn: Binding(get: { vm.showDeveloper }, set: { vm.showDeveloper = $0 }))
             }
 
-            Section("Permissions") {
-                LabeledContent("Accessibility") {
-                    permissionView(granted: AXIsProcessTrusted(), urlKey: "Privacy_Accessibility")
-                }
-                LabeledContent("Screen Recording") {
-                    permissionView(granted: CGPreflightScreenCaptureAccess(), urlKey: "Privacy_ScreenCapture")
-                }
-            }
-
-            Section("Updates") {
-                Toggle("Check for updates automatically",
-                       isOn: Binding(get: { vm.autoUpdate }, set: { vm.autoUpdate = $0 }))
-                Picker("Update channel", selection: Binding(get: { vm.updateChannel }, set: { vm.updateChannel = $0 })) {
-                    Text("Stable").tag("stable")
-                    Text("Beta").tag("beta")
-                    Text("Nightly").tag("nightly")
-                }
-                .disabled(!vm.autoUpdate)
-            }
-
-            Section {
+            Section("Maintenance") {
                 Button("Reset all settings to defaults") {
                     showResetConfirm = true
                 }
@@ -1718,7 +1942,7 @@ struct GeneralPane: View {
                     }
                 } label: {
                     HStack {
-                        Text("Quit MSG")
+                        Text("Close Settings")
                         Spacer()
                         (Text("No added ") + Text("MSG").font(.system(.body, design: .monospaced)))
                             .foregroundStyle(.secondary)
@@ -1727,7 +1951,20 @@ struct GeneralPane: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("q", modifiers: [.command])
+
+                Button {
+                    (NSApp.delegate as? AppDelegate)?.requestQuit()
+                } label: {
+                    Text("Quit MSG")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            accessibilityGranted = AXIsProcessTrusted()
+            screenRecordingGranted = CGPreflightScreenCaptureAccess()
         }
     }
 
@@ -1798,26 +2035,20 @@ struct DisplaplacerPane: View {
                     }
                 }
             } footer: {
-                Text("Switches the monitor's own input, the same as its OSD button. "
-                     + "Choosing an input other than the one this Mac is on will hand "
-                     + "the screen to that device.")
+                Text("Choose which device the monitor displays. Switching away hands the screen to that device.")
                     .foregroundStyle(.secondary)
             }
 
             if !inputMonitors.isEmpty {
                 Section {
-                    Toggle("Eject display when switching away",
+                    SettingsToggleRow("Move windows back to this Mac", detail: "Disconnect the display when you switch its input to another device.",
                            isOn: Binding(get: { vm.monitorInputAutoEject },
                                          set: { vm.monitorInputAutoEject = $0 }))
                     .disabled(!hasMacInputMarked)
                 } footer: {
                     Text(hasMacInputMarked
-                         ? "Hands the monitor over cleanly: windows move to the built-in "
-                           + "display instead of staying on a screen that is now showing "
-                           + "another machine. Use the monitor's input button to return; "
-                           + "MSG then reconnects the display automatically."
-                         : "Mark which input this Mac is plugged into first — otherwise "
-                           + "MSG can't tell a handover from a switch back.")
+                         ? "Windows move back to this Mac. Use the monitor's input button to return; MSG reconnects it automatically."
+                         : "First mark which monitor input is connected to this Mac.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1841,7 +2072,7 @@ struct DisplaplacerPane: View {
                     }
                 }
                 if vm.displaplacerPresets.isEmpty {
-                    Text("No presets saved. Tap \u{201C}Save Current Layout\u{201D} above to create one.")
+                    Text("Save your current layout to restore it later.")
                         .foregroundStyle(.secondary)
                 }
             } header: {

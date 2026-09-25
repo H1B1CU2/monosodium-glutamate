@@ -39,20 +39,63 @@ struct WindowListSignals {
     /// Onscreen Window Server menu bar windows (layer 24). ≥2 means a space
     /// slide is in flight — see the doc on `menuBarWindowCount` for why.
     let menuBarWindowCount: Int
+    /// Displays whose native menu-bar surface is actually on screen. Unlike
+    /// NSMenu.menuBarVisible(), this changes when an auto-hidden bar slides in.
+    let visibleMenuBarDisplayUUIDs: Set<String>
+    /// A LocalAuthentication Touch ID sheet (`coreautha`) is on screen. Its
+    /// agent doesn't reliably become the active app while the sheet is up —
+    /// often only as it closes — so the window itself is the signal.
+    var touchIDPromptVisible = false
 }
 
 enum WindowListScanner {
-    static func scan() -> WindowListSignals {
+    private static let lock = NSLock()
+    private static var cached: (stamp: CFTimeInterval, signals: WindowListSignals)?
+
+    /// One pass shared by every caller. Mission Control checks run from many
+    /// guards per tiling refresh, the control bar asks up to 15×/s and
+    /// SystemState 30×/s — each used to pull the full on-screen window list
+    /// from WindowServer on its own. A pass up to `maxAge` old is reused;
+    /// pass 0 where a frame of latency matters (SystemState's slide detection).
+    static func scan(maxAge: CFTimeInterval = 0.1) -> WindowListSignals {
+        let now = CACurrentMediaTime()
+        lock.lock()
+        if let cached, now - cached.stamp <= maxAge {
+            lock.unlock()
+            return cached.signals
+        }
+        lock.unlock()
+        let signals = freshScan()
+        lock.lock()
+        cached = (CACurrentMediaTime(), signals)
+        lock.unlock()
+        return signals
+    }
+
+    private static func freshScan() -> WindowListSignals {
         guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
                 as? [[String: Any]] else {
-            return WindowListSignals(missionControlActive: false, menuBarWindowCount: 1)
+            return WindowListSignals(missionControlActive: false, menuBarWindowCount: 1,
+                                     visibleMenuBarDisplayUUIDs: [])
         }
         var mc = false
+        var touchIDPrompt = false
         var menuBars = 0
+        var menuBarFrames: [CGRect] = []
         for w in list {
             let owner = w[kCGWindowOwnerName as String] as? String
             let layer = w[kCGWindowLayer as String] as? Int ?? 0
-            if owner == "Window Server", layer == 24 { menuBars += 1; continue }
+            if owner == "Window Server", layer == 24 {
+                menuBars += 1
+                if let bounds = w[kCGWindowBounds as String] as? [String: Any] {
+                    var frame = CGRect.zero
+                    if CGRectMakeWithDictionaryRepresentation(bounds as CFDictionary, &frame) {
+                        menuBarFrames.append(frame)
+                    }
+                }
+                continue
+            }
+            if owner == "coreautha", layer > 0 { touchIDPrompt = true; continue }
             guard !mc, owner == "WindowManager", layer > 0, layer < 1000 else { continue }
             // Name check preserved verbatim from MissionControlDetector — see the
             // rationale comment there about Screen Recording permission and Stage Manager.
@@ -62,7 +105,22 @@ enum WindowListScanner {
                 mc = true
             }
         }
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        var visibleMenuBarDisplayUUIDs = Set<String>()
+        for quartzFrame in menuBarFrames {
+            let appKitFrame = CGRect(x: quartzFrame.minX,
+                                     y: primaryTop - quartzFrame.maxY,
+                                     width: quartzFrame.width,
+                                     height: quartzFrame.height)
+            if let screen = NSScreen.screens.max(by: {
+                $0.frame.intersection(appKitFrame).width < $1.frame.intersection(appKitFrame).width
+            }), screen.frame.intersects(appKitFrame), let uuid = screen.uuid {
+                visibleMenuBarDisplayUUIDs.insert(uuid)
+            }
+        }
         return WindowListSignals(missionControlActive: mc,
-                                 menuBarWindowCount: max(1, menuBars))
+                                 menuBarWindowCount: max(1, menuBars),
+                                 visibleMenuBarDisplayUUIDs: visibleMenuBarDisplayUUIDs,
+                                 touchIDPromptVisible: touchIDPrompt)
     }
 }

@@ -66,7 +66,7 @@ final class SystemHUDStatusItem {
 
         let startTime = CACurrentMediaTime()
         let duration: CFTimeInterval = 0.18
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
                 return

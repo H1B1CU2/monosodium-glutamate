@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -15,17 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var systemHUDMonitor: SystemHUDMonitor?
     private var inputSourceMonitor: InputSourceMonitor?
     private var systemHUDStatusItem: SystemHUDStatusItem?
-    private var _trayPanel: AnyObject?   // TrayPanel on macOS 14+
-
-    @available(macOS 14.0, *)
-    private var trayPanel: TrayPanel {
-        if let p = _trayPanel as? TrayPanel { return p }
-        let state = TrayState(settings: settings, musicMonitor: musicMonitor)
-        let p = TrayPanel(state: state)
-        _trayPanel = p
-        return p
-    }
-
+    private let tilingController = TilingController.shared
     private var _dockHover: AnyObject?   // DockHoverController on macOS 14+
 
     @available(macOS 14.0, *)
@@ -46,10 +37,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return c
     }
 
+    private var _notchHover: AnyObject?   // NotchHoverController on macOS 14+
+
+    @available(macOS 14.0, *)
+    private var notchHover: NotchHoverController {
+        if let c = _notchHover as? NotchHoverController { return c }
+        let c = NotchHoverController(settings: settings)
+        _notchHover = c
+        return c
+    }
+
     // MARK: - Corner windows
 
     private var cornerWindows: [CornerWindow] = []
     private var wakeRebuildItem: DispatchWorkItem?
+    private lazy var lidOpeningGlass = LidOpeningGlassController(settings: settings)
 
     // MARK: - Focus detection
 
@@ -64,8 +66,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         terminateOtherInstances()
+        MSGNativeHotkeys.apply(desired: []) // Recover any takeover left by an interrupted run.
         NSApp.setActivationPolicy(.accessory)
         requestAccessibilityIfNeeded()
+
+        // Diagnostics for the privileged fan daemon. Registration is a system
+        // change (it installs a LaunchDaemon), so it stays opt-in rather than
+        // happening on every launch: MSG_FAN=status reports, MSG_FAN=register
+        // installs, MSG_FAN=unregister removes it again.
+        if #available(macOS 14.0, *) {
+            let mode = ProcessInfo.processInfo.environment["MSG_FAN"] ?? "status"
+            let client = FanControlClient.shared
+            var report = "mode=\(mode)\n"
+            let service = SMAppService.daemon(plistName: FanHelperID.plistName)
+            switch mode {
+            case "register":
+                do {
+                    try service.register()
+                    report += "register=ok\n"
+                } catch {
+                    report += "register=threw \(error)\n"
+                }
+            case "unregister":
+                do { try service.unregister(); report += "unregister=ok\n" }
+                catch { report += "unregister=threw \(error)\n" }
+            default: break
+            }
+            report += "status=\(client.access)\nraw=\(service.status.rawValue)\n"
+            report += "bundle=\(Bundle.main.bundlePath)\n"
+            let plist = Bundle.main.bundlePath + "/Contents/Library/LaunchDaemons/" + FanHelperID.plistName
+            report += "plistExists=\(FileManager.default.fileExists(atPath: plist))\n"
+            try? report.write(toFile: "/tmp/msg_fan_report.txt", atomically: true, encoding: .utf8)
+        }
 
         if #available(macOS 10.14, *) {
             appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { app, _ in
@@ -103,16 +135,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         WallpaperEngine.shared.start()
+        lidOpeningGlass.start()
+        LockScreenTouchIDController.shared.start()
+        if #available(macOS 14.0, *) {
+            // Pictures for previews of windows that later get hidden or minimized.
+            WindowThumbnailKeeper.shared.start()
+        }
 
         // Fills the DDC input cache the menu and the settings pane read. The scan
         // is ~2 s of blocking I2C per panel, so it happens once here in the
         // background and again only when the display set changes.
         DisplayInputEngine.refresh()
-
-        if #available(macOS 14.0, *), settings.trayEnabled {
-            trayPanel.registerHotkey()
-            trayPanel.state.prepare()
-        }
 
         if #available(macOS 14.0, *), settings.dockPreviewEnabled {
             dockHover.start()
@@ -122,14 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appSwitcherHover.start()
         }
 
-        NotificationCenter.default.addObserver(forName: .trayEnabledChanged, object: nil, queue: .main) { [weak self] _ in
-            guard #available(macOS 14.0, *), let self else { return }
-            if self.settings.trayEnabled {
-                self.trayPanel.registerHotkey()
-                self.trayPanel.state.prepare()
-            } else {
-                self.trayPanel.unregisterHotkey() 
-            }
+        if #available(macOS 14.0, *), settings.notchPreviewEnabled {
+            notchHover.start()
         }
 
         NotificationCenter.default.addObserver(forName: .dockPreviewChanged, object: nil, queue: .main) { [weak self] _ in
@@ -138,6 +165,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.dockHover.start()
             } else {
                 self.dockHover.stop()
+            }
+        }
+
+        NotificationCenter.default.addObserver(forName: .notchPreviewChanged, object: nil, queue: .main) { [weak self] _ in
+            guard #available(macOS 14.0, *), let self else { return }
+            if self.settings.notchPreviewEnabled {
+                self.notchHover.start()
+            } else {
+                self.notchHover.stop()
             }
         }
 
@@ -171,10 +207,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.redrawCornerWindows()
                 self.applySlideDetection()
                 WallpaperEngine.shared.settingsChanged()
+                self.lidOpeningGlass.settingsChanged()
             case .indicator:
                 self.indicator.applySettings()
                 self.applyFocusDetectionMode()
                 self.musicMonitor.settingsChanged()
+            case .tiling:
+                self.tilingController.settingsChanged()
+                // The baked wallpaper darkens the menu bar strip while the
+                // control bar covers it (see WallpaperEngine.menuBarStripHeight).
+                WallpaperEngine.shared.settingsChanged()
             case .structural:
                 self.rebuildCornerWindows()
                 self.applySlideDetection()
@@ -187,6 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.musicMonitor.settingsChanged()
             }
         }
+
+        tilingController.start()
 
         indicator.onStatusBarClicked = { [weak self] in
             self?.showSettingsMenu()
@@ -223,16 +267,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        PresentationState.shared.addObserver { [weak self] in
+            guard PresentationState.shared.canPresent else { return }
+            self?.scheduleCornerRecovery()
+        }
+
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
-                guard let self else { return }
-                // Both notifications fire on a normal wake — coalesce so we rebuild once.
-                self.wakeRebuildItem?.cancel()
-                let item = DispatchWorkItem { [weak self] in self?.rebuildCornerWindows() }
-                self.wakeRebuildItem = item
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+                self?.scheduleCornerRecovery()
             }
         }
 
@@ -312,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        tilingController.stop()
         if !allowTermination {
             // System-initiated termination (logout, shutdown, killall). Never
             // block it — clean up best-effort and let it through. Removing the
@@ -322,6 +367,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             WallpaperEngine.shared.restore()
             DisplaplacerEngine.reconnectAll()
             hardwareMonitor.fanQuitCleanup()
+            lidOpeningGlass.stop()
+        }
+        if #available(macOS 14.0, *) {
+            (_appSwitcherHover as? AppSwitcherHoverController)?.stop()
+            (_dockHover as? DockHoverController)?.stop()
+            (_notchHover as? NotchHoverController)?.stop()
         }
         return .terminateNow
     }
@@ -407,7 +458,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.systemHUDStatusItem = SystemHUDStatusItem(settings: self.settings)
                         }
                         self.systemHUDStatusItem?.show(kind: kind, value: value, muted: muted, audioOutputKind: audioOutputKind)
-                    } else {
+                    } else if !(self.settings.systemHUDInTilingBar
+                                && self.tilingController.showSystemHUD(kind: kind, value: value, muted: muted,
+                                                                       audioOutputKind: audioOutputKind)) {
+                        // The tiling bar declines when it isn't showing, so
+                        // the HUD is never lost under a hidden bar.
                         self.indicator.showSystemHUD(kind: kind, value: value, muted: muted, audioOutputKind: audioOutputKind)
                     }
                 }
@@ -434,7 +489,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if inputSourceMonitor == nil {
                 let monitor = InputSourceMonitor()
                 monitor.onChange = { [weak self] name in
-                    self?.indicator.showInputSourceHUD(name: name)
+                    guard let self else { return }
+                    if !(self.settings.systemHUDInTilingBar
+                         && self.tilingController.showInputSourceHUD(name: name)) {
+                        self.indicator.showInputSourceHUD(name: name)
+                    }
                 }
                 inputSourceMonitor = monitor
             }
@@ -450,6 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func requestQuit() {
         guard !quitInProgress else { return }
         quitInProgress = true
+        tilingController.stop()
         systemHUDMonitor?.stop()
         removeAllStatusItems()
         WallpaperEngine.shared.restore()
@@ -483,6 +543,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettingsWindow()
+        return true
+    }
+
     private func applyDockIcon() {
         if settings.dockIcon {
             NSApp.setActivationPolicy(.regular)
@@ -508,7 +573,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// which only fires at landing) — the only signal early enough to hide the
     /// corners while the slide masks the change, then grow them in at landing.
     private var slidePollTimer: Timer?
+    private var splitViewPanePollingActive = false
+    private var lastSplitViewPanePollAt: TimeInterval = 0
     private var slidingDisplays: Set<String> = []
+    private var slidingDisplayStartedAt: [String: TimeInterval] = [:]
+    /// WindowServer can leave IsAnimating stuck true across sleep/wake. Once a
+    /// reading exceeds the maximum credible slide duration, ignore it until a
+    /// real false edge arrives so it cannot repeatedly hide the corners.
+    private var ignoredAnimatingDisplays: Set<String> = []
+    private static let maximumSlideDuration: TimeInterval = 4
 
     private var lastActiveSpace = 0
     private var lastSpaceNotificationAt: TimeInterval = 0
@@ -579,6 +652,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             indicator.systemState.rescheduleScan()
             slidePollTimer?.invalidate(); slidePollTimer = nil
             slidingDisplays.removeAll()
+            slidingDisplayStartedAt.removeAll()
+            ignoredAnimatingDisplays.removeAll()
             // Nothing feeds applyMenuBarPair() any more, so a true left here can
             // never be cleared — and it gates the corner watchdog.
             menuBarPairActive = false
@@ -602,8 +677,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // timer and the hidden→shown top transition both converge to full).
         if indicator.isMissionControl {
             slidingDisplays.removeAll()
+            slidingDisplayStartedAt.removeAll()
+            ignoredAnimatingDisplays.removeAll()
             lastActiveSpace = SpaceWatcher.activeSpaceID()
             return
+        }
+
+        // Once Split View is detected, follow its live window bounds at 20 Hz.
+        // That is frequent enough to catch divider dragging without making the
+        // heavier CGS/window-list read part of every 30 Hz slide-poll tick.
+        if splitViewPanePollingActive, now - lastSplitViewPanePollAt >= 0.05 {
+            lastSplitViewPanePollAt = now
+            refreshSplitViewPaneFrames()
         }
 
         // Active-space flip: the only begin signal that fires for transitions
@@ -613,13 +698,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let active = SpaceWatcher.activeSpaceID()
         if lastActiveSpace == 0 { lastActiveSpace = active }
         if active != lastActiveSpace {
+            let isSpaceSwitch = SpaceWatcher.isSameDisplaySpaceSwitch(from: lastActiveSpace, to: active)
             lastActiveSpace = active
             // Suppress when another begin path already handled this switch:
             // for desktop↔desktop slides the flip lands ~5ms after the slide
             // ends and would re-hide the freshly growing corners. A pair state
             // older than 4s is stale (no slide lasts that long) — don't let it
             // keep suppressing this backup path.
-            if now - lastSpaceNotificationAt > 0.3,
+            if isSpaceSwitch,
+               now - lastSpaceNotificationAt > 0.3,
                now - lastAnimatingEndAt > 0.3,
                slidingDisplays.isEmpty,
                !menuBarPairActive || now - menuBarPairSince > 4 {
@@ -633,13 +720,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for win in cornerWindows {
             guard let uuid = win.displayUUID else { continue }
             let sliding = SpaceWatcher.isDisplayAnimating(uuid: uuid)
-            if sliding, !slidingDisplays.contains(uuid) {
-                slidingDisplays.insert(uuid)
-                win.spaceSlideBegan()
-            } else if !sliding, slidingDisplays.contains(uuid) {
-                slidingDisplays.remove(uuid)
-                lastAnimatingEndAt = now
-                win.spaceSlideEnded()
+            if !sliding {
+                ignoredAnimatingDisplays.remove(uuid)
+                slidingDisplayStartedAt.removeValue(forKey: uuid)
+                if slidingDisplays.remove(uuid) != nil {
+                    lastAnimatingEndAt = now
+                    win.spaceSlideEnded()
+                }
+            } else if !ignoredAnimatingDisplays.contains(uuid) {
+                if slidingDisplays.insert(uuid).inserted {
+                    slidingDisplayStartedAt[uuid] = now
+                    win.spaceSlideBegan()
+                } else if let startedAt = slidingDisplayStartedAt[uuid],
+                          now - startedAt > Self.maximumSlideDuration {
+                    slidingDisplays.remove(uuid)
+                    slidingDisplayStartedAt.removeValue(forKey: uuid)
+                    ignoredAnimatingDisplays.insert(uuid)
+                    lastAnimatingEndAt = now
+                    slideLog("end(stale-animation) uuid=\(uuid)")
+                    win.spaceSlideEnded()
+                }
             }
         }
 
@@ -648,7 +748,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // corner watchdog, keeping slideInProgressProvider true (which defeats
         // SystemState's idle gate and pins the scan at 30 Hz), and suppressing the
         // active-flip backup path. Keep only UUIDs we still have a window for.
-        slidingDisplays.formIntersection(cornerWindows.compactMap(\.displayUUID))
+        let liveDisplayUUIDs = Set(cornerWindows.compactMap(\.displayUUID))
+        slidingDisplays.formIntersection(liveDisplayUUIDs)
+        ignoredAnimatingDisplays.formIntersection(liveDisplayUUIDs)
+        slidingDisplayStartedAt = slidingDisplayStartedAt.filter {
+            liveDisplayUUIDs.contains($0.key)
+        }
     }
 
     // MARK: - Mission Control
@@ -701,6 +806,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } ?? true
             win.setSkipTop((hideTop && underBar) || (fullscreenOnly && !isFullscreen))
         }
+        refreshSplitViewPaneFrames()
+    }
+
+    private func refreshSplitViewPaneFrames() {
+        guard let splitViewPanes = SpaceWatcher.splitViewPaneFramesByDisplay() else { return }
+        splitViewPanePollingActive = !splitViewPanes.isEmpty
+        let primaryMouseDown = (NSEvent.pressedMouseButtons & 1) != 0
+        for win in cornerWindows {
+            let uuid = win.displayUUID ?? "_default"
+            win.setSplitViewPaneFrames(splitViewPanes[uuid] ?? [])
+            win.updateSplitViewResizeInteraction(primaryMouseDown: primaryMouseDown)
+        }
     }
 
     /// `isMissionControl` can latch true (see MissionControlDetector: an unnamed
@@ -716,6 +833,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Corner windows
+
+    /// Re-establish a clean overlay state after display wake, unlock, or fast
+    /// user switching. Those transitions can invalidate NSScreen objects and
+    /// strand private WindowServer animation flags without delivering an end
+    /// edge. All callers land here and are coalesced into one settled rebuild.
+    private func scheduleCornerRecovery() {
+        wakeRebuildItem?.cancel()
+        slidingDisplays.removeAll()
+        slidingDisplayStartedAt.removeAll()
+        ignoredAnimatingDisplays.removeAll()
+        menuBarPairActive = false
+        for win in cornerWindows { win.spaceSlideEnded() }
+
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lastActiveSpace = SpaceWatcher.activeSpaceID()
+            self.rebuildCornerWindows()
+        }
+        wakeRebuildItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: item)
+    }
 
     /// True when every corner window still maps to the live screen at its index.
     /// NSScreen objects are invalidated by display reconfiguration and sleep/wake;
@@ -733,13 +871,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildCornerWindows() {
-        for win in cornerWindows { win.orderOut(nil) }
+        for win in cornerWindows { win.orderOverlaysOut() }
         cornerWindows.removeAll()
         guard settings.cornersEnabled else { return }
         for screen in NSScreen.screens {
             let win = CornerWindow(screen: screen, settings: settings)
             win.setFrame(screen.frame, display: false)
-            win.orderFrontRegardless()
+            win.orderOverlaysFront()
             win.redraw()
             cornerWindows.append(win)
         }
@@ -755,7 +893,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         for win in cornerWindows {
             win.updateFrame()
-            win.orderFrontRegardless()
+            win.orderOverlaysFront()
             win.redraw()
         }
         applyCornerWindowTopState()
@@ -796,8 +934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for win in cornerWindows {
             // Unconditional: a foreign window sitting *above* ours leaves both
             // `isVisible` and `level` untouched, so there is nothing to test.
-            if win.level != CornerWindow.cornerLevel { win.level = CornerWindow.cornerLevel }
-            win.orderFrontRegardless()
+            win.healOverlayOrdering()
             win.healStrandedGrow()   // C3
         }
 

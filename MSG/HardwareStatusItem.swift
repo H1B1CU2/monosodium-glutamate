@@ -31,7 +31,7 @@ final class HardwareStatusItem {
 
         barView.onAnimationFrame = { [weak self] in
             guard let self else { return }
-            self.item.button?.image = self.barView.renderedImage()
+            self.setImageIfChanged(self.barView.renderedImage())
         }
 
         HardwareMonitor.shared.addObserver { [weak self] in
@@ -64,14 +64,28 @@ final class HardwareStatusItem {
     func refreshImage() {
         let size = barView.intrinsicContentSize
         barView.frame.size = size
-        item.length = size.width
+        if abs(item.length - size.width) > 0.5 { item.length = size.width }
         // The button lives in the menu bar, so its appearance is the real one:
         // vibrantLight over a light wallpaper even while the system is in Dark
         // mode. The offscreen bar view can't see that on its own.
         barView.menuBarIsDark = item.button?.effectiveAppearance
             .bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
             .map { $0 == .darkAqua || $0 == .vibrantDark } ?? true
-        item.button?.image = barView.renderedImage()
+        setImageIfChanged(barView.renderedImage())
+    }
+
+    /// Every image or length set on a status item makes AppKit re-publish it
+    /// to each display's menu bar (`_updateReplicants…`) — the single largest
+    /// idle cost in a profile. The render cache hands back the same image
+    /// when nothing visible changed; don't pass that on as a change.
+    ///
+    /// Hosting the bar view live in the button was measured and is worse: a
+    /// content redraw re-publishes the item just the same, and the snapshot
+    /// then re-runs `draw(_:)` (text labels included) instead of copying a
+    /// finished bitmap.
+    private func setImageIfChanged(_ image: NSImage) {
+        guard let button = item.button, button.image !== image else { return }
+        button.image = image
     }
 }
 
@@ -88,9 +102,19 @@ final class HardwareBarView: NSView {
         }
     }
 
-    /// Fired on each animation tick so image-based hosts (the status item)
-    /// can re-render; the live settings preview redraws via needsDisplay.
+    /// Fired on each animation tick so image-based hosts can re-render; live
+    /// hosts (the status items, the settings preview) redraw via needsDisplay.
     var onAnimationFrame: (() -> Void)?
+
+    /// Set when hosted inside a status button: clicks belong to the button.
+    var passesClicksThrough = false
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        passesClicksThrough ? nil : super.hitTest(point)
+    }
+
+    /// The signature of what's on screen, so animation ticks that wouldn't
+    /// change a pixel (sub-pixel steps near the end of an ease) skip the draw.
+    private var drawnSignature: String?
 
     var showCPU: Bool = true
     var showGPU: Bool = true
@@ -160,7 +184,10 @@ final class HardwareBarView: NSView {
     private let barW: CGFloat = 4
     private let gap: CGFloat = 3
     private let leftPadding: CGFloat = 4
-    private let fontSize: CGFloat = 7.0
+    // Static so the measurement caches below can derive from the same constant
+    // instead of restating the literal.
+    fileprivate static let verticalLabelFontSize: CGFloat = 7.0
+    private var fontSize: CGFloat { Self.verticalLabelFontSize }
     private let horizontalLabelFontSize: CGFloat = 7.4
     private let circularHorizontalLabelFontSize: CGFloat = 6.2
     private let circularRadius: CGFloat = 6.75
@@ -230,7 +257,7 @@ final class HardwareBarView: NSView {
         }
 
         animStartTime = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
                 return
@@ -253,6 +280,7 @@ final class HardwareBarView: NSView {
             timer.invalidate()
             if animTimer === timer { animTimer = nil }
         }
+        guard renderSignature(size: bounds.size) != drawnSignature else { return }
         needsDisplay = true
         onAnimationFrame?()
     }
@@ -262,6 +290,7 @@ final class HardwareBarView: NSView {
     // -----------------------------------------------------------------------
 
     override func draw(_ dirtyRect: NSRect) {
+        drawnSignature = renderSignature(size: bounds.size)
         let modules = activeModules()
         guard !modules.isEmpty else { return }
 
@@ -543,19 +572,33 @@ final class HardwareBarView: NSView {
     // MARK: - Helpers
     // -----------------------------------------------------------------------
 
+    // Both label fonts are fixed sizes (`fontSize` / `horizontalLabelFontSize`
+    // are `let`), so their metrics never change for the life of the process —
+    // but `draw(_:)` re-measured them on every frame, four times per pass for
+    // the char width alone, at 30 fps. Text measurement means building an
+    // NSString, resolving the font, and running a layout pass; it showed up in
+    // a sample of the idle app. Measure once and keep it.
+
     /// Rough width of one character in the vertical label font.
-    private func estimatedCharWidth() -> CGFloat {
-        let s = "X" as NSString
-        return s.size(withAttributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold),
+    private static let cachedCharWidth: CGFloat = {
+        ("X" as NSString).size(withAttributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: verticalLabelFontSize, weight: .bold),
         ]).width
-    }
+    }()
+
+    /// Horizontal label widths, keyed by text. The label set is small and fixed
+    /// (one per hardware module), so this saturates within the first frame.
+    private static var labelWidthCache: [String: CGFloat] = [:]
+
+    private func estimatedCharWidth() -> CGFloat { Self.cachedCharWidth }
 
     private func estimatedLabelWidth(_ text: String) -> CGFloat {
-        let s = text as NSString
-        return s.size(withAttributes: [
+        if let cached = Self.labelWidthCache[text] { return cached }
+        let w = (text as NSString).size(withAttributes: [
             .font: NSFont.monospacedSystemFont(ofSize: horizontalLabelFontSize, weight: .bold),
         ]).width
+        Self.labelWidthCache[text] = w
+        return w
     }
 
     // -----------------------------------------------------------------------
@@ -851,7 +894,12 @@ final class HardwareBarView: NSView {
             }
         case "battery":
             guard showBattery else { return }
-            if batteryStyle == "number" {
+            if batteryStyle == "watts" {
+                let valueText = stats.powerWatts.map { "\(Int($0.rounded()))" } ?? "—"
+                mods.append(Module(label: "PWR", ratio: 0, isValue: true,
+                                   valueText: valueText, unit: "W", forceWhite: true,
+                                   showChargeIcon: stats.isCharging == true))
+            } else if batteryStyle == "number" {
                 let valueText = stats.batteryPercentText(includeSymbol: false) ?? "—"
                 mods.append(Module(label: "BAT", ratio: 0, isValue: true,
                                    valueText: valueText, unit: "%", forceWhite: true))
@@ -935,13 +983,84 @@ final class HardwareBarView: NSView {
         }
     }
 
+    /// Everything `draw(_:)` reads, flattened into a comparable key.
+    ///
+    /// Ratios are quantised to 1/1000 — far finer than one pixel at menu bar
+    /// scale, so this can never drop a frame the user would have seen, while
+    /// still collapsing the common case where a poll lands on identical values.
+    /// Anything that changes the drawn pixels but is NOT a module value must be
+    /// listed here too, or the cache serves a stale image until some number
+    /// happens to move. `colorScale`, `menuBarIsDark` and `isLowPowerMode` all
+    /// feed `barColor`/`batteryColor`/`ink` without touching any ratio.
+    private func renderSignature(size: NSSize) -> String {
+        var parts: [String] = [
+            "\(Int(size.width.rounded()))x\(Int(size.height.rounded()))",
+            barStyle, labelPosition, colorScale,
+            menuBarIsDark ? "dark" : "light",
+            stats.isLowPowerMode ? "lpm" : "-",
+        ]
+        for m in activeModules() {
+            let ratio = m.isValue ? m.ratio : (displayedRatios[m.label] ?? m.ratio)
+            parts.append([
+                m.label,
+                // Quarter-pixel steps of a ~16 pt bar at 2×: finer changes
+                // render identically, so they must not count as a new frame.
+                String(Int((ratio * 128).rounded())),
+                m.valueText, m.unit,
+                m.isValue ? "v" : "-",
+                m.isBatteryIcon ? "b" : "-",
+                m.showChargeIcon ? "c" : "-",
+                m.showPlugIcon ? "p" : "-",
+                m.forceWhite ? "w" : "-",
+                m.customColor.map { "\($0)" } ?? "-",
+            ].joined(separator: ":"))
+        }
+        return parts.joined(separator: "|")
+    }
+
+    private var lastRenderSignature: String?
+    private var lastRenderedImage: NSImage?
+
+    /// Rebuilding the status item image means a fresh NSImage plus a full
+    /// `draw(_:)` pass. HardwareMonitor notifies on every poll whether or not
+    /// the numbers moved, and the last frame of a bar animation lands on the
+    /// same pixels as the one before it, so a good share of those passes
+    /// produced an image identical to the one already on screen. Reuse it.
     func renderedImage() -> NSImage {
         let size = intrinsicContentSize
         frame.size = size
-        return NSImage(size: size, flipped: false) { _ in
-            self.draw(self.bounds)
-            return true
+
+        let signature = renderSignature(size: size)
+        if signature == lastRenderSignature, let cached = lastRenderedImage {
+            return cached
         }
+
+        // Cache pixels, not a drawing handler that AppKit may invoke again on
+        // every menu-bar repaint. The handler also retained this view through
+        // lastRenderedImage. Render at Retina resolution without a closure.
+        let scale: CGFloat = 2
+        guard size.width > 0, size.height > 0,
+              let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(ceil(size.width * scale)),
+                pixelsHigh: Int(ceil(size.height * scale)),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+            return NSImage(size: size)
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.cgContext.scaleBy(x: scale, y: scale)
+        draw(NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap.size = size
+        let image = NSImage(size: size)
+        image.addRepresentation(bitmap)
+        lastRenderSignature = signature
+        lastRenderedImage = image
+        return image
     }
 }
 
@@ -955,7 +1074,7 @@ final class HardwareBarView: NSView {
 // showing as a flat seam across the arrow's base, so both live on one path.
 // ---------------------------------------------------------------------------
 
-private final class PopoverShellView: NSView {
+final class PopoverShellView: NSView {
     private let effect = NSVisualEffectView()
     /// Solid stand-in for `effect`/`glassEffect` when the user has Reduce
     /// Transparency on — System Settings ▸ Accessibility ▸ Display.
@@ -967,16 +1086,16 @@ private final class PopoverShellView: NSView {
     private let maskLayer = CAShapeLayer()
     private let strokeLayer = CAShapeLayer()
 
-    private let cornerRadius: CGFloat
-    private let arrowWidth: CGFloat
-    private let arrowHeight: CGFloat
+    let cornerRadius: CGFloat
+    let arrowWidth: CGFloat
+    let arrowHeight: CGFloat
 
     /// Horizontal center of the arrow, in this view's own bounds.
     var arrowCenterX: CGFloat {
         didSet { needsLayout = true }
     }
 
-    init(cornerRadius: CGFloat, arrowWidth: CGFloat, arrowHeight: CGFloat) {
+    init(cornerRadius: CGFloat, arrowWidth: CGFloat, arrowHeight: CGFloat, blendingMode: NSVisualEffectView.BlendingMode = .behindWindow) {
         self.cornerRadius = cornerRadius
         self.arrowWidth = arrowWidth
         self.arrowHeight = arrowHeight
@@ -984,8 +1103,8 @@ private final class PopoverShellView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
 
-        effect.material = .fullScreenUI
-        effect.blendingMode = .behindWindow
+        effect.material = blendingMode == .behindWindow ? .fullScreenUI : .popover
+        effect.blendingMode = blendingMode
         effect.state = .active
         effect.wantsLayer = true
         effect.autoresizingMask = [.width, .height]
@@ -1003,6 +1122,11 @@ private final class PopoverShellView: NSView {
             glass.wantsLayer = true
             glass.autoresizingMask = [.width, .height]
             glass.isHidden = true
+            // TokenBar's copy of this shell also sets `glass.effectIsInteractive`
+            // on macOS 27 (pointer-reactive glass, as the system's own menu-bar
+            // surfaces do). Omitted here only because build.sh compiles against
+            // the 26.5 SDK, which has no such property — add it behind an
+            // `if #available(macOS 27.0, *)` once this builds on the 27 SDK.
             addSubview(glass)
             glassEffect = glass
         }
@@ -1013,15 +1137,17 @@ private final class PopoverShellView: NSView {
         layer?.addSublayer(strokeLayer)
 
         refreshAppearance()
-        NotificationCenter.default.addObserver(self, selector: #selector(refreshAppearance),
-                                                name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
-                                                object: NSWorkspace.shared)
+        // Posted on the workspace's own centre, not NotificationCenter.default.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(refreshAppearance),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     /// Re-reads Reduce Transparency and the system's Liquid Glass tint style
@@ -1078,6 +1204,11 @@ private final class PopoverShellView: NSView {
     private static func shellPath(size: CGSize, radius r: CGFloat,
                                    arrowWidth: CGFloat, arrowHeight: CGFloat,
                                    arrowCenterX: CGFloat) -> CGPath {
+        guard size.width > 0, size.height > 0 else { return CGMutablePath() }
+        if arrowHeight <= 0 || arrowWidth <= 0 {
+            let actualRadius = min(r, min(size.width, size.height) / 2)
+            return CGPath(roundedRect: CGRect(origin: .zero, size: size), cornerWidth: actualRadius, cornerHeight: actualRadius, transform: nil)
+        }
         let minX: CGFloat = 0, minY: CGFloat = 0, maxX = size.width
         let bodyTop = size.height - arrowHeight
         let arrowLeftX = arrowCenterX - arrowWidth / 2
@@ -1113,13 +1244,499 @@ private final class PopoverShellView: NSView {
 }
 
 // ---------------------------------------------------------------------------
+// HardwarePopoverContentView — content view displaying hardware cards
+// ---------------------------------------------------------------------------
+
+final class HardwarePopoverContentView: NSView {
+    let shell: PopoverShellView
+    let stack: NSStackView
+
+    var energyModes = HardwareMonitor.EnergyModes()
+    var lastBarRatios: [String: CGFloat] = [:]
+    var lastPowerWatts: Double?
+
+    var cardColumns: [[String]] = AppSettings.shared.hardwareStatsCardColumns {
+        didSet {
+            columns = cardColumns.count
+        }
+    }
+    var columns: Int = 2
+    var moduleOrder: [String] = AppSettings.hardwareModuleIDs
+    var hiddenCards: Set<String> = []
+    var hidesBatteryCard: Bool = false
+    var batteryCardSpan = AppSettings.shared.hardwareStatsBatteryCardSpan
+    var batteryCardSide = AppSettings.shared.hardwareStatsBatteryCardSide
+    private var cardViews: [String: NSView] = [:]
+
+    /// Geometry comes from the same constraints that draw the live popover.
+    var cardFrames: [String: NSRect] {
+        cardViews.compactMapValues { view in
+            guard view.isDescendant(of: self) else { return nil }
+            return view.convert(view.bounds, to: self)
+        }
+    }
+
+
+    var isInteractive: Bool = true
+    var arrowHeight: CGFloat = 8
+    var onSettings: (() -> Void)?
+    var onPresetChanged: ((String) -> Void)?
+    var onSelectEnergyMode: ((Int) -> Void)?
+    var onHeightChange: ((CGFloat) -> Void)?
+
+    let shellRadius = CardStyle.popoverRadius
+    let gutter = CardStyle.gutter
+    var cardCornerRadius: CGFloat { max(0, shellRadius - gutter) }
+
+    var popWidth: CGFloat {
+        cardColumns.count >= 3 ? 368 : 248
+    }
+
+    var contentWidth: CGFloat { popWidth - gutter * 2 }
+
+    private var cachedContentHeight: CGFloat = 200
+
+    var contentHeight: CGFloat {
+        cachedContentHeight
+    }
+
+    private lazy var headerRow: PopoverHeaderRow = {
+        let row = PopoverHeaderRow(title: "Hardware")
+        return row
+    }()
+
+    private lazy var footerRow: PopoverFooterRow = {
+        let row = PopoverFooterRow(onSettings: { [weak self] in
+            self?.onSettings?()
+        })
+        return row
+    }()
+
+    private var headerWidthConstraint: NSLayoutConstraint?
+    private var footerWidthConstraint: NSLayoutConstraint?
+
+    init(isInteractive: Bool = true, arrowHeight: CGFloat = 8, blendingMode: NSVisualEffectView.BlendingMode = .behindWindow) {
+        self.isInteractive = isInteractive
+        self.arrowHeight = arrowHeight
+        self.shell = PopoverShellView(cornerRadius: shellRadius,
+                                      arrowWidth: arrowHeight > 0 ? 16 : 0,
+                                      arrowHeight: arrowHeight,
+                                      blendingMode: blendingMode)
+        self.stack = NSStackView()
+        let initialW: CGFloat = AppSettings.shared.hardwareStatsCardColumns.count >= 3 ? 368 : 248
+        super.init(frame: NSRect(x: 0, y: 0, width: initialW, height: 200))
+
+        shell.frame = bounds
+        shell.autoresizingMask = [.width, .height]
+        addSubview(shell)
+
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: gutter, bottom: 8, right: gutter)
+        addSubview(stack)
+
+        let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor)
+        trailing.priority = .defaultHigh
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: arrowHeight > 0 ? arrowHeight : 0),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            trailing,
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        shell.frame = bounds
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: popWidth, height: cachedContentHeight)
+    }
+
+    private func makeGridCard(_ id: String, stats s: HardwareStats) -> NSView? {
+        let card = makeGridCardContent(id, stats: s)
+        cardViews[id] = card
+        return card
+    }
+
+    private func makeGridCardContent(_ id: String, stats s: HardwareStats) -> NSView? {
+        switch id {
+        case "cpu":
+            let ratio = CGFloat(min(s.cpuPercent / 100.0, 1.0))
+            let card = StatCard(caption: "CPU",
+                                value: String(format: "%.1f%%", s.cpuPercent),
+                                barRatio: ratio,
+                                previousBarRatio: lastBarRatios["cpu"],
+                                cornerRadius: cardCornerRadius)
+            lastBarRatios["cpu"] = ratio
+            return card
+
+        case "gpu":
+            let ratio = CGFloat(min(s.gpuPercent / 100.0, 1.0))
+            let card = StatCard(caption: "GPU",
+                                value: String(format: "%.1f%%", s.gpuPercent),
+                                barRatio: ratio,
+                                previousBarRatio: lastBarRatios["gpu"],
+                                cornerRadius: cardCornerRadius)
+            lastBarRatios["gpu"] = ratio
+            return card
+
+        case "memory":
+            let pressure: (pct: Int, ratio: CGFloat) = {
+                switch s.memoryPressure {
+                case .normal:   return (25, 0.25)
+                case .warning:  return (60, 0.60)
+                case .critical: return (90, 0.90)
+                }
+            }()
+            let card = StatCard(caption: "MEM",
+                                captionDetail: String(format: "%.1f GB", s.memoryUsedGB),
+                                value: "\(pressure.pct)%",
+                                barRatio: pressure.ratio,
+                                previousBarRatio: lastBarRatios["memory"],
+                                cornerRadius: cardCornerRadius)
+            lastBarRatios["memory"] = pressure.ratio
+            return card
+
+        case "temp":
+            let t = s.cpuTemp ?? s.gpuTemp
+            let minT = AppSettings.shared.hardwareStatsTempMin
+            let maxT = AppSettings.shared.hardwareStatsTempMax
+            let tempRatio = t.map { CGFloat(max(0, min(1, ($0 - minT) / max(1.0, maxT - minT)))) }
+            let card = StatCard(caption: "TEMP",
+                                value: t.map { String(format: "%.0f°C", $0) } ?? "—",
+                                barRatio: tempRatio,
+                                previousBarRatio: tempRatio != nil ? lastBarRatios["temp"] : nil,
+                                cornerRadius: cardCornerRadius)
+            if let tempRatio {
+                lastBarRatios["temp"] = tempRatio
+            } else {
+                lastBarRatios.removeValue(forKey: "temp")
+            }
+            return card
+
+        case "fps":
+            let card = StatCard(caption: "FPS", value: "\(s.fps)", detail: "frames per second",
+                                cornerRadius: cardCornerRadius)
+            return card
+
+        default:
+            return nil
+        }
+    }
+
+    func rebuild(stats s: HardwareStats, powerSamples: [Double] = HardwareMonitor.shared.powerHistory) {
+        if frame.size.width != popWidth {
+            frame.size.width = popWidth
+            shell.frame = bounds
+        }
+        cardViews.removeAll()
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        headerRow.update(isActive: HardwareMonitor.shared.isPolling)
+        stack.addArrangedSubview(headerRow)
+        headerWidthConstraint?.isActive = false
+        headerWidthConstraint = headerRow.widthAnchor.constraint(equalToConstant: contentWidth)
+        headerWidthConstraint?.isActive = true
+
+        let totalWidth = contentWidth
+        let spacing: CGFloat = 8
+
+        let effectiveColumns: [[String]] = {
+            let cols = cardColumns.prefix(3).map { col in
+                col.filter { !hiddenCards.contains($0) }
+            }
+            let nonEmpty = cols.filter { !$0.isEmpty }
+            return nonEmpty.isEmpty ? [[]] : nonEmpty
+        }()
+
+        let columnsRow = NSStackView()
+        columnsRow.orientation = .horizontal
+        columnsRow.spacing = spacing
+        columnsRow.alignment = .top
+        columnsRow.distribution = .fillEqually
+
+        var hasGridCards = false
+        for colCards in effectiveColumns {
+            let colStack = NSStackView()
+            colStack.orientation = .vertical
+            colStack.spacing = spacing
+            colStack.alignment = .leading
+
+            for cardID in colCards {
+                if let card = makeGridCard(cardID, stats: s) {
+                    colStack.addArrangedSubview(card)
+                    card.widthAnchor.constraint(equalTo: colStack.widthAnchor).isActive = true
+                    hasGridCards = true
+                }
+            }
+            if !colStack.arrangedSubviews.isEmpty {
+                columnsRow.addArrangedSubview(colStack)
+            }
+        }
+
+        struct PopoverSectionItem {
+            let orderIndex: Int
+            let view: NSView
+        }
+        var sections: [PopoverSectionItem] = []
+
+        let showsBatteryCard = s.batteryPercent != nil && !hidesBatteryCard && !hiddenCards.contains("battery")
+        let showPowerGraph = powerSamples.count >= 2
+        let batteryIndex = moduleOrder.firstIndex(of: "battery") ?? 999
+        let gridIndex = moduleOrder.firstIndex { AppSettings.hardwareGridCardIDs.contains($0) && !hiddenCards.contains($0) } ?? 999
+        let is3Cols = cardColumns.count >= 3
+        let isBattery2x2 = is3Cols && batteryCardSpan == "2x2" && showsBatteryCard
+            && effectiveColumns.contains { !$0.isEmpty }
+
+        if isBattery2x2 {
+            let allGridCards = effectiveColumns.flatMap { $0 }
+            let sideCards = Array(allGridCards.prefix(2))
+            let remainingCards = Array(allGridCards.dropFirst(2))
+
+            let sideCol = NSStackView()
+            sideCol.orientation = .vertical
+            sideCol.distribution = .fillEqually
+            sideCol.spacing = spacing
+            sideCol.alignment = .leading
+            for cardID in sideCards {
+                if let card = makeGridCard(cardID, stats: s) {
+                    sideCol.addArrangedSubview(card)
+                    card.widthAnchor.constraint(equalToConstant: 110).isActive = true
+                }
+            }
+            sideCol.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
+            let batteryW: CGFloat = totalWidth - 110 - spacing
+            let battery2x2 = makeBatteryDetailCard(stats: s, contentWidth: batteryW,
+                                                   cornerRadius: cardCornerRadius,
+                                                   energyModes: energyModes,
+                                                   powerSamples: showPowerGraph ? powerSamples : nil,
+                                                   previousPowerWatts: lastPowerWatts) { [weak self] mode in
+                guard let self, self.isInteractive else { return }
+                self.onSelectEnergyMode?(mode)
+            }
+            cardViews["battery"] = battery2x2
+            lastPowerWatts = s.powerWatts
+            battery2x2.widthAnchor.constraint(equalToConstant: batteryW).isActive = true
+
+            let compositeRow = NSStackView()
+            compositeRow.orientation = .horizontal
+            compositeRow.spacing = spacing
+            compositeRow.alignment = .top
+            if batteryCardSide == "right" {
+                compositeRow.addArrangedSubview(sideCol)
+                compositeRow.addArrangedSubview(battery2x2)
+            } else {
+                compositeRow.addArrangedSubview(battery2x2)
+                compositeRow.addArrangedSubview(sideCol)
+            }
+            if !sideCol.arrangedSubviews.isEmpty {
+                sideCol.heightAnchor.constraint(equalTo: battery2x2.heightAnchor).isActive = true
+            }
+            compositeRow.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+            sections.append(PopoverSectionItem(orderIndex: min(batteryIndex, gridIndex), view: compositeRow))
+
+            if !remainingCards.isEmpty {
+                let remainingRow = NSStackView()
+                remainingRow.orientation = .horizontal
+                remainingRow.spacing = spacing
+                remainingRow.alignment = .top
+                remainingRow.distribution = .fillEqually
+
+                var remCols: [[String]] = [[], [], []]
+                for (idx, c) in remainingCards.enumerated() {
+                    remCols[idx % 3].append(c)
+                }
+                for col in remCols where !col.isEmpty {
+                    let colStack = NSStackView()
+                    colStack.orientation = .vertical
+                    colStack.spacing = spacing
+                    colStack.alignment = .leading
+                    for cardID in col {
+                        if let card = makeGridCard(cardID, stats: s) {
+                            colStack.addArrangedSubview(card)
+                            card.widthAnchor.constraint(equalTo: colStack.widthAnchor).isActive = true
+                        }
+                    }
+                    remainingRow.addArrangedSubview(colStack)
+                }
+                remainingRow.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+                sections.append(PopoverSectionItem(orderIndex: max(batteryIndex, gridIndex), view: remainingRow))
+            }
+        } else {
+            if hasGridCards {
+                columnsRow.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+                sections.append(PopoverSectionItem(orderIndex: gridIndex, view: columnsRow))
+            }
+
+            if showsBatteryCard {
+                let batteryCard = makeBatteryCard(s, powerSamples: showPowerGraph ? powerSamples : nil)
+                cardViews["battery"] = batteryCard
+                batteryCard.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+                sections.append(PopoverSectionItem(orderIndex: batteryIndex, view: batteryCard))
+            } else if showPowerGraph && !hiddenCards.contains("battery") {
+                let graph = PowerGraphCard(samples: powerSamples, cornerRadius: cardCornerRadius)
+                cardViews["battery"] = graph
+                graph.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+                sections.append(PopoverSectionItem(orderIndex: batteryIndex, view: graph))
+            }
+        }
+
+        if !s.fans.isEmpty && !hiddenCards.contains("fan") {
+            let fansCard = makeFansCard(s.fans)
+            cardViews["fan"] = fansCard
+            fansCard.widthAnchor.constraint(equalToConstant: totalWidth).isActive = true
+            let fanIndex = moduleOrder.firstIndex(of: "fan") ?? 999
+            sections.append(PopoverSectionItem(orderIndex: fanIndex, view: fansCard))
+        }
+
+        sections.sort { $0.orderIndex < $1.orderIndex }
+        for sec in sections {
+            stack.addArrangedSubview(sec.view)
+        }
+
+        stack.addArrangedSubview(footerRow)
+        footerWidthConstraint?.isActive = false
+        footerWidthConstraint = footerRow.widthAnchor.constraint(equalToConstant: contentWidth)
+        footerWidthConstraint?.isActive = true
+
+        cachedContentHeight = max(60, stack.fittingSize.height) + (arrowHeight > 0 ? arrowHeight : 0)
+        invalidateIntrinsicContentSize()
+        onHeightChange?(cachedContentHeight)
+    }
+
+    private func makeFansCard(_ fans: [FanInfo]) -> NSView {
+        let card = CardView(cornerRadius: cardCornerRadius)
+
+        let inner = NSStackView()
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 5
+        inner.edgeInsets = NSEdgeInsets(top: CardStyle.cardPaddingV, left: CardStyle.cardPaddingH,
+                                        bottom: CardStyle.cardPaddingV, right: CardStyle.cardPaddingH)
+        card.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.topAnchor.constraint(equalTo: card.topAnchor),
+            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+
+        let rowWidth = contentWidth - CardStyle.cardPaddingH * 2
+
+        let caption = NSTextField(labelWithString: "")
+        caption.attributedStringValue = StatCard.titleString("Fans")
+        inner.addArrangedSubview(caption)
+        inner.setCustomSpacing(7, after: caption)
+
+        for f in fans {
+            let ratio = f.max > 0 ? CGFloat(f.current) / CGFloat(f.max) : 0
+
+            let name = NSTextField(labelWithString: f.name)
+            name.font = CardStyle.rowTitleFont
+            name.textColor = .labelColor
+            name.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+            let value = NSTextField(labelWithString: "\(f.current) RPM · \(Int(ratio * 100))%")
+            value.font = CardStyle.valueFont
+            value.textColor = .secondaryLabelColor
+            value.alignment = .right
+            value.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+            let valueSpacer = NSView()
+            valueSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+            let row = NSStackView(views: [name, valueSpacer, value])
+            row.orientation = .horizontal
+            row.spacing = 6
+            row.alignment = .firstBaseline
+            inner.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+
+            let bar = MiniBarView()
+            bar.ratio = ratio
+            bar.fillColor = statThresholdColor(ratio)
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            inner.addArrangedSubview(bar)
+            bar.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+            bar.heightAnchor.constraint(equalToConstant: CardStyle.barHeight).isActive = true
+            inner.setCustomSpacing(8, after: bar)
+        }
+
+        let presetLabel = NSTextField(labelWithString: "Preset")
+        presetLabel.font = CardStyle.captionFont
+        presetLabel.textColor = .secondaryLabelColor
+        presetLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        let presetSpacer = NSView()
+        presetSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let presetBtn = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 120, height: 20), pullsDown: false)
+        let presetTitles = ["silent": "Silent", "default": "Default", "performance": "Performance"]
+        presetBtn.addItems(withTitles: ["Silent", "Default", "Performance"])
+        if let title = presetTitles[AppSettings.shared.hardwareStatsFanPreset] {
+            presetBtn.selectItem(withTitle: title)
+        }
+        presetBtn.target = self
+        presetBtn.action = #selector(presetChanged(_:))
+        presetBtn.controlSize = .small
+        presetBtn.font = NSFont.systemFont(ofSize: 11)
+        presetBtn.isEnabled = isInteractive
+
+        let presetRow = NSStackView(views: [presetLabel, presetSpacer, presetBtn])
+        presetRow.orientation = .horizontal
+        presetRow.spacing = 6
+        presetRow.alignment = .centerY
+        inner.addArrangedSubview(presetRow)
+        presetRow.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+
+        return card
+    }
+
+    private func makeBatteryCard(_ s: HardwareStats, powerSamples: [Double]? = nil) -> NSView {
+        let card = makeBatteryDetailCard(stats: s, contentWidth: contentWidth,
+                              cornerRadius: cardCornerRadius,
+                              energyModes: energyModes,
+                              powerSamples: powerSamples,
+                              previousPowerWatts: lastPowerWatts) { [weak self] mode in
+            guard let self, self.isInteractive else { return }
+            self.onSelectEnergyMode?(mode)
+        }
+        lastPowerWatts = s.powerWatts
+        return card
+    }
+
+    @objc private func presetChanged(_ sender: NSPopUpButton) {
+        guard isInteractive else { return }
+        let map = ["Default": "default", "Silent": "silent", "Performance": "performance"]
+        guard let title = sender.selectedItem?.title,
+              let preset = map[title] else { return }
+        onPresetChanged?(preset)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HardwarePopover — detailed stats shown on click
 // ---------------------------------------------------------------------------
 
+final class HardwarePopoverPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 final class HardwarePopover: NSObject {
-    private let window: NSWindow
-    private let root: NSView
-    private let stack: NSStackView
+    private let window: HardwarePopoverPanel
+    private let contentView: HardwarePopoverContentView
     private var pollTimer: Timer?
     private var resizeTimer: Timer?
     private var closeMonitor: Any?
@@ -1129,73 +1746,51 @@ final class HardwarePopover: NSObject {
 
     private var energyModes = HardwareMonitor.EnergyModes()
 
-    /// Last ratio drawn for each stat card, keyed by card id. Cards are
-    /// recreated from scratch every rebuild, so this is what lets a fresh
-    /// MiniBarView ease from the old value instead of snapping to the new one.
-    private var lastBarRatios: [String: CGFloat] = [:]
-    /// Last watt figure shown in the battery card, so a fresh AnimatedValueField
-    /// can ease from it instead of snapping (same reasoning as lastBarRatios).
-    private var lastPowerWatts: Double?
-
-    private let popWidth: CGFloat = 248
-    /// Width available to content between the stack's edge insets.
-    private var contentWidth: CGFloat { popWidth - gutter * 2 }
-
-    /// Corner radius of the shell; the gutter below is subtracted from this
-    /// to get each card's own radius, so every card corner is concentric
-    /// with the shell corner around it (inner = outer − gutter).
-    private let shellRadius: CGFloat = 20
-    private let gutter: CGFloat = 8
-    private var cardCornerRadius: CGFloat { max(0, shellRadius - gutter) }
-    private let arrowWidth: CGFloat = 16
-    private let arrowHeight: CGFloat = 8
-    private let shell: PopoverShellView
-
-    /// When the battery module has its own dedicated status item, its card
-    /// is dropped from this popover to avoid showing it twice.
-    var hidesBatteryCard: Bool = false
+    var hidesBatteryCard: Bool {
+        get { contentView.hidesBatteryCard }
+        set { contentView.hidesBatteryCard = newValue }
+    }
 
     var isShown: Bool { window.isVisible }
 
     override init() {
-        root = NSView(frame: NSRect(x: 0, y: 0, width: popWidth, height: 200))
-
-        // Shell matching MusicPopover's card language: body, arrow, and
-        // vibrancy are one continuous piece (see PopoverShellView), same as
-        // a real NSPopover's own frame chrome.
-        shell = PopoverShellView(cornerRadius: shellRadius, arrowWidth: arrowWidth, arrowHeight: arrowHeight)
-        shell.frame = root.bounds
-        shell.autoresizingMask = [.width, .height]
-        root.addSubview(shell)
-
-        stack = NSStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: gutter, bottom: 8, right: gutter)
-        root.addSubview(stack)
-
-        // Pin the stack below the arrow strip so content never clips and the
-        // view's fittingSize reflects the stack's intrinsic height.
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: arrowHeight),
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
-
-        window = NSWindow(contentRect: root.frame,
-                          styleMask: [.borderless, .nonactivatingPanel],
-                          backing: .buffered, defer: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.level = .popUpMenu
-        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary, .canJoinAllSpaces]
-        window.contentView = root
+        contentView = HardwarePopoverContentView(isInteractive: true, arrowHeight: 8, blendingMode: .behindWindow)
+        let initialWidth = contentView.popWidth
+        let p = HardwarePopoverPanel(
+            contentRect: NSRect(x: 0, y: 0, width: initialWidth, height: 200),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.level = .popUpMenu
+        if #available(macOS 13.0, *) {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
+        } else {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
+        p.contentView = contentView
+        window = p
 
         super.init()
+
+        contentView.onSettings = { [weak self] in
+            self?.openSettings()
+        }
+        contentView.onPresetChanged = { [weak self] preset in
+            AppSettings.shared.hardwareStatsFanPreset = preset
+            HardwareMonitor.shared.applySelectedFanPresetFromUser()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.rebuild()
+            }
+        }
+        contentView.onSelectEnergyMode = { [weak self] mode in
+            self?.selectEnergyMode(mode)
+        }
 
         // Track open menus (the fan preset picker) so the 1s refresh doesn't
         // rebuild the row views and yank the control out from under the user.
@@ -1208,6 +1803,11 @@ final class HardwarePopover: NSObject {
             guard let self else { return }
             self.menuTrackingCount = max(0, self.menuTrackingCount - 1)
         })
+        menuTrackingObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.close()
+        })
     }
 
     deinit {
@@ -1216,38 +1816,49 @@ final class HardwarePopover: NSObject {
 
     func show(relativeTo button: NSStatusBarButton) {
         sourceButton = button
-        // The tint style (Clear/Tinted) has no public change notification,
-        // so pick it up fresh on every open rather than only at popover
-        // creation time.
-        shell.refreshAppearance()
+        contentView.shell.refreshAppearance()
         refreshEnergyModes()
         rebuild()
 
+        let popWidth = contentView.popWidth
+        let contentHeight = contentView.contentHeight
+
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = button.window?.convertToScreen(buttonRect) ?? .zero
-        // The button's own bounds can be taller than the menu bar's visual
-        // content (macOS pads status items to clear notch camera housing),
-        // so anchor from the top edge minus the standard thickness instead
-        // of the bottom edge — otherwise the popover floats well below the icon.
-        let menuBarBottom = screenRect.maxY - NSStatusBar.system.thickness
-        var origin = NSPoint(x: screenRect.midX - window.frame.width / 2,
-                             y: menuBarBottom - window.frame.height - 4)
-        if let screen = button.window?.screen {
+        let screen = button.window?.screen
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        let menuBarBottom: CGFloat
+        if screenRect != .zero {
+            menuBarBottom = screenRect.maxY - NSStatusBar.system.thickness
+        } else if let screen {
+            menuBarBottom = screen.frame.maxY - NSStatusBar.system.thickness
+        } else {
+            menuBarBottom = NSEvent.mouseLocation.y
+        }
+
+        let targetMidX = screenRect != .zero ? screenRect.midX : NSEvent.mouseLocation.x
+        var origin = NSPoint(x: targetMidX - popWidth / 2,
+                             y: menuBarBottom - contentHeight - 4)
+        if let screen {
             let vf = screen.visibleFrame
-            if origin.x + window.frame.width > vf.maxX { origin.x = vf.maxX - window.frame.width - 4 }
+            if origin.x + popWidth > vf.maxX { origin.x = vf.maxX - popWidth - 4 }
             if origin.x < vf.minX { origin.x = vf.minX + 4 }
         }
 
-        // Point the arrow at the button's horizontal center, clamped clear
-        // of the rounded corners.
-        let minCenter = 16 + arrowWidth / 2
-        let maxCenter = popWidth - 16 - arrowWidth / 2
-        let wanted = screenRect.midX - origin.x
-        shell.arrowCenterX = max(minCenter, min(maxCenter, wanted))
-        shell.layoutSubtreeIfNeeded()
+        let minCenter = 16 + contentView.shell.arrowWidth / 2
+        let maxCenter = popWidth - 16 - contentView.shell.arrowWidth / 2
+        let wanted = targetMidX - origin.x
+        contentView.shell.arrowCenterX = max(minCenter, min(maxCenter, wanted))
+        contentView.shell.layoutSubtreeIfNeeded()
 
-        window.setFrameOrigin(origin)
-        window.orderFront(nil)
+        window.setFrame(NSRect(x: origin.x, y: origin.y, width: popWidth, height: contentHeight), display: true)
+        if let btnWin = button.window, window.parent != btnWin {
+            btnWin.addChildWindow(window, ordered: .above)
+        }
+        window.orderFrontRegardless()
 
         if closeMonitor == nil {
             closeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -1273,235 +1884,22 @@ final class HardwarePopover: NSObject {
         pollTimer?.invalidate(); pollTimer = nil
         resizeTimer?.invalidate(); resizeTimer = nil
         if let m = closeMonitor { NSEvent.removeMonitor(m); closeMonitor = nil }
+        if let parent = window.parent {
+            parent.removeChildWindow(window)
+        }
         window.orderOut(nil)
     }
 
-    // Rebuild the whole layout (structure may change: fans appear/disappear).
     private func rebuild() {
-        let s = HardwareMonitor.shared.stats
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
-        // Popover cards can be hidden per module (Settings ▸ Hardware ▸ Order).
-        let hidden = Set(AppSettings.shared.hardwareStatsHiddenCards)
-
-        let showsBatteryCard = s.batteryPercent != nil && !hidesBatteryCard && !hidden.contains("battery")
-        if showsBatteryCard {
-            let batteryCard = makeBatteryCard(s)
-            stack.addArrangedSubview(batteryCard)
-            batteryCard.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-        }
-
-        // Collect the half-width cards that are enabled, then flow them into
-        // rows of two. Power is a standalone card only when there's no battery
-        // card (otherwise its wattage lives inside the battery card).
-        var halfCards: [NSView] = []
-
-        if !hidden.contains("cpu") {
-            let ratio = CGFloat(min(s.cpuPercent / 100.0, 1.0))
-            halfCards.append(StatCard(caption: "CPU",
-                                      value: String(format: "%.1f%%", s.cpuPercent),
-                                      barRatio: ratio,
-                                      previousBarRatio: lastBarRatios["cpu"],
-                                      cornerRadius: cardCornerRadius))
-            lastBarRatios["cpu"] = ratio
-        }
-        if !hidden.contains("gpu") {
-            let ratio = CGFloat(min(s.gpuPercent / 100.0, 1.0))
-            halfCards.append(StatCard(caption: "GPU",
-                                      value: String(format: "%.1f%%", s.gpuPercent),
-                                      barRatio: ratio,
-                                      previousBarRatio: lastBarRatios["gpu"],
-                                      cornerRadius: cardCornerRadius))
-            lastBarRatios["gpu"] = ratio
-        }
-        if !hidden.contains("memory") {
-            let pressure: (pct: Int, ratio: CGFloat) = {
-                switch s.memoryPressure {
-                case .normal:   return (25, 0.25)
-                case .warning:  return (60, 0.60)
-                case .critical: return (90, 0.90)
-                }
-            }()
-            halfCards.append(StatCard(caption: "MEM",
-                                      captionDetail: String(format: "%.1f GB", s.memoryUsedGB),
-                                      value: "\(pressure.pct)%",
-                                      barRatio: pressure.ratio,
-                                      previousBarRatio: lastBarRatios["memory"],
-                                      cornerRadius: cardCornerRadius))
-            lastBarRatios["memory"] = pressure.ratio
-        }
-        if !hidden.contains("temp") {
-            let t = s.cpuTemp ?? s.gpuTemp
-            let minT = AppSettings.shared.hardwareStatsTempMin
-            let maxT = AppSettings.shared.hardwareStatsTempMax
-            let tempRatio = t.map { CGFloat(max(0, min(1, ($0 - minT) / max(1.0, maxT - minT)))) }
-            halfCards.append(StatCard(caption: "TEMP",
-                                      value: t.map { String(format: "%.0f°C", $0) } ?? "—",
-                                      barRatio: tempRatio,
-                                      previousBarRatio: tempRatio != nil ? lastBarRatios["temp"] : nil,
-                                      cornerRadius: cardCornerRadius))
-            if let tempRatio {
-                lastBarRatios["temp"] = tempRatio
-            } else {
-                lastBarRatios.removeValue(forKey: "temp")
-            }
-        }
-        if !showsBatteryCard && !hidden.contains("power") {
-            let powerCaption: String
-            switch s.isCharging {
-            case .some(true):  powerCaption = "CHARGING"
-            case .some(false): powerCaption = "DISCHARGING"
-            case .none:        powerCaption = "POWER"
-            }
-            halfCards.append(StatCard(caption: powerCaption,
-                                      value: s.powerWatts.map { String(format: "%.1f W", $0) } ?? "—",
-                                      detail: s.adapterWatts.map { "\($0)W adapter" },
-                                      showsBolt: s.isCharging == true,
-                                      cornerRadius: cardCornerRadius))
-        }
-        if !hidden.contains("fps") {
-            halfCards.append(StatCard(caption: "FPS", value: "\(s.fps)", detail: "frames per second",
-                                      cornerRadius: cardCornerRadius))
-        }
-
-        var idx = 0
-        while idx < halfCards.count {
-            let end = min(idx + 2, halfCards.count)
-            addCardRow(Array(halfCards[idx..<end]))
-            idx = end
-        }
-
-        if !s.fans.isEmpty && !hidden.contains("fan") {
-            let fansCard = makeFansCard(s.fans)
-            stack.addArrangedSubview(fansCard)
-            fansCard.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-        }
-
-        let settingsRow = PopoverActionRow(title: "Settings") { [weak self] in
-            self?.openSettings()
-        }
-        stack.addArrangedSubview(settingsRow)
-        settingsRow.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-
+        contentView.cardColumns = AppSettings.shared.hardwareStatsCardColumns
+        contentView.columns = AppSettings.shared.hardwareStatsCardColumns.count
+        contentView.moduleOrder = AppSettings.shared.hardwareStatsModuleOrder
+        contentView.batteryCardSpan = AppSettings.shared.hardwareStatsBatteryCardSpan
+        contentView.batteryCardSide = AppSettings.shared.hardwareStatsBatteryCardSide
+        contentView.hiddenCards = Set(AppSettings.shared.hardwareStatsHiddenCards)
+        contentView.energyModes = energyModes
+        contentView.rebuild(stats: HardwareMonitor.shared.stats, powerSamples: HardwareMonitor.shared.powerHistory)
         resizeWindow()
-    }
-
-    /// Adds one row of equal-width stat cards to the vertical stack.
-    private func addCardRow(_ cards: [NSView]) {
-        let row = NSStackView(views: cards)
-        row.orientation = .horizontal
-        row.spacing = 8
-        row.distribution = .fillEqually
-        stack.addArrangedSubview(row)
-        row.widthAnchor.constraint(equalToConstant: contentWidth).isActive = true
-    }
-
-    /// Full-width card holding per-fan readings and the preset picker.
-    private func makeFansCard(_ fans: [FanInfo]) -> NSView {
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        card.layer?.cornerRadius = cardCornerRadius
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-        card.layer?.borderWidth = 1
-
-        let inner = NSStackView()
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 5
-        inner.edgeInsets = NSEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
-        card.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.topAnchor.constraint(equalTo: card.topAnchor),
-            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-        ])
-
-        let rowWidth = contentWidth - 20
-
-        let caption = NSTextField(labelWithString: "")
-        caption.attributedStringValue = StatCard.captionString("FANS")
-        inner.addArrangedSubview(caption)
-        inner.setCustomSpacing(7, after: caption)
-
-        for f in fans {
-            let ratio = f.max > 0 ? CGFloat(f.current) / CGFloat(f.max) : 0
-
-            let name = NSTextField(labelWithString: f.name)
-            name.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-            name.textColor = .labelColor
-            name.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-
-            let value = NSTextField(labelWithString: "\(f.current) RPM · \(Int(ratio * 100))%")
-            value.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-            value.textColor = .secondaryLabelColor
-            value.alignment = .right
-            value.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-
-            // Flexible spacer pins the value flush to the row's right edge,
-            // same trick used in the battery card.
-            let valueSpacer = NSView()
-            valueSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-            let row = NSStackView(views: [name, valueSpacer, value])
-            row.orientation = .horizontal
-            row.spacing = 6
-            row.alignment = .firstBaseline
-            inner.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-
-            let bar = MiniBarView()
-            bar.ratio = ratio
-            bar.fillColor = statThresholdColor(ratio)
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            inner.addArrangedSubview(bar)
-            bar.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-            bar.heightAnchor.constraint(equalToConstant: 3).isActive = true
-            inner.setCustomSpacing(8, after: bar)
-        }
-
-        let presetLabel = NSTextField(labelWithString: "Preset")
-        presetLabel.font = NSFont.systemFont(ofSize: 10)
-        presetLabel.textColor = .secondaryLabelColor
-        presetLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-
-        // Flexible spacer pins the picker flush to the row's right edge.
-        let presetSpacer = NSView()
-        presetSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let presetBtn = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 120, height: 20), pullsDown: false)
-        let presetTitles = ["silent": "Silent", "default": "Default", "performance": "Performance"]
-        presetBtn.addItems(withTitles: ["Silent", "Default", "Performance"])
-        if let title = presetTitles[AppSettings.shared.hardwareStatsFanPreset] {
-            presetBtn.selectItem(withTitle: title)
-        }
-        presetBtn.target = self
-        presetBtn.action = #selector(presetChanged(_:))
-        presetBtn.controlSize = .small
-        presetBtn.font = NSFont.systemFont(ofSize: 10)
-
-        let presetRow = NSStackView(views: [presetLabel, presetSpacer, presetBtn])
-        presetRow.orientation = .horizontal
-        presetRow.spacing = 6
-        presetRow.alignment = .centerY
-        inner.addArrangedSubview(presetRow)
-        presetRow.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-
-        return card
-    }
-
-    /// Full-width battery card: charge level and energy-mode picker.
-    private func makeBatteryCard(_ s: HardwareStats) -> NSView {
-        let card = makeBatteryDetailCard(stats: s, contentWidth: contentWidth,
-                              cornerRadius: cardCornerRadius,
-                              energyModes: energyModes,
-                              previousPowerWatts: lastPowerWatts) { [weak self] mode in
-            self?.selectEnergyMode(mode)
-        }
-        lastPowerWatts = s.powerWatts
-        return card
     }
 
     private func openSettings() {
@@ -1516,7 +1914,6 @@ final class HardwarePopover: NSObject {
         rebuild()
     }
 
-    /// Re-reads pmset's powermode values off-main and repaints when they land.
     private func refreshEnergyModes() {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let modes = HardwareMonitor.readEnergyModes()
@@ -1529,8 +1926,6 @@ final class HardwarePopover: NSObject {
     }
 
     private func selectEnergyMode(_ mode: Int) {
-        // Optimistic repaint; the pmset re-read after the helper call is the
-        // source of truth (and reverts the chips if the write failed).
         energyModes.battery = mode
         energyModes.ac = mode
         rebuild()
@@ -1540,35 +1935,58 @@ final class HardwarePopover: NSObject {
     }
 
     private func resizeWindow(animated: Bool = false) {
-        stack.layoutSubtreeIfNeeded()
-        let h = max(60, stack.fittingSize.height) + arrowHeight
+        guard window.isVisible else { return }
+        let h = contentView.contentHeight
+        let popWidth = contentView.popWidth
         let lockedTopY = window.frame.maxY
-        let newFrame = NSRect(x: window.frame.minX,
-                              y: lockedTopY - h,   // keep arrow/top fixed; extend from the bottom
-                              width: popWidth, height: h)
+
+        var originX = window.frame.minX
+        if let btn = sourceButton {
+            let screen = btn.window?.screen
+                ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+                ?? NSScreen.main
+                ?? NSScreen.screens.first
+            let buttonRect = btn.convert(btn.bounds, to: nil)
+            let screenRect = btn.window?.convertToScreen(buttonRect) ?? .zero
+            let targetMidX = screenRect != .zero ? screenRect.midX : (window.frame.minX + popWidth / 2)
+            originX = targetMidX - popWidth / 2
+            if let screen {
+                let vf = screen.visibleFrame
+                if originX + popWidth > vf.maxX { originX = vf.maxX - popWidth - 4 }
+                if originX < vf.minX { originX = vf.minX + 4 }
+            }
+
+            let minCenter = 16 + contentView.shell.arrowWidth / 2
+            let maxCenter = popWidth - 16 - contentView.shell.arrowWidth / 2
+            let wanted = targetMidX - originX
+            contentView.shell.arrowCenterX = max(minCenter, min(maxCenter, wanted))
+            contentView.shell.layoutSubtreeIfNeeded()
+        }
+
+        let newFrame = NSRect(x: originX, y: lockedTopY - h, width: popWidth, height: h)
         if animated {
-            animateWindowHeight(to: h, lockedTopY: lockedTopY)
+            animateWindowHeight(to: h, targetWidth: popWidth, lockedTopY: lockedTopY)
         } else {
             resizeTimer?.invalidate(); resizeTimer = nil
             window.setFrame(newFrame, display: true, animate: false)
         }
     }
 
-    private func animateWindowHeight(to targetHeight: CGFloat, lockedTopY: CGFloat) {
+    private func animateWindowHeight(to targetHeight: CGFloat, targetWidth: CGFloat, lockedTopY: CGFloat) {
         resizeTimer?.invalidate()
 
         let startHeight = window.frame.height
         let delta = targetHeight - startHeight
         guard abs(delta) > 0.5 else {
             window.setFrame(NSRect(x: window.frame.minX, y: lockedTopY - targetHeight,
-                                   width: popWidth, height: targetHeight),
+                                   width: targetWidth, height: targetHeight),
                             display: true, animate: false)
             return
         }
 
         let start = CACurrentMediaTime()
         let duration: CFTimeInterval = 0.18
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
                 return
@@ -1579,7 +1997,7 @@ final class HardwarePopover: NSObject {
             let height = startHeight + delta * eased
             self.window.setFrame(NSRect(x: self.window.frame.minX,
                                         y: lockedTopY - height,
-                                        width: self.popWidth,
+                                        width: targetWidth,
                                         height: height),
                                  display: true, animate: false)
             if p >= 1 {
@@ -1590,18 +2008,97 @@ final class HardwarePopover: NSObject {
         RunLoop.main.add(timer, forMode: .common)
         resizeTimer = timer
     }
+}
 
-    @objc private func presetChanged(_ sender: NSPopUpButton) {
-        let map = ["Default": "default", "Silent": "silent", "Performance": "performance"]
-        guard let title = sender.selectedItem?.title,
-              let preset = map[title] else { return }
-        AppSettings.shared.hardwareStatsFanPreset = preset
-        HardwareMonitor.shared.applySelectedFanPresetFromUser()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.rebuild()
+// ---------------------------------------------------------------------------
+// CardStyle — shared design tokens for the popover surface
+// ---------------------------------------------------------------------------
+
+/// The popover's design language, ported from TokenBar's menu (its
+/// `CardMetrics` + `providerCard`) so both menu bar apps read as one family.
+/// Shared by copy, not by module — when either moves, move the other.
+///
+/// The radii stay concentric: a card inset by `gutter` inside the shell needs
+/// `cardRadius = popoverRadius − gutter`, or the gap pinches at the corners
+/// while the straight edges still look right.
+enum CardStyle {
+    static let popoverRadius: CGFloat = 20
+    static let gutter: CGFloat = 8                      // padding around/between cards
+    static let cardRadius: CGFloat = popoverRadius - gutter
+    static let cardPaddingH: CGFloat = 12
+    static let cardPaddingV: CGFloat = 10
+    static let footerInset: CGFloat = 4                 // vertical inset for header/footer chrome
+    static let panelRadius: CGFloat = 8                 // inner panels and chips
+    static let barHeight: CGFloat = 4
+
+    // Label-derived rather than hardcoded white. The glass under these cards is
+    // light over a light wallpaper even while the system is in Dark mode, and a
+    // white wash disappears there. TokenBar gets this free from `Color.primary`;
+    // an AppKit layer has to resolve the dynamic color itself (see CardView).
+    static let cardFill = scalingAlpha(.labelColor, by: 0.05)
+    static let cardStroke = scalingAlpha(.labelColor, by: 0.07)
+    static let barTrack = scalingAlpha(.secondaryLabelColor, by: 0.15)
+    static let chipFill = scalingAlpha(.labelColor, by: 0.05)
+    static let chipHoverFill = scalingAlpha(.labelColor, by: 0.10)
+
+    /// SwiftUI's `.opacity()` *multiplies* a color's own alpha; AppKit's
+    /// `withAlphaComponent` replaces it. The label colors are not opaque —
+    /// labelColor carries 0.847, secondaryLabelColor 0.498 light / 0.549 dark —
+    /// so replacing rendered these fills ~18% and the bar tracks ~80% heavier
+    /// than the identical tokens in TokenBar. Multiply instead, and do it at
+    /// resolve time so each appearance multiplies by its own base alpha.
+    private static func scalingAlpha(_ base: NSColor, by factor: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            var resolved = base
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = base.usingColorSpace(.sRGB) ?? base
+            }
+            return resolved.withAlphaComponent(resolved.alphaComponent * factor)
         }
     }
 
+    /// Card headline — the name of a full-width card ("Battery", "Fans").
+    static let cardTitleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    /// Field label above a reading ("CPU", "Energy Mode") — TokenBar's "Session".
+    static let captionFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    /// Left-hand name of a list row inside a card (a fan's name).
+    static let rowTitleFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    /// Footnote under a reading ("frames per second", adapter wattage).
+    static let detailFont = NSFont.systemFont(ofSize: 10)
+    /// Inline reading on a row — TokenBar's "49% left".
+    static var valueFont: NSFont { .monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold) }
+    /// The one big number a stat card exists to show.
+    static var heroFont: NSFont { .monospacedDigitSystemFont(ofSize: 16, weight: .semibold) }
+    /// Secondary figure sitting beside a caption (the MEM card's "16.2 GB").
+    static var captionDetailFont: NSFont { .monospacedDigitSystemFont(ofSize: 10, weight: .medium) }
+}
+
+/// Card surface: a soft fill plus a hairline stroke, both re-resolved whenever
+/// the effective appearance flips. A CGColor is a *resolved* snapshot, so a
+/// layer set once from a dynamic NSColor would keep the old appearance's color
+/// forever — hence the explicit re-resolve rather than a plain assignment.
+class CardView: NSView {
+    init(cornerRadius: CGFloat) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.borderWidth = 1
+        applyCardColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyCardColors()
+    }
+
+    private func applyCardColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = CardStyle.cardFill.cgColor
+            layer?.borderColor = CardStyle.cardStroke.cgColor
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,7 +2107,120 @@ final class HardwarePopover: NSObject {
 
 /// One metric as a card: dim uppercase caption, large value, and either a
 /// thin threshold-tinted bar or a footnote line at the bottom.
-private final class StatCard: NSView {
+/// Full-width card plotting recent system wattage as a filled sparkline.
+///
+/// The numbers next to it are a single instant; power is the one reading here
+/// that swings hard and fast (a build starting, the display waking), and the
+/// shape of the last couple of minutes says more about what the machine is
+/// doing than the current sample does.
+///
+/// Deliberately axis-free. The x spacing is the poll interval, which the user
+/// can change, so labelling it in seconds would be a lie the moment they move
+/// the slider — the caption names the span in samples instead. The y range is
+/// autoscaled to the window's own min/max, so small idle wobble stays legible
+/// rather than flattening against a fixed 100W ceiling.
+/// Sparkline view plotting recent system wattage as a filled green gradient.
+final class PowerGraphView: NSView {
+
+    let samples: [Double]
+
+    init(samples: [Double]) {
+        self.samples = samples
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    /// Autoscale window. Padded by 10% of the span so the peak never rides the
+    /// top edge, and floored to a 1W span so a perfectly flat idle trace draws
+    /// as a line through the middle instead of dividing by zero.
+    static func range(of samples: [Double]) -> ClosedRange<Double> {
+        guard let lo = samples.min(), let hi = samples.max() else { return 0...1 }
+        let pad = max(0.5, (hi - lo) * 0.1)
+        let low = max(0, lo - pad)
+        let high = max(low + 1, hi + pad)
+        return low...high
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard samples.count >= 2 else { return }
+
+        let plot = bounds
+        guard plot.width > 1, plot.height > 1 else { return }
+
+        let r = Self.range(of: samples)
+        let span = r.upperBound - r.lowerBound
+        let step = plot.width / CGFloat(samples.count - 1)
+
+        func point(_ i: Int) -> NSPoint {
+            let v = (samples[i] - r.lowerBound) / span
+            return NSPoint(x: plot.minX + CGFloat(i) * step,
+                           y: plot.minY + CGFloat(v) * plot.height)
+        }
+
+        let line = NSBezierPath()
+        line.move(to: point(0))
+        for i in 1..<samples.count { line.line(to: point(i)) }
+
+        // Fill first, so the stroke sits on top of its own gradient edge.
+        let fill = line.copy() as! NSBezierPath
+        fill.line(to: NSPoint(x: plot.maxX, y: plot.minY))
+        fill.line(to: NSPoint(x: plot.minX, y: plot.minY))
+        fill.close()
+
+        NSGraphicsContext.saveGraphicsState()
+        fill.addClip()
+        let tint = NSColor.systemGreen
+        NSGradient(colors: [tint.withAlphaComponent(0.32), tint.withAlphaComponent(0.02)])?
+            .draw(in: plot, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+
+        tint.setStroke()
+        line.lineWidth = 1.5
+        line.lineJoinStyle = .round
+        line.stroke()
+    }
+}
+
+private final class PowerGraphCard: CardView {
+
+    init(samples: [Double], cornerRadius: CGFloat = 8) {
+        super.init(cornerRadius: cornerRadius)
+
+        let caption = NSTextField(labelWithString: "")
+        caption.attributedStringValue = StatCard.captionString("Power")
+        caption.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(caption)
+
+        let range = PowerGraphView.range(of: samples)
+        let peak = NSTextField(labelWithString: String(format: "%.1f W peak", range.upperBound))
+        peak.font = CardStyle.captionFont
+        peak.textColor = .tertiaryLabelColor
+        peak.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(peak)
+
+        let graph = PowerGraphView(samples: samples)
+        graph.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(graph)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 78),
+            caption.topAnchor.constraint(equalTo: topAnchor, constant: CardStyle.cardPaddingV),
+            caption.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+            peak.centerYAnchor.constraint(equalTo: caption.centerYAnchor),
+            peak.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+            graph.topAnchor.constraint(equalTo: topAnchor, constant: 26),
+            graph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+            graph.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+            graph.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CardStyle.cardPaddingV),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+}
+
+private final class StatCard: CardView {
 
     init(caption: String,
          captionDetail: String? = nil,
@@ -1621,13 +2231,7 @@ private final class StatCard: NSView {
          previousBarRatio: CGFloat? = nil,
          showsBolt: Bool = false,
          cornerRadius: CGFloat = 8) {
-        super.init(frame: .zero)
-
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        layer?.cornerRadius = cornerRadius
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-        layer?.borderWidth = 1
+        super.init(cornerRadius: cornerRadius)
 
         let captionLabel = NSTextField(labelWithString: "")
         captionLabel.attributedStringValue = Self.captionString(caption)
@@ -1636,34 +2240,40 @@ private final class StatCard: NSView {
         addSubview(captionLabel)
 
         let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        valueLabel.font = CardStyle.heroFont
         valueLabel.textColor = .labelColor
         valueLabel.lineBreakMode = .byTruncatingTail
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(valueLabel)
 
+        // Keep compact cards at their natural height, but let a card stretch
+        // when its column must match a taller neighbor such as Battery.
+        let compactHeight = heightAnchor.constraint(equalToConstant: 66)
+        compactHeight.priority = .defaultLow
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 62),
-            captionLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9),
-            captionLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            compactHeight,
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 66),
+            captionLabel.topAnchor.constraint(equalTo: topAnchor, constant: CardStyle.cardPaddingV),
+            captionLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
             valueLabel.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 2),
-            valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            valueLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+            valueLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
         ])
 
         if let captionDetail {
             let cd = NSTextField(labelWithString: captionDetail)
-            cd.font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+            cd.font = CardStyle.captionDetailFont
             cd.textColor = captionDetailColor ?? .tertiaryLabelColor
             cd.translatesAutoresizingMaskIntoConstraints = false
             addSubview(cd)
             NSLayoutConstraint.activate([
                 cd.centerYAnchor.constraint(equalTo: captionLabel.centerYAnchor),
-                cd.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+                cd.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
                 captionLabel.trailingAnchor.constraint(lessThanOrEqualTo: cd.leadingAnchor, constant: -6),
             ])
         } else {
-            captionLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10).isActive = true
+            captionLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                                                   constant: -CardStyle.cardPaddingH).isActive = true
         }
 
         if showsBolt, let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Charging") {
@@ -1688,34 +2298,44 @@ private final class StatCard: NSView {
             bar.translatesAutoresizingMaskIntoConstraints = false
             addSubview(bar)
             NSLayoutConstraint.activate([
-                bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-                bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-                bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-                bar.heightAnchor.constraint(equalToConstant: 3),
+                bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+                bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+                bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CardStyle.cardPaddingV),
+                bar.heightAnchor.constraint(equalToConstant: CardStyle.barHeight),
             ])
         } else if let detail {
             let d = NSTextField(labelWithString: detail)
-            d.font = NSFont.systemFont(ofSize: 9)
+            d.font = CardStyle.detailFont
             d.textColor = .tertiaryLabelColor
             d.lineBreakMode = .byTruncatingTail
             d.translatesAutoresizingMaskIntoConstraints = false
             addSubview(d)
             NSLayoutConstraint.activate([
-                d.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-                d.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-                d.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+                d.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+                d.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+                d.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CardStyle.cardPaddingV),
             ])
         }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-    /// Shared caption styling so the fans card header matches the stat cards.
+    /// Field label above a reading — TokenBar's "Session"/"Week" tier. Shared
+    /// so the fans and battery cards label their rows the same way.
     static func captionString(_ text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
+            .font: CardStyle.captionFont,
             .foregroundColor: NSColor.secondaryLabelColor,
-            .kern: 0.5,
+        ])
+    }
+
+    /// Headline of a full-width card — TokenBar's provider-name tier. Primary
+    /// coloured and a step larger, so a card that holds several rows reads as
+    /// one titled block rather than a stack of equal labels.
+    static func titleString(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: CardStyle.cardTitleFont,
+            .foregroundColor: NSColor.labelColor,
         ])
     }
 }
@@ -1765,7 +2385,7 @@ private final class MiniBarView: NSView {
         animStartRatio = start
         animTargetRatio = ratio
         animStartTime = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             self.stepAnimation(timer)
         }
@@ -1788,7 +2408,7 @@ private final class MiniBarView: NSView {
         let th = trackThickness ?? bounds.height
         let trackY = (bounds.height - th) / 2
         let r = th / 2
-        NSColor.white.withAlphaComponent(0.12).setFill()
+        CardStyle.barTrack.setFill()
         NSBezierPath(roundedRect: NSRect(x: 0, y: trackY, width: bounds.width, height: th),
                      xRadius: r, yRadius: r).fill()
 
@@ -1891,7 +2511,7 @@ private final class EnergyModeChip: NSView {
     private var restColor: CGColor {
         isSelected
             ? NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor
-            : NSColor.white.withAlphaComponent(0.05).cgColor
+            : CardStyle.chipFill.cgColor
     }
 
     init(title: String, isSelected: Bool, onSelect: @escaping () -> Void) {
@@ -1901,11 +2521,11 @@ private final class EnergyModeChip: NSView {
 
         wantsLayer = true
         background.backgroundColor = restColor
-        background.cornerRadius = 7
+        background.cornerRadius = CardStyle.panelRadius
         layer?.addSublayer(background)
 
         let label = NSTextField(labelWithString: title)
-        label.font = NSFont.systemFont(ofSize: 10, weight: isSelected ? .semibold : .medium)
+        label.font = NSFont.systemFont(ofSize: 10.5, weight: isSelected ? .semibold : .medium)
         label.textColor = isSelected ? .labelColor : .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -1935,7 +2555,7 @@ private final class EnergyModeChip: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        if !isSelected { background.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor }
+        if !isSelected { background.backgroundColor = CardStyle.chipHoverFill.cgColor }
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1948,93 +2568,162 @@ private final class EnergyModeChip: NSView {
 }
 
 // ---------------------------------------------------------------------------
-// PopoverActionRow — flat, icon-led action row with a hover highlight
+// Popover chrome — header and footer rows
 // ---------------------------------------------------------------------------
 
-/// A borderless "navigate elsewhere" row (centered label) used in place of a
-/// stock NSButton bezel, which reads as an OS dialog control rather than
-/// part of the popover's own flat surface.
-final class PopoverActionRow: NSView {
-    private let onActivate: () -> Void
-    private let background = CALayer()
-    private let label = NSTextField(labelWithString: "")
-    private var trackingArea: NSTrackingArea?
+/// Identity row at the top of the popover: name, a live-status dot, and the
+/// sampling cadence on the right. Deliberately not a card — it is chrome about
+/// the data, not a reading — but it keeps the cards' horizontal inset so the
+/// title lines up with the card contents below it (as TokenBar's header does).
+private final class PopoverHeaderRow: NSView {
+    private let dot = NSView()
+    private let statusLabel = NSTextField(labelWithString: "")
 
-    private static let restColor = NSColor.clear.cgColor
-    private static let hoverColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
-
-    init(title: String, onActivate: @escaping () -> Void) {
-        self.onActivate = onActivate
+    init(title: String) {
         super.init(frame: .zero)
 
-        wantsLayer = true
-        background.backgroundColor = Self.restColor
-        background.cornerRadius = 6
-        layer?.addSublayer(background)
+        let name = NSTextField(labelWithString: title)
+        name.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        name.textColor = .labelColor
 
-        label.stringValue = title
-        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        label.textColor = .labelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 3
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
 
-        addSubview(label)
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
 
+        // Flexible spacer pins the status flush to the row's trailing edge, the
+        // same trick the card rows use.
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let row = NSStackView(views: [name, spacer, dot, statusLabel])
+        row.orientation = .horizontal
+        row.spacing = 11
+        row.alignment = .centerY
+        row.setCustomSpacing(5, after: dot)   // dot reads as part of the word beside it
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 26),
-
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: CardStyle.footerInset),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CardStyle.footerInset),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-    override func layout() {
-        super.layout()
-        background.frame = bounds
+    /// Cheap enough to call on every poll — the header is kept across rebuilds
+    /// (unlike the cards) so its hover targets and tracking areas survive.
+    func update(isActive: Bool) {
+        statusLabel.stringValue = isActive ? "Active" : "Inactive"
+        let color: NSColor = isActive ? .systemGreen : .systemOrange
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            dot.layer?.backgroundColor = color.cgColor
+        }
     }
+}
+
+/// One borderless icon action in the footer. Secondary-tinted at rest and
+/// full-strength on hover, in place of a stock NSButton bezel — which would
+/// read as an OS dialog control rather than part of the popover's own surface.
+private final class PopoverIconButton: NSView {
+    private let onActivate: () -> Void
+    private let icon = NSImageView()
+    private var trackingArea: NSTrackingArea?
+
+    init(symbol: String, tooltip: String, onActivate: @escaping () -> Void) {
+        self.onActivate = onActivate
+        super.init(frame: .zero)
+
+        toolTip = tooltip
+        setAccessibilityLabel(tooltip)
+
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(config)
+        icon.contentTintColor = .secondaryLabelColor
+        icon.imageScaling = .scaleProportionallyDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(icon)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 18),
+            heightAnchor.constraint(equalToConstant: 18),
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self)
         addTrackingArea(area)
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        background.backgroundColor = Self.hoverColor
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        background.backgroundColor = Self.restColor
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onActivate()
-    }
+    override func mouseEntered(with event: NSEvent) { icon.contentTintColor = .labelColor }
+    override func mouseExited(with event: NSEvent) { icon.contentTintColor = .secondaryLabelColor }
+    override func mouseDown(with event: NSEvent) { onActivate() }
 }
 
-/// Full-width battery card: charge level and energy-mode picker.
+/// Footer chrome: right-aligned icon actions, no fill, sitting directly on the
+/// popover's glass — the row TokenBar ends its menu with. Only Settings here:
+/// the readings refresh themselves on the poll timer, so a manual refresh has
+/// nothing to add, and quitting belongs in Settings rather than one slip away
+/// from a stats glance.
+private final class PopoverFooterRow: NSView {
+    init(onSettings: @escaping () -> Void) {
+        super.init(frame: .zero)
+
+        let settings = PopoverIconButton(symbol: "gearshape", tooltip: "Settings",
+                                         onActivate: onSettings)
+
+        // Flexible spacer pushes the icon to the trailing edge.
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let row = NSStackView(views: [spacer, settings])
+        row.orientation = .horizontal
+        row.spacing = 4
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: CardStyle.cardPaddingH),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CardStyle.cardPaddingH),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: CardStyle.footerInset),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -CardStyle.footerInset),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+}
+
+/// Full-width battery card: charge level, power graph, and energy-mode picker.
 func makeBatteryDetailCard(stats s: HardwareStats,
                             contentWidth: CGFloat,
                             cornerRadius: CGFloat = 8,
                             energyModes: HardwareMonitor.EnergyModes,
+                            powerSamples: [Double]? = nil,
                             previousPowerWatts: Double? = nil,
                             onSelectEnergyMode: @escaping (Int) -> Void) -> NSView {
-    let card = NSView()
-    card.wantsLayer = true
-    card.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-    card.layer?.cornerRadius = cornerRadius
-    card.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-    card.layer?.borderWidth = 1
+    let card = CardView(cornerRadius: cornerRadius)
 
     let inner = NSStackView()
     inner.translatesAutoresizingMaskIntoConstraints = false
     inner.orientation = .vertical
     inner.alignment = .leading
     inner.spacing = 5
-    inner.edgeInsets = NSEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
+    inner.edgeInsets = NSEdgeInsets(top: CardStyle.cardPaddingV, left: CardStyle.cardPaddingH,
+                                    bottom: CardStyle.cardPaddingV, right: CardStyle.cardPaddingH)
     card.addSubview(inner)
     NSLayoutConstraint.activate([
         inner.topAnchor.constraint(equalTo: card.topAnchor),
@@ -2043,12 +2732,12 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         inner.bottomAnchor.constraint(equalTo: card.bottomAnchor),
     ])
 
-    let rowWidth = contentWidth - 20
+    let rowWidth = contentWidth - CardStyle.cardPaddingH * 2
     let pct = s.batteryPercent ?? 0
 
     // Caption row: BATTERY … charge/adapter status
     let caption = NSTextField(labelWithString: "")
-    caption.attributedStringValue = StatCard.captionString("BATTERY")
+    caption.attributedStringValue = StatCard.titleString("Battery")
     caption.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
     let statusText: String = {
@@ -2060,7 +2749,7 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         return "Discharging"
     }()
     let status = NSTextField(labelWithString: statusText)
-    status.font = NSFont.systemFont(ofSize: 9)
+    status.font = CardStyle.detailFont
     status.textColor = .tertiaryLabelColor
     status.alignment = .right
     status.lineBreakMode = .byTruncatingTail
@@ -2080,7 +2769,7 @@ func makeBatteryDetailCard(stats s: HardwareStats,
 
     // Charge percentage (+ bolt while charging)
     let value = NSTextField(labelWithString: s.batteryPercentText() ?? "—")
-    value.font = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+    value.font = CardStyle.heroFont
     value.textColor = .labelColor
     var valueViews: [NSView] = [value]
     if s.isCharging == true,
@@ -2105,7 +2794,7 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         valueViews.append(spacer)
 
         let watt = AnimatedValueField(labelWithString: "")
-        watt.font = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        watt.font = CardStyle.heroFont
         watt.textColor = .secondaryLabelColor
         watt.configure(value: w, previous: previousPowerWatts) { String(format: "%.1f W", $0) }
         valueViews.append(watt)
@@ -2129,20 +2818,61 @@ func makeBatteryDetailCard(stats s: HardwareStats,
     let onPower = s.isCharging == true || s.adapterWatts != nil
     let showsLimit = onPower && (s.chargeLimitPercent.map { $0 < 100 } ?? false)
     if showsLimit, let limit = s.chargeLimitPercent {
-        bar.trackThickness = 3
+        bar.trackThickness = CardStyle.barHeight
         bar.limitRatio = CGFloat(limit) / 100.0
     }
     inner.addArrangedSubview(bar)
     bar.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-    bar.heightAnchor.constraint(equalToConstant: showsLimit ? 7 : 3).isActive = true
-    inner.setCustomSpacing(10, after: bar)
+    bar.heightAnchor.constraint(equalToConstant: showsLimit ? CardStyle.barHeight * 2
+                                                            : CardStyle.barHeight).isActive = true
 
-    // Energy mode picker (hidden when pmset has no powermode key)
+    // Power history sparkline
+    let peakWattText: String? = {
+        guard let samples = powerSamples, samples.count >= 2 else { return nil }
+        let range = PowerGraphView.range(of: samples)
+        return String(format: "%.1f W peak", range.upperBound)
+    }()
+
+    if let samples = powerSamples, samples.count >= 2 {
+        inner.setCustomSpacing(10, after: bar)
+
+        let graph = PowerGraphView(samples: samples)
+        graph.translatesAutoresizingMaskIntoConstraints = false
+        inner.addArrangedSubview(graph)
+        graph.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        inner.setCustomSpacing(10, after: graph)
+    } else {
+        inner.setCustomSpacing(10, after: bar)
+    }
+
+    // Energy mode picker (at the bottom of the card)
     if energyModes.supported {
         let emCaption = NSTextField(labelWithString: "")
-        emCaption.attributedStringValue = StatCard.captionString("ENERGY MODE")
-        inner.addArrangedSubview(emCaption)
-        inner.setCustomSpacing(5, after: emCaption)
+        emCaption.attributedStringValue = StatCard.captionString("Energy Mode")
+        emCaption.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        var headerViews: [NSView] = [emCaption]
+        if let peakWattText {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            headerViews.append(spacer)
+
+            let peak = NSTextField(labelWithString: peakWattText)
+            peak.font = CardStyle.captionFont
+            peak.textColor = .tertiaryLabelColor
+            peak.alignment = .right
+            peak.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            headerViews.append(peak)
+        }
+
+        let emHeader = NSStackView(views: headerViews)
+        emHeader.orientation = .horizontal
+        emHeader.spacing = 6
+        emHeader.alignment = .firstBaseline
+        inner.addArrangedSubview(emHeader)
+        emHeader.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+        inner.setCustomSpacing(5, after: emHeader)
 
         let current = s.adapterWatts != nil ? energyModes.ac : energyModes.battery
         let titles = ["Automatic", "Low Power", "High Power"]
@@ -2157,7 +2887,21 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         chipRow.distribution = .fillEqually
         inner.addArrangedSubview(chipRow)
         chipRow.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
-        inner.setCustomSpacing(10, after: chipRow)
+    } else if let peakWattText {
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let peak = NSTextField(labelWithString: peakWattText)
+        peak.font = CardStyle.captionFont
+        peak.textColor = .tertiaryLabelColor
+        peak.alignment = .right
+        peak.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        let row = NSStackView(views: [spacer, peak])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        inner.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
     }
 
     return card
@@ -2199,7 +2943,7 @@ final class BatteryStatusItem {
 
         barView.onAnimationFrame = { [weak self] in
             guard let self else { return }
-            self.item.button?.image = self.barView.renderedImage()
+            self.setImageIfChanged(self.barView.renderedImage())
         }
 
         HardwareMonitor.shared.addObserver { [weak self] in
@@ -2229,14 +2973,28 @@ final class BatteryStatusItem {
     func refreshImage() {
         let size = barView.intrinsicContentSize
         barView.frame.size = size
-        item.length = size.width
+        if abs(item.length - size.width) > 0.5 { item.length = size.width }
         // The button lives in the menu bar, so its appearance is the real one:
         // vibrantLight over a light wallpaper even while the system is in Dark
         // mode. The offscreen bar view can't see that on its own.
         barView.menuBarIsDark = item.button?.effectiveAppearance
             .bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight])
             .map { $0 == .darkAqua || $0 == .vibrantDark } ?? true
-        item.button?.image = barView.renderedImage()
+        setImageIfChanged(barView.renderedImage())
+    }
+
+    /// Every image or length set on a status item makes AppKit re-publish it
+    /// to each display's menu bar (`_updateReplicants…`) — the single largest
+    /// idle cost in a profile. The render cache hands back the same image
+    /// when nothing visible changed; don't pass that on as a change.
+    ///
+    /// Hosting the bar view live in the button was measured and is worse: a
+    /// content redraw re-publishes the item just the same, and the snapshot
+    /// then re-runs `draw(_:)` (text labels included) instead of copying a
+    /// finished bitmap.
+    private func setImageIfChanged(_ image: NSImage) {
+        guard let button = item.button, button.image !== image else { return }
+        button.image = image
     }
 }
 
@@ -2244,8 +3002,13 @@ final class BatteryStatusItem {
 // BatteryPopover — compact popover for the dedicated battery status item
 // ---------------------------------------------------------------------------
 
+final class BatteryPopoverPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 final class BatteryPopover: NSObject {
-    private let window: NSWindow
+    private let window: BatteryPopoverPanel
     private let root: NSView
     private let stack: NSStackView
     private var pollTimer: Timer?
@@ -2302,15 +3065,25 @@ final class BatteryPopover: NSObject {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        window = NSWindow(contentRect: root.frame,
-                          styleMask: [.borderless, .nonactivatingPanel],
-                          backing: .buffered, defer: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.level = .popUpMenu
-        window.collectionBehavior = [.transient, .ignoresCycle, .fullScreenAuxiliary, .canJoinAllSpaces]
-        window.contentView = root
+        let p = BatteryPopoverPanel(
+            contentRect: root.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.level = .popUpMenu
+        if #available(macOS 13.0, *) {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
+        } else {
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
+        p.contentView = root
+        window = p
 
         super.init()
 
@@ -2322,6 +3095,11 @@ final class BatteryPopover: NSObject {
         ) { [weak self] _ in
             guard let self else { return }
             self.menuTrackingCount = max(0, self.menuTrackingCount - 1)
+        })
+        menuTrackingObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.close()
         })
     }
 
@@ -2340,14 +3118,24 @@ final class BatteryPopover: NSObject {
 
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = button.window?.convertToScreen(buttonRect) ?? .zero
-        // The button's own bounds can be taller than the menu bar's visual
-        // content (macOS pads status items to clear notch camera housing),
-        // so anchor from the top edge minus the standard thickness instead
-        // of the bottom edge — otherwise the popover floats well below the icon.
-        let menuBarBottom = screenRect.maxY - NSStatusBar.system.thickness
-        var origin = NSPoint(x: screenRect.midX - window.frame.width / 2,
+        let screen = button.window?.screen
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        let menuBarBottom: CGFloat
+        if screenRect != .zero {
+            menuBarBottom = screenRect.maxY - NSStatusBar.system.thickness
+        } else if let screen {
+            menuBarBottom = screen.frame.maxY - NSStatusBar.system.thickness
+        } else {
+            menuBarBottom = NSEvent.mouseLocation.y
+        }
+
+        let targetMidX = screenRect != .zero ? screenRect.midX : NSEvent.mouseLocation.x
+        var origin = NSPoint(x: targetMidX - window.frame.width / 2,
                              y: menuBarBottom - window.frame.height - 4)
-        if let screen = button.window?.screen {
+        if let screen {
             let vf = screen.visibleFrame
             if origin.x + window.frame.width > vf.maxX { origin.x = vf.maxX - window.frame.width - 4 }
             if origin.x < vf.minX { origin.x = vf.minX + 4 }
@@ -2357,12 +3145,15 @@ final class BatteryPopover: NSObject {
         // of the rounded corners.
         let minCenter = 16 + arrowWidth / 2
         let maxCenter = popWidth - 16 - arrowWidth / 2
-        let wanted = screenRect.midX - origin.x
+        let wanted = targetMidX - origin.x
         shell.arrowCenterX = max(minCenter, min(maxCenter, wanted))
         shell.layoutSubtreeIfNeeded()
 
         window.setFrameOrigin(origin)
-        window.orderFront(nil)
+        if let btnWin = button.window, window.parent != btnWin {
+            btnWin.addChildWindow(window, ordered: .above)
+        }
+        window.orderFrontRegardless()
 
         if closeMonitor == nil {
             closeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -2388,6 +3179,9 @@ final class BatteryPopover: NSObject {
         pollTimer?.invalidate(); pollTimer = nil
         resizeTimer?.invalidate(); resizeTimer = nil
         if let m = closeMonitor { NSEvent.removeMonitor(m); closeMonitor = nil }
+        if let parent = window.parent {
+            parent.removeChildWindow(window)
+        }
         window.orderOut(nil)
     }
 
@@ -2395,9 +3189,13 @@ final class BatteryPopover: NSObject {
         let s = HardwareMonitor.shared.stats
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
+        let powerSamples = HardwareMonitor.shared.powerHistory
+        let showPowerGraph = powerSamples.count >= 2
+
         let batteryCard = makeBatteryDetailCard(stats: s, contentWidth: contentWidth,
                                                 cornerRadius: cardCornerRadius,
                                                 energyModes: energyModes,
+                                                powerSamples: showPowerGraph ? powerSamples : nil,
                                                 previousPowerWatts: lastPowerWatts) { [weak self] mode in
             self?.selectEnergyMode(mode)
         }
@@ -2463,7 +3261,7 @@ final class BatteryPopover: NSObject {
 
         let start = CACurrentMediaTime()
         let duration: CFTimeInterval = 0.18
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
                 return

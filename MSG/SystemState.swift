@@ -80,22 +80,40 @@ final class SystemState {
 
     private static let anyInputEvent = CGEventType(rawValue: UInt32.max)!
 
+    /// Posted on the main queue when a Touch ID prompt appears or goes away;
+    /// `userInfo["visible"]` is the new state.
+    static let touchIDPromptChanged = Notification.Name("MSGTouchIDPromptChanged")
+    private(set) var touchIDPromptVisible = false
+    private var lastIdleScanAt: CFTimeInterval = 0
+
     private func refreshState() {
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState,
                                                            eventType: Self.anyInputEvent)
         let userActive = idle < 3.0
         let slideInProgress = slideInProgressProvider?() == true
-        guard userActive || isMissionControl || slideInProgress else { return }
+        // A Touch ID prompt waits on a finger, which isn't an input event:
+        // keep watching so its close is seen without the user touching anything.
+        // Idle, one slow pass a second still catches a Touch ID prompt a
+        // background app raises while nobody is at the keyboard.
+        let now = CACurrentMediaTime()
+        guard userActive || isMissionControl || slideInProgress || touchIDPromptVisible
+                || now - lastIdleScanAt >= 1 else { return }
+        if !userActive { lastIdleScanAt = now }
 
         guard !scanInFlight else { return }
         scanInFlight = true
 
         detectionQueue.async { [weak self] in
-            let signals = WindowListScanner.scan()
+            let signals = WindowListScanner.scan(maxAge: 0)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.scanInFlight = false
                 self.applyDetectedState(mc: signals.missionControlActive)
+                if signals.touchIDPromptVisible != self.touchIDPromptVisible {
+                    self.touchIDPromptVisible = signals.touchIDPromptVisible
+                    NotificationCenter.default.post(name: SystemState.touchIDPromptChanged, object: nil,
+                                                    userInfo: ["visible": signals.touchIDPromptVisible])
+                }
                 self.onMenuBarWindowCount?(signals.menuBarWindowCount)
             }
         }

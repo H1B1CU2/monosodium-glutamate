@@ -16,6 +16,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if let w = window {
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            syncPreviewClock()
             return
         }
         let hosting = NSHostingView(rootView: SettingsWindow())
@@ -31,7 +32,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // (isOpaque = false, backgroundColor = .clear below) so that material
         // can blend with the desktop. The content card is opaque on top of it.
         w.contentView = hosting
-        w.title = ""
+        w.title = "Settings"
         w.setContentSize(NSSize(width: 860, height: 746))
         w.minSize = NSSize(width: 860, height: 746)
         w.maxSize = NSSize(width: 860, height: CGFloat.greatestFiniteMagnitude)
@@ -60,9 +61,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             // onDisappear fires — release editing here or the Cornermizer pane
             // leaves the desktop on its uncornered preview baseline.
             WallpaperEngine.shared.endEditing()
+            self.syncPreviewClock()
             if !AppSettings.shared.dockIcon {
                 NSApp.setActivationPolicy(.accessory)
             }
+        }
+
+        // The hosting view outlives every hide, so nothing in SwiftUI notices
+        // the window left the screen. Occlusion covers what the close and
+        // miniaturize paths don't — fully covered, or on an inactive Space.
+        NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: w, queue: .main) { [weak self] _ in
+            self?.syncPreviewClock()
         }
 
         w.delegate = self
@@ -74,15 +83,30 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // native outer radius instead of a hardcoded guess.
         SettingsViewModel.shared.windowCornerRadius = w.nativeFrameCornerRadius
         window = w
+        syncPreviewClock()
     }
 
     var isVisible: Bool { window?.isVisible ?? false }
+
+    /// Park or resume the settings previews' animation clock to match what the
+    /// user can actually see. See `PreviewAnimationGate` for why this matters:
+    /// unparked, the previews redraw at display refresh forever, including
+    /// while the window is ordered out.
+    private func syncPreviewClock() {
+        let w = window
+        let visible = (w?.isVisible ?? false) && (w?.occlusionState.contains(.visible) ?? false)
+        if PreviewAnimationGate.shared.isRunning != visible {
+            PreviewAnimationGate.shared.isRunning = visible
+        }
+    }
 
     /// Same reason as the miniaturize path above: closing the window only orders
     /// it out (isReleasedWhenClosed = false), so the pane's onDisappear never
     /// runs and WallpaperEngine would stay latched in editing mode.
     func windowWillClose(_ notification: Notification) {
         WallpaperEngine.shared.endEditing()
+        // windowWillClose fires before isVisible flips, so don't re-derive it here.
+        PreviewAnimationGate.shared.isRunning = false
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -152,11 +176,13 @@ final class SettingsViewModel: ObservableObject {
     var mediaKeyPriorityMusic: Bool         { get { s.mediaKeyPriorityMusic } set { s.mediaKeyPriorityMusic = newValue; objectWillChange.send() } }
     var mirrorMainDisplay: Bool            { get { s.mirrorMainDisplay }    set { s.mirrorMainDisplay = newValue;    objectWillChange.send() } }
     var cornerRadius: CGFloat              { get { s.cornerRadius }         set { s.cornerRadius = newValue;         objectWillChange.send() } }
+    var cornerCurve: CornerCurve           { get { s.cornerCurve }          set { s.cornerCurve = newValue;          objectWillChange.send() } }
     var topCornersEnabled: Bool            { get { s.topCornersEnabled }    set { s.topCornersEnabled = newValue;    objectWillChange.send() } }
     var bottomCornersEnabled: Bool         { get { s.bottomCornersEnabled } set { s.bottomCornersEnabled = newValue; objectWillChange.send() } }
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
     var topCornersFullscreenOnly: Bool     { get { s.topCornersFullscreenOnly } set { s.topCornersFullscreenOnly = newValue; objectWillChange.send() } }
     var cornerGrowEnabled: Bool            { get { s.cornerGrowEnabled }     set { s.cornerGrowEnabled = newValue;     objectWillChange.send() } }
+    var lidOpeningGlassEnabled: Bool        { get { s.lidOpeningGlassEnabled } set { s.lidOpeningGlassEnabled = newValue; objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var brightFocusAlpha: CGFloat          { get { s.brightFocusAlpha }     set { s.brightFocusAlpha = newValue;     objectWillChange.send() } }
     var dimFocusAlpha: CGFloat             { get { s.dimFocusAlpha }        set { s.dimFocusAlpha = newValue;        objectWillChange.send() } }
@@ -168,16 +194,39 @@ final class SettingsViewModel: ObservableObject {
     var autoUpdate: Bool                   { get { s.autoUpdate }           set { s.autoUpdate = newValue;           objectWillChange.send() } }
     var updateChannel: String              { get { s.updateChannel }        set { s.updateChannel = newValue;        objectWillChange.send() } }
     var fakeDisplays: [FakeDisplay]          { get { s.fakeDisplays }         set { s.fakeDisplays = newValue;         objectWillChange.send() } }
-    var trayEnabled: Bool                    { get { s.trayEnabled }          set { s.trayEnabled = newValue;          objectWillChange.send() } }
-    var trayDockSync: Bool                   { get { s.trayDockSync }         set { s.trayDockSync = newValue;         objectWillChange.send() } }
-    var trayShowNowPlaying: Bool             { get { s.trayShowNowPlaying }   set { s.trayShowNowPlaying = newValue;   objectWillChange.send() } }
+    var appSwitcherMode: String { get { s.appSwitcherMode } set { s.appSwitcherMode = newValue; objectWillChange.send() } }
+    var appSwitcherLayout: String { get { s.appSwitcherLayout } set { s.appSwitcherLayout = newValue; objectWillChange.send() } }
+    var appSwitcherDisplayMode: String { get { s.appSwitcherDisplayMode } set { s.appSwitcherDisplayMode = newValue; objectWillChange.send() } }
+    var appSwitcherGroupBySpace: Bool { get { s.appSwitcherGroupBySpace } set { s.appSwitcherGroupBySpace = newValue; objectWillChange.send() } }
+    var appSwitcherStartAtCurrent: Bool { get { s.appSwitcherStartAtCurrent } set { s.appSwitcherStartAtCurrent = newValue; objectWillChange.send() } }
+    var appSwitcherMaxPerRow: Int { get { s.appSwitcherMaxPerRow } set { s.appSwitcherMaxPerRow = max(3, min(6, newValue)); objectWillChange.send() } }
     var dockPreviewEnabled: Bool             { get { s.dockPreviewEnabled }   set { s.dockPreviewEnabled = newValue;   objectWillChange.send() } }
+    var notchPreviewEnabled: Bool            { get { s.notchPreviewEnabled }  set { s.notchPreviewEnabled = newValue;  objectWillChange.send() } }
     var appSwitcherPreviewEnabled: Bool      { get { s.appSwitcherPreviewEnabled } set { s.appSwitcherPreviewEnabled = newValue; objectWillChange.send() } }
     var appSwitcherPreviewDelay: TimeInterval { get { s.appSwitcherPreviewDelay } set { s.appSwitcherPreviewDelay = newValue; objectWillChange.send() } }
     var appSwitcherPreviewOffset: CGFloat    { get { s.appSwitcherPreviewOffset } set { s.appSwitcherPreviewOffset = newValue; objectWillChange.send() } }
+    var tilingEnabled: Bool                  { get { s.tilingEnabled } set { s.tilingEnabled = newValue; objectWillChange.send() } }
+    var tilingShowControlBar: Bool           { get { s.tilingShowControlBar } set { s.tilingShowControlBar = newValue; objectWillChange.send() } }
+    var tilingControlBarMode: TilingControlBarMode { get { s.tilingControlBarMode } set { s.tilingControlBarMode = newValue; objectWillChange.send() } }
+    var tilingControlBarScope: TilingControlBarScope { get { s.tilingControlBarScope } set { s.tilingControlBarScope = newValue; objectWillChange.send() } }
+    var tilingPillScope: TilingPillScope { get { s.tilingPillScope } set { s.tilingPillScope = newValue; objectWillChange.send() } }
+    var tilingOneAppPerDeskspace: Bool { get { s.tilingOneAppPerDeskspace } set { s.tilingOneAppPerDeskspace = newValue; objectWillChange.send() } }
+    var tilingAutoDeleteEmptySpaces: Bool { get { s.tilingAutoDeleteEmptySpaces } set { s.tilingAutoDeleteEmptySpaces = newValue; objectWillChange.send() } }
+    var tilingPadding: CGFloat               { get { s.tilingPadding } set { s.tilingPadding = max(0, min(32, newValue)); objectWillChange.send() } }
+    var tilingStablePreviewResize: Bool      { get { s.tilingStablePreviewResize } set { s.tilingStablePreviewResize = newValue; objectWillChange.send() } }
+    var tilingSwipeCyclesTabs: Bool      { get { s.tilingSwipeCyclesTabs } set { s.tilingSwipeCyclesTabs = newValue; objectWillChange.send() } }
+    var tilingSwipeSwitchesSpaces: Bool  { get { s.tilingSwipeSwitchesSpaces } set { s.tilingSwipeSwitchesSpaces = newValue; objectWillChange.send() } }
+    var tilingSpaceSwipeFingers: Int     { get { s.tilingSpaceSwipeFingers } set { s.tilingSpaceSwipeFingers = newValue; objectWillChange.send() } }
+    var tilingControlBarPreviews: Bool       { get { s.tilingControlBarPreviews } set { s.tilingControlBarPreviews = newValue; objectWillChange.send() } }
+    var tilingControlBarDuoBatteryWifi: Bool { get { s.tilingControlBarDuoBatteryWifi } set { s.tilingControlBarDuoBatteryWifi = newValue; objectWillChange.send() } }
     var dockPreviewHoverDelay: TimeInterval  { get { s.dockPreviewHoverDelay } set { s.dockPreviewHoverDelay = newValue; objectWillChange.send() } }
     var dockPreviewThumbHeight: CGFloat      { get { s.dockPreviewThumbHeight } set { s.dockPreviewThumbHeight = newValue; objectWillChange.send() } }
     var dockPreviewOffset: CGFloat           { get { s.dockPreviewOffset } set { s.dockPreviewOffset = newValue; objectWillChange.send() } }
+    var notchPreviewHoverDelay: TimeInterval { get { s.notchPreviewHoverDelay } set { s.notchPreviewHoverDelay = newValue; objectWillChange.send() } }
+    var notchPreviewThumbHeight: CGFloat     { get { s.notchPreviewThumbHeight } set { s.notchPreviewThumbHeight = newValue; objectWillChange.send() } }
+    var notchPreviewShowOtherSpaces: Bool    { get { s.notchPreviewShowOtherSpaces } set { s.notchPreviewShowOtherSpaces = newValue; objectWillChange.send() } }
+    var notchShowDock: Bool                  { get { s.notchShowDock } set { s.notchShowDock = newValue; objectWillChange.send() } }
+    var appSwitcherShowDock: Bool            { get { s.appSwitcherShowDock } set { s.appSwitcherShowDock = newValue; objectWillChange.send() } }
     var displaplacerEnabled: Bool { get { s.displaplacerEnabled } set { s.displaplacerEnabled = newValue; objectWillChange.send() } }
     var displaplacerPresets: [DisplaplacerPreset] { get { s.displaplacerPresets } set { s.displaplacerPresets = newValue; objectWillChange.send() } }
     var menuBarSpacing: Int        { get { s.menuBarSpacing }        set { s.menuBarSpacing = newValue;        objectWillChange.send() } }
@@ -187,6 +236,7 @@ final class SettingsViewModel: ObservableObject {
     var systemHUDBrightness: Bool  { get { s.systemHUDBrightness }  set { s.systemHUDBrightness = newValue;  objectWillChange.send() } }
     var systemHUDPresentationMode: SystemHUDPresentationMode { get { s.systemHUDPresentationMode } set { s.systemHUDPresentationMode = newValue; objectWillChange.send() } }
     var systemHUDDeviceIcons: Bool { get { s.systemHUDDeviceIcons } set { s.systemHUDDeviceIcons = newValue; objectWillChange.send() } }
+    var systemHUDInTilingBar: Bool { get { s.systemHUDInTilingBar } set { s.systemHUDInTilingBar = newValue; objectWillChange.send() } }
     var inputSourceHUDEnabled: Bool { get { s.inputSourceHUDEnabled } set { s.inputSourceHUDEnabled = newValue; objectWillChange.send() } }
     var showDeveloper: Bool        { get { s.showDeveloper }        set { s.showDeveloper = newValue;        objectWillChange.send() } }
     var hardwareStatsEnabled: Bool        { get { s.hardwareStatsEnabled }      set { s.hardwareStatsEnabled = newValue;      objectWillChange.send() } }
@@ -205,9 +255,18 @@ final class SettingsViewModel: ObservableObject {
     var hardwareStatsTempRaw: Bool        { get { s.hardwareStatsTempRaw }      set { s.hardwareStatsTempRaw = newValue;      objectWillChange.send() } }
     var hardwareStatsFanRaw: Bool         { get { s.hardwareStatsFanRaw }       set { s.hardwareStatsFanRaw = newValue;       objectWillChange.send() } }
     var hardwareStatsPowerRaw: Bool       { get { s.hardwareStatsPowerRaw }     set { s.hardwareStatsPowerRaw = newValue;     objectWillChange.send() } }
+    var hardwareStatsPowerSamples: Double { get { Double(s.hardwareStatsPowerSamples) } set { s.hardwareStatsPowerSamples = max(10, Int(newValue)); objectWillChange.send() } }
     var hardwareStatsBatteryStyle: String { get { s.hardwareStatsBatteryStyle } set { s.hardwareStatsBatteryStyle = newValue; objectWillChange.send() } }
     var hardwareStatsModuleOrder: [String] { get { s.hardwareStatsModuleOrder } set { s.hardwareStatsModuleOrder = newValue; objectWillChange.send() } }
     var hardwareStatsHiddenCards: [String] { get { s.hardwareStatsHiddenCards } set { s.hardwareStatsHiddenCards = newValue; objectWillChange.send() } }
+    var hardwareStatsColumns: Int          { get { s.hardwareStatsColumns }     set { s.hardwareStatsColumns = max(1, min(3, newValue)); objectWillChange.send() } }
+    func applyHardwareLayout(_ layout: HardwareCardLayout) {
+        s.applyHardwareLayout(layout)
+        objectWillChange.send()
+    }
+    var hardwareStatsCardColumns: [[String]] { get { s.hardwareStatsCardColumns } set { s.hardwareStatsCardColumns = newValue; objectWillChange.send() } }
+    var hardwareStatsBatteryCardSpan: String { get { s.hardwareStatsBatteryCardSpan } set { s.hardwareStatsBatteryCardSpan = newValue; objectWillChange.send() } }
+    var hardwareStatsBatteryCardSide: String { get { s.hardwareStatsBatteryCardSide } set { s.hardwareStatsBatteryCardSide = newValue; objectWillChange.send() } }
     var hardwareStatsBarStyle: String     { get { s.hardwareStatsBarStyle }     set { s.hardwareStatsBarStyle = newValue;     objectWillChange.send() } }
     var hardwareStatsLabelPos: String     { get { s.hardwareStatsLabelPos }     set { s.hardwareStatsLabelPos = newValue;     objectWillChange.send() } }
     var hardwareStatsColorScale: String   { get { s.hardwareStatsColorScale }   set { s.hardwareStatsColorScale = newValue;   objectWillChange.send() } }
@@ -246,21 +305,22 @@ final class SettingsViewModel: ObservableObject {
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, menubar, spacer, hud, corner, music, tray, dock, displaplacer, hardware, developer
+    case general, about, menubar, spacer, tiling, hud, corner, lidGlass, music, dock, displaplacer, hardware, developer
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general:      return "General"
         case .about:        return "About"
-        case .menubar:      return "Spacer"
+        case .menubar:      return "Menu Bar"
         case .spacer:       return "Space Indicator"
-        case .hud:          return "HUD Replacer"
-        case .corner:       return "Cornermizer"
-        case .music:        return "Music Display"
-        case .tray:         return "Tray"
-        case .dock:         return "Dock Previews"
-        case .displaplacer: return "Displaplacer"
+        case .tiling:       return "Tiling"
+        case .hud:          return "System HUD"
+        case .corner:       return "Corners"
+        case .lidGlass:     return "Lid Glass"
+        case .music:        return "Music"
+        case .dock:         return "Window Preview"
+        case .displaplacer: return "Displays"
         case .hardware:     return "Hardware Stats"
         case .developer:    return "Developer"
         }
@@ -272,10 +332,11 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return "info.circle.fill"
         case .menubar:      return "menubar.rectangle"
         case .spacer:       return "rectangle.split.3x1.fill"
+        case .tiling:       return "rectangle.split.2x1.fill"
         case .hud:          return "slider.horizontal.3"
         case .corner:       return "viewfinder"
+        case .lidGlass:     return "laptopcomputer.and.arrow.down"
         case .music:        return "music.note"
-        case .tray:         return "pad.header"
         case .dock:         return "macwindow.on.rectangle"
         case .displaplacer: return "display.2"
         case .hardware:     return "cpu.fill"
@@ -293,10 +354,11 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .about:        return Color(hex: 0xff5a3c)
         case .menubar:      return Color(hex: 0x64d2ff)
         case .spacer:       return Color(hex: 0x117cfc)
+        case .tiling:       return Color(hex: 0x30d158)
         case .hud:          return Color(hex: 0xbf5af2)
         case .corner:       return Color(hex: 0x5e5ce6)
+        case .lidGlass:     return Color(hex: 0x64d2ff)
         case .music:        return Color(hex: 0xff2d55)
-        case .tray:         return Color(hex: 0xff9500)
         case .dock:         return Color(hex: 0x32d74b)
         case .displaplacer: return Color(hex: 0x0A84FF)
         case .hardware:     return Color(hex: 0x0A84FF)
@@ -308,15 +370,16 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:      return "Launch, permissions, and app behavior"
         case .about:        return "Version info and acknowledgements"
-        case .menubar:      return "Tighten the spacing and click area around every menu bar icon, system-wide"
-        case .spacer:       return "Menu bar Deskspace indicator for Mission Control spaces"
+        case .menubar:      return "Adjust spacing between menu bar icons"
+        case .spacer:       return "See your Desktop Spaces in the menu bar"
+        case .tiling:       return "Tile windows with a control bar on each display"
         case .hud:          return "Replace the macOS volume and brightness popup"
-        case .corner:       return "Paint black corner masks to match each display's curvature"
-        case .music:        return "Menu bar music label with trackpad gesture control"
-        case .tray:         return "Floating ⌘⇥ app switcher HUD with pinned apps and Now Playing"
-        case .dock:         return "Hover a Dock app to preview its windows, then click to switch"
-        case .displaplacer: return "Arrange, disconnect, and reconnect displays with saved layout presets"
-        case .hardware:     return "Menu bar CPU, GPU, memory & temperature monitor"
+        case .corner:       return "Round the corners of your displays"
+        case .lidGlass:     return "Reveal the desktop with glass as your MacBook opens"
+        case .music:        return "See what is playing and control your music"
+        case .dock:         return "Preview and switch windows from the Dock or Cmd-Tab"
+        case .displaplacer: return "Manage displays, inputs, and saved layouts"
+        case .hardware:     return "Choose the system stats you want to see"
         case .developer:    return "Debug tools for development and testing"
         }
     }
@@ -366,8 +429,11 @@ struct PaneHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            GradientIcon(section: section, size: 44, iconPt: 20, radius: 10)
-                .shadow(color: section.gradientColors.1.opacity(0.4), radius: 6, y: 3)
+            Image(systemName: section.icon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(section.iconTint)
+                .frame(width: 40, height: 40)
+                .background(section.iconTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 3) {
                 Text(section.title)
                     .font(.system(size: 20, weight: .semibold))
@@ -378,11 +444,42 @@ struct PaneHeader: View {
             }
             Spacer()
             if let toggle {
-                Toggle("", isOn: toggle)
+                Text(toggle.wrappedValue ? "On" : "Off")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Toggle("Enable \(section.title)", isOn: toggle)
                     .toggleStyle(.switch)
                     .labelsHidden()
             }
         }
+    }
+}
+
+/// A consistent title, explanation and switch for feature settings.
+@available(macOS 14.0, *)
+struct SettingsToggleRow: View {
+    let title: String
+    let detail: String
+    @Binding var isOn: Bool
+
+    init(_ title: String, detail: String, isOn: Binding<Bool>) {
+        self.title = title
+        self.detail = detail
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.switch)
+        .padding(.vertical, 3)
     }
 }
 
@@ -425,60 +522,24 @@ struct PaneContainer<Content: View>: View {
     let section: SettingsSection
     var headerToggle: Binding<Bool>? = nil
     @ViewBuilder let content: Content
-    @State private var headerHeight: CGFloat = 68
-
     var body: some View {
-        ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+            PaneHeader(section: section, toggle: headerToggle)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Divider().opacity(0.45)
             Form { content }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListHeaderHeight, 0)
-                .contentMargins(.top, headerHeight, for: .scrollContent)
-                .contentMargins(.top, headerHeight, for: .scrollIndicators)
-                .mask(
-                    LinearGradient(stops: [
-                        .init(color: .clear,                location: 0.00),
-                        .init(color: .black.opacity(0.25), location: 0.03),
-                        .init(color: .black.opacity(0.75), location: 0.07),
-                        .init(color: .black,                location: 0.12),
-                        .init(color: .black,                location: 1.00),
-                    ], startPoint: .top, endPoint: .bottom)
-                )
-            PaneHeader(section: section, toggle: headerToggle)
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 28)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: HeaderHeightKey.self, value: geo.size.height)
-                    }
-                )
-                .background(
-                    VisualEffectBlur(material: .headerView, blendingMode: .withinWindow)
-                        .mask(LinearGradient(stops: [
-                            .init(color: .black, location: 0.00),
-                            .init(color: .black, location: 0.55),
-                            .init(color: .black.opacity(0.55), location: 0.80),
-                            .init(color: .black.opacity(0.20), location: 0.92),
-                            .init(color: .clear, location: 1.00),
-                        ], startPoint: .top, endPoint: .bottom))
-                )
+                .contentMargins(.top, 8, for: .scrollContent)
+                .controlSize(.regular)
         }
-        .onPreferenceChange(HeaderHeightKey.self) { headerHeight = $0 }
     }
 }
 
 // MARK: - Sidebar row
-
-/// Reports each sidebar row's natural (unexpanded) width so the sidebar can
-/// size itself to the longest title instead of a hardcoded constant.
-private struct SidebarRowWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
 
 @available(macOS 14.0, *)
 private struct SidebarRowView: View {
@@ -488,23 +549,44 @@ private struct SidebarRowView: View {
 
     var body: some View {
         Button(action: action) {
-            Label { Text(section.title) } icon: { GradientIcon(section: section) }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 10)
-                .background {
-                    GeometryReader { geo in
-                        Color.clear.preference(key: SidebarRowWidthKey.self, value: geo.size.width)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    isSelected ? Color.accentColor : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                )
-                .contentShape(Rectangle())
-                .padding(.horizontal, 8)
+            HStack(spacing: 10) {
+                Image(systemName: section.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .frame(width: 20, height: 20)
+                Text(section.title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+        )
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+/// Match TokenBar's native glass chrome, including the system wallpaper-tint preference.
+@available(macOS 26.0, *)
+private struct SettingsGlassBackground: NSViewRepresentable {
+    var cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let view = NSGlassEffectView()
+        updateNSView(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ view: NSGlassEffectView, context: Context) {
+        view.cornerRadius = cornerRadius
+        view.style = UserDefaults.standard.bool(forKey: "AppleReduceDesktopTinting") ? .clear : .regular
     }
 }
 
@@ -521,36 +603,13 @@ struct SettingsWindow: View {
     private let gutter: CGFloat = 8
     private var cardRadius: CGFloat { max(0, vm.windowCornerRadius - gutter) }
 
-    /// Sidebar width tracks the longest row (icon + title), measured live via
-    /// `SidebarRowWidthKey` — no hardcoded constant to keep in sync with labels.
-    @State private var sidebarContentWidth: CGFloat = 0
-    private let sidebarRowOuterPadding: CGFloat = 16   // the row's own .horizontal(8) on each side
-    private let minSidebarWidth: CGFloat = 180
+    // TokenBar's proportions, with 8pt extra for MSG's longer page titles.
+    private let sidebarWidth: CGFloat = 192
 
     var body: some View {
         HStack(spacing: 0) {
-            // Sidebar: no background of its own — the root view's glass shows through.
-            ScrollView {
-                VStack(spacing: 2) {
-                    sidebarRow(.general)
-                    Color.clear.frame(height: 8)
-                    sidebarRow(.corner)
-                    sidebarRow(.displaplacer)
-                    sidebarRow(.dock)
-                    sidebarRow(.hardware)
-                    sidebarRow(.hud)
-                    sidebarRow(.music)
-                    sidebarRow(.spacer)
-                    sidebarRow(.menubar)
-                    sidebarRow(.tray)
-                    if vm.showDeveloper {
-                        sidebarRow(.developer)
-                    }
-                }
-                .padding(.top, 44)   // explicit clearance under the traffic lights
-            }
-            .onPreferenceChange(SidebarRowWidthKey.self) { sidebarContentWidth = $0 }
-            .frame(width: max(minSidebarWidth, sidebarContentWidth + sidebarRowOuterPadding))
+            sidebar
+                .frame(width: sidebarWidth)
 
             // Floating content card: opaque body tint so the form stays
             // readable, inset by the gutter so the sidebar chrome shows on
@@ -574,12 +633,61 @@ struct SettingsWindow: View {
         // Reduce Transparency. Requires the window to be clear, which the
         // controller sets up.
         .background {
-            VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow, state: .active)
-                .overlay(Color.black.opacity(0.10))
+            if #available(macOS 26.0, *) {
+                SettingsGlassBackground(cornerRadius: vm.windowCornerRadius)
+            } else {
+                VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow, state: .active)
+                    .overlay(Color.black.opacity(0.10))
+            }
         }
         .frame(minWidth: 720, minHeight: 560)
         .preferredColorScheme(.dark)
         .tint(.accentColor)
+    }
+
+    private var sidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("MSG")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("Settings")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    sidebarRow(.general)
+                    sidebarHeading("Appearance")
+                    sidebarRow(.corner)
+                    sidebarRow(.lidGlass)
+                    sidebarRow(.spacer)
+                    sidebarRow(.menubar)
+                    sidebarHeading("Controls")
+                    sidebarRow(.tiling)
+                    sidebarRow(.dock)
+                    sidebarRow(.hud)
+                    sidebarRow(.music)
+                    sidebarHeading("System")
+                    sidebarRow(.displaplacer)
+                    sidebarRow(.hardware)
+                    if vm.showDeveloper {
+                        sidebarRow(.developer)
+                    }
+                }
+            }
+            .padding(.top, 44)
+            .padding([.horizontal, .bottom], 16)
+        }
+    }
+
+    private func sidebarHeading(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
     }
 
     private func sidebarRow(_ s: SettingsSection) -> some View {
@@ -592,10 +700,11 @@ struct SettingsWindow: View {
         case .general:      GeneralPane(vm: vm)
         case .menubar:      MenuBarPane(vm: vm)
         case .spacer:       SpacerPane(vm: vm)
+        case .tiling:       TilingPane(vm: vm)
         case .hud:          HUDReplacerPane(vm: vm)
         case .corner:       CornermizerPane(vm: vm)
+        case .lidGlass:     LidGlassPane(vm: vm)
         case .music:        MusicPane(vm: vm)
-        case .tray:         TrayPane(vm: vm)
         case .dock:         DockPane(vm: vm)
         case .displaplacer: DisplaplacerPane(vm: vm)
         case .hardware:     HardwarePane(vm: vm)

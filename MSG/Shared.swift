@@ -5,6 +5,151 @@ import CoreGraphics
 // were copy-pasted into Indicator, WallpaperEngine, SettingsMenu, SettingsWindow,
 // CornerWindow, SpaceWatcher and Displaplacer.
 
+// MARK: - System search overlays
+
+/// The Cmd-Space surface: Spotlight, and on newer macOS the Siri "Search or
+/// Ask" panel and the Siri AI chat it expands into. They take keyboard focus
+/// and can briefly activate, but they are transient overlays — tiling, the
+/// control bar and the switchers must behave as if they never appeared.
+enum SystemSearchOverlay {
+    static let bundleIDs: Set<String> = [
+        "com.apple.Spotlight",
+        "com.apple.Siri",
+        "com.apple.campo",   // Siri AI.app
+    ]
+
+    static func contains(_ app: NSRunningApplication?) -> Bool {
+        guard let id = app?.bundleIdentifier else { return false }
+        return bundleIDs.contains(id)
+    }
+
+    static func contains(pid: pid_t) -> Bool {
+        contains(NSRunningApplication(processIdentifier: pid))
+    }
+
+    /// Whether a workspace notification is about one of these overlays.
+    static func isAbout(_ note: Notification) -> Bool {
+        contains(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+    }
+}
+
+// MARK: - Display rate
+
+/// The tick interval for main-thread animation timers: the fastest attached
+/// display's refresh rate (120 Hz ProMotion), stepped down under Low Power
+/// Mode or thermal pressure by `TilingDisplayClock.maximumRate`. Only for
+/// time-based animations — progress from elapsed time — so a faster tick is
+/// smoother, never faster.
+enum DisplayRate {
+    static var interval: TimeInterval {
+        let fastest = NSScreen.screens.max { $0.maximumFramesPerSecond < $1.maximumFramesPerSecond }
+        return TilingDisplayClock.interval(for: fastest)
+    }
+}
+
+// MARK: - Presentation power state
+
+/// Whether anything this app draws can currently be seen.
+///
+/// The app is a collection of repeating timers — SMC sampling at 1-10s, the
+/// audio visualiser at 30 Hz, bar animations at 30 Hz. None of them checked
+/// whether there was a screen to draw on: with the display asleep, the screen
+/// locked, or the user switched to another account, they all kept running,
+/// sampling sensors and pushing frames at a menu bar nobody could see. Only
+/// `didWake` was observed anywhere, and only to rebuild corner windows.
+///
+/// Observers are notified on the main thread whenever `canPresent` flips.
+final class PresentationState {
+    static let shared = PresentationState()
+
+    /// False while the displays are asleep, the screen is locked, or this login
+    /// session is inactive.
+    private(set) var canPresent: Bool = true
+
+    private var observers: [() -> Void] = []
+    private var screensAsleep = false
+    private var sessionInactive = false
+    private var screenLocked = false
+
+    private init() {
+        let nc = NSWorkspace.shared.notificationCenter
+
+        // The lock screen covers the menu bar completely and is by far the most
+        // common "not looking at it" state — far more common than display sleep,
+        // which only follows it after the Energy Saver timeout. macOS publishes
+        // it only as a distributed notification; there is no NSWorkspace
+        // equivalent.
+        let dnc = DistributedNotificationCenter.default()
+        dnc.addObserver(forName: Notification.Name("com.apple.screenIsLocked"),
+                        object: nil, queue: .main) { [weak self] _ in
+            self?.set(screenLocked: true)
+        }
+        dnc.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"),
+                        object: nil, queue: .main) { [weak self] _ in
+            self?.set(screenLocked: false)
+        }
+        // Seed from the current state: the app can be launched, or the settings
+        // changed, while already locked.
+        screenLocked = Self.readScreenLocked()
+        // Display sleep and system sleep are distinct: the machine can keep
+        // running with the panel dark (Energy Saver display timeout), which is
+        // exactly the case that used to burn battery.
+        nc.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(screensAsleep: true)
+        }
+        nc.addObserver(forName: NSWorkspace.screensDidWakeNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(screensAsleep: false)
+        }
+        nc.addObserver(forName: NSWorkspace.willSleepNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(screensAsleep: true)
+        }
+        nc.addObserver(forName: NSWorkspace.didWakeNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(screensAsleep: false)
+        }
+        // Fast user switching: our menu bar belongs to a session that is no
+        // longer on screen.
+        nc.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(sessionInactive: true)
+        }
+        nc.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.set(sessionInactive: false)
+        }
+    }
+
+    /// Called on every transition. Not fired immediately — the caller owns its
+    /// own initial state.
+    func addObserver(_ cb: @escaping () -> Void) { observers.append(cb) }
+
+    /// Current lock state, straight from the window server session dictionary.
+    private static func readScreenLocked() -> Bool {
+        guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (dict["CGSSessionScreenIsLocked"] as? Int ?? 0) != 0
+    }
+
+    private func set(screensAsleep: Bool? = nil,
+                     sessionInactive: Bool? = nil,
+                     screenLocked: Bool? = nil) {
+        if let screensAsleep { self.screensAsleep = screensAsleep }
+        if let sessionInactive { self.sessionInactive = sessionInactive }
+        if let screenLocked { self.screenLocked = screenLocked }
+        let next = !self.screensAsleep && !self.sessionInactive && !self.screenLocked
+        guard next != canPresent else { return }
+        canPresent = next
+        NSLog("[Power] canPresent = %@ (asleep=%@ locked=%@ inactive=%@)",
+              next ? "true" : "false",
+              self.screensAsleep ? "y" : "n",
+              self.screenLocked ? "y" : "n",
+              self.sessionInactive ? "y" : "n")
+        observers.forEach { $0() }
+    }
+}
+
 // MARK: - Display identity
 
 enum DisplayID {
@@ -161,4 +306,114 @@ enum MacModel {
         } catch {}
         return "Mac"
     }()
+}
+
+// MARK: - Haptic Feedback
+
+enum HapticFeedback {
+    private typealias MTDeviceCreateListFunc = @convention(c) () -> CFArray?
+    private typealias MTDeviceGetDeviceIDFunc = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt64>) -> Int32
+    private typealias MTActuatorCreateFromDeviceIDFunc = @convention(c) (UInt64) -> UnsafeMutableRawPointer?
+    private typealias MTActuatorOpenFunc = @convention(c) (UnsafeMutableRawPointer) -> Int32
+    private typealias MTActuatorActuateFunc = @convention(c) (UnsafeMutableRawPointer, Int32, UInt32, Float, Float) -> Int32
+    private typealias MTActuatorCloseFunc = @convention(c) (UnsafeMutableRawPointer) -> Int32
+
+    private typealias CGSMainConnectionIDFunc = @convention(c) () -> Int32
+    private typealias SLSActuateDeviceWithPatternFunc = @convention(c) (Int32, UInt64, Int32, Int32) -> Int32
+
+    private static let handle: UnsafeMutableRawPointer? = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_LAZY)
+    private static let devListFn: MTDeviceCreateListFunc? = handle.flatMap { dlsym($0, "MTDeviceCreateList") }.map { unsafeBitCast($0, to: MTDeviceCreateListFunc.self) }
+    private static let devGetIDFn: MTDeviceGetDeviceIDFunc? = handle.flatMap { dlsym($0, "MTDeviceGetDeviceID") }.map { unsafeBitCast($0, to: MTDeviceGetDeviceIDFunc.self) }
+    private static let actCreateFn: MTActuatorCreateFromDeviceIDFunc? = handle.flatMap { dlsym($0, "MTActuatorCreateFromDeviceID") }.map { unsafeBitCast($0, to: MTActuatorCreateFromDeviceIDFunc.self) }
+    private static let actOpenFn: MTActuatorOpenFunc? = handle.flatMap { dlsym($0, "MTActuatorOpen") }.map { unsafeBitCast($0, to: MTActuatorOpenFunc.self) }
+    private static let actActuateFn: MTActuatorActuateFunc? = handle.flatMap { dlsym($0, "MTActuatorActuate") }.map { unsafeBitCast($0, to: MTActuatorActuateFunc.self) }
+    private static let actCloseFn: MTActuatorCloseFunc? = handle.flatMap { dlsym($0, "MTActuatorClose") }.map { unsafeBitCast($0, to: MTActuatorCloseFunc.self) }
+
+    private static let slHandle: UnsafeMutableRawPointer? = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+    private static let cidFn: CGSMainConnectionIDFunc? = slHandle.flatMap { dlsym($0, "CGSMainConnectionID") }.map { unsafeBitCast($0, to: CGSMainConnectionIDFunc.self) }
+    private static let slActuateFn: SLSActuateDeviceWithPatternFunc? = slHandle.flatMap { dlsym($0, "SLSActuateDeviceWithPattern") }.map { unsafeBitCast($0, to: SLSActuateDeviceWithPatternFunc.self) }
+
+    /// Triggers trackpad haptic feedback (works unconditionally even for background/LSUIElement apps).
+    /// actuationType 1 is standard click; 2 is double tap; 3 is subtle tick; 6 is detent.
+    static func perform(_ pattern: NSHapticFeedbackManager.FeedbackPattern = .alignment, actuationType: Int32 = 1) {
+        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .now)
+
+        guard let devListFn, let devGetIDFn,
+              let actCreateFn, let actOpenFn,
+              let actActuateFn, let actCloseFn else { return }
+
+        guard let devices = devListFn() as? [AnyObject] else { return }
+        for dev in devices {
+            let devPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(dev).toOpaque())
+            var devID: UInt64 = 0
+            guard devGetIDFn(devPtr, &devID) == 0 else { continue }
+            guard let actuator = actCreateFn(devID) else { continue }
+            if actOpenFn(actuator) == 0 {
+                _ = actActuateFn(actuator, actuationType, 0, 0.0, 0.0)
+                _ = actCloseFn(actuator)
+            }
+        }
+    }
+
+    private static let tickQueue = DispatchQueue(label: "msg.haptic-tick", qos: .userInteractive)
+    /// Actuators opened once and kept, touched only on `tickQueue`.
+    private static var tickActuators: [UnsafeMutableRawPointer] = []
+
+    /// A subtle detent for rapid repeated steps — a swipe passing item after
+    /// item. `perform` re-lists the devices and opens and closes an actuator
+    /// each call, on the calling thread; at swipe rate that stalled the main
+    /// thread. This keeps the actuators open and runs off the main thread.
+    static func tick() {
+        tickQueue.async {
+            if tickActuators.isEmpty {
+                guard let devListFn, let devGetIDFn, let actCreateFn, let actOpenFn,
+                      let devices = devListFn() as? [AnyObject] else { return }
+                for dev in devices {
+                    var devID: UInt64 = 0
+                    let devPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(dev).toOpaque())
+                    guard devGetIDFn(devPtr, &devID) == 0, let actuator = actCreateFn(devID),
+                          actOpenFn(actuator) == 0 else { continue }
+                    tickActuators.append(actuator)
+                }
+            }
+            guard let actActuateFn else { return }
+            var failed = false
+            for actuator in tickActuators where actActuateFn(actuator, 3, 0, 0.0, 0.0) != 0 {
+                failed = true
+            }
+            // A trackpad that went away leaves a dead actuator; reopen next time.
+            if failed {
+                tickActuators.forEach { _ = actCloseFn?($0) }
+                tickActuators = []
+            }
+        }
+    }
+
+    /// Triggers a harder/firmer tactile haptic punch.
+    /// Combines Force Click (actuation 5) with reinforced pulse (actuation 1),
+    /// SkyLight window server actuation, and standard AppKit performer.
+    static func performHarder() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+
+        if let cidFn, let slActuateFn {
+            _ = slActuateFn(cidFn(), 0, 15, 0)
+        }
+
+        guard let devListFn, let devGetIDFn,
+              let actCreateFn, let actOpenFn,
+              let actActuateFn, let actCloseFn else { return }
+
+        guard let devices = devListFn() as? [AnyObject] else { return }
+        for dev in devices {
+            let devPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(dev).toOpaque())
+            var devID: UInt64 = 0
+            guard devGetIDFn(devPtr, &devID) == 0 else { continue }
+            guard let actuator = actCreateFn(devID) else { continue }
+            if actOpenFn(actuator) == 0 {
+                _ = actActuateFn(actuator, 5, 0, 0.0, 0.0)
+                _ = actActuateFn(actuator, 1, 0, 0.0, 0.0)
+                _ = actCloseFn(actuator)
+            }
+        }
+    }
 }

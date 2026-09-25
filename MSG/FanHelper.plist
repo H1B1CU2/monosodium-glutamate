@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>H1D3S1GN.MSG.fan-helper</string>
+	<!-- Path relative to the app bundle; SMAppService resolves it there. -->
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/MSGFanHelper</string>
+	<key>MachServices</key>
+	<dict>
+		<key>H1D3S1GN.MSG.fan-helper</key>
+		<true/>
+	</dict>
+	<!-- launchd starts it on the first XPC connection and again if it exits, so
+	     a crash mid-manual is followed by a fresh process whose init puts the
+	     fans back on automatic. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>H1D3S1GN.MSG</string>
+	</array>
+</dict>
+</plist>

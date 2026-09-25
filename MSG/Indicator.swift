@@ -176,11 +176,12 @@ final class Indicator {
                 spacesChanged = false
             }
             self.previousDisplaysForSuppression = newDisplays
-            if spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
+            if self.settings.spacerEnabled && spacesChanged && self.settings.musicDisplayMode != .off && self.musicMonitor.isPlaying {
                 let alreadySuppressed = ProcessInfo.processInfo.systemUptime < self.musicSuppressUntil
                 self.musicSuppressUntil = ProcessInfo.processInfo.systemUptime + (alreadySuppressed ? 3.0 : 1.5)
                 self.scheduleMusicUnsuppressRefresh()
             }
+            guard self.settings.spacerEnabled else { return }
             guard self.systemState.isStable else { return }
             guard self.animSpacePillDisplay < 0 else { return }
             self.refresh()
@@ -190,6 +191,18 @@ final class Indicator {
         // MusicMonitor is owned and started by AppDelegate; just observe it.
         musicMonitor.addObserver { [weak self] in
             self?.refresh()
+        }
+
+        // Park the 30 Hz visualiser while nothing can be seen, and let refresh()
+        // re-derive whether it should be running once the screens are back —
+        // it already owns that decision (see the startVisualizer call below).
+        PresentationState.shared.addObserver { [weak self] in
+            guard let self else { return }
+            if PresentationState.shared.canPresent {
+                self.refresh()
+            } else {
+                self.stopVisualizer()
+            }
         }
 
         systemState.didStabilize = { [weak self] in
@@ -235,9 +248,22 @@ final class Indicator {
 
     private func startVisualizer() {
         guard visualizerTimer == nil else { return }
+        // Music keeps playing with the lid shut or the display asleep; the
+        // 30 Hz bars driven off it do not need to. Restarted from the
+        // PresentationState observer in init when the screens come back.
+        guard PresentationState.shared.canPresent else { return }
         if #available(macOS 14.2, *) { AudioSpectrumTap.shared.acquire() }
-        visualizerTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
+        // Ticks at the display's refresh rate. The smoothing and scrolling
+        // below were tuned per 1/30 s tick; `ticks` rescales them by elapsed
+        // time so a 120 Hz tick is smoother, not faster.
+        var lastTick = CACurrentMediaTime()
+        visualizerTimer = Timer.scheduledTimer(withTimeInterval: DisplayRate.interval, repeats: true) { [weak self] _ in
             guard let self else { return }
+            let now = CACurrentMediaTime()
+            let ticks = CGFloat(min(0.1, now - lastTick) * 30)
+            lastTick = now
+            /// Per-tick blend `k` at 30 Hz, carried over `ticks` 30 Hz ticks.
+            func blend(_ k: CGFloat) -> CGFloat { 1 - pow(1 - k, ticks) }
             if !self.musicLingerActive {
                 var live: [CGFloat]?
                 if #available(macOS 14.2, *) {
@@ -248,23 +274,23 @@ final class Indicator {
                     // Real audio: chase the tap's band levels
                     for i in 0..<audioVisualizerBandCount {
                         self.visualizerTargets[i] = i < live.count ? live[i] : 0
-                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.5
+                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * blend(0.5)
                     }
                 } else {
                     // Fallback (no tap permission / pre-14.2): random targets
                     for i in 0..<audioVisualizerBandCount {
-                        if Float.random(in: 0...1) < 0.2 {
+                        if CGFloat.random(in: 0...1) < blend(0.2) {
                             self.visualizerTargets[i] = CGFloat.random(in: 0.3...1.0)
                         }
                     }
                     // Smooth toward targets
                     for i in 0..<audioVisualizerBandCount {
-                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * 0.4
+                        self.visualizerHeights[i] += (self.visualizerTargets[i] - self.visualizerHeights[i]) * blend(0.4)
                     }
                 }
             }
             // Always advance marquee
-            self.marqueeOffset += 0.4
+            self.marqueeOffset += 0.4 * ticks
             // Delegate to refresh for single render path (handles barToDots morph)
             self.refresh()
         }
@@ -284,7 +310,7 @@ final class Indicator {
         // out over the first half of the morph and bring it back at its start.
         let resetMarquee = marqueeOffset != 0
             && renderer.musicMarqueeActive(title: musicMonitor.currentTitle, artist: musicMonitor.currentArtist)
-        musicLingerMorphTimer = runProgressTimer(interval: 0.016, duration: 0.267, commonModes: true, onTick: { me, p in
+        musicLingerMorphTimer = runProgressTimer(interval: DisplayRate.interval, duration: 0.267, commonModes: true, onTick: { me, p in
             me.musicLingerMorphProgress = p
             if resetMarquee {
                 if p >= 0.5 { me.marqueeOffset = 0 }
@@ -303,7 +329,7 @@ final class Indicator {
         let reverseStart = musicLingerMorphProgress
         let reverseDuration = max(0.001, Double(reverseStart) * 0.133)
         let morphReverseStartTime = CACurrentMediaTime()
-        musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] t in
+        musicLingerMorphTimer = Timer.scheduledTimer(withTimeInterval: DisplayRate.interval, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let elapsed = CACurrentMediaTime() - morphReverseStartTime
             self.musicLingerMorphProgress = reverseStart * CGFloat(1.0 - min(1.0, elapsed / reverseDuration))
@@ -319,6 +345,24 @@ final class Indicator {
 
     private func startSwapFade(toMusic: Bool) {
         guard let button = statusItem.button else { return }
+        // If the item wasn't visible (e.g. spacer disabled, music just started),
+        // skip the fade-out step and fade directly in.
+        if toMusic && !statusItem.isVisible {
+            musicDisplayShown = true
+            button.alphaValue = 0
+            statusItem.isVisible = true
+            refresh()
+            musicSwapFadeActive = true
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = musicIndicatorSwapFadeDuration
+                self.statusItem.button?.animator().alphaValue = 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + musicIndicatorSwapFadeDuration) {
+                self.musicSwapFadeActive = false
+            }
+            return
+        }
+
         musicSwapFadeActive = true
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = musicIndicatorSwapFadeDuration
@@ -338,12 +382,16 @@ final class Indicator {
             // Returning to the space indicator: a space change may have happened
             // while music was showing. Hold slightly beyond the fade-in so the
             // first visible motion starts after the indicator has fully returned.
-            if !toMusic { self.pillStartHoldDelay = self.pillStartHoldAfterMusicFadeIn }
+            if !toMusic && self.settings.spacerEnabled { self.pillStartHoldDelay = self.pillStartHoldAfterMusicFadeIn }
             self.refresh()
             self.pillStartHoldDelay = 0
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = self.musicIndicatorSwapFadeDuration
-                self.statusItem.button?.animator().alphaValue = 1
+            if self.statusItem.isVisible {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = self.musicIndicatorSwapFadeDuration
+                    self.statusItem.button?.animator().alphaValue = 1
+                }
+            } else {
+                self.statusItem.button?.alphaValue = 1
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + self.musicIndicatorSwapFadeDuration) {
                 self.musicSwapFadeActive = false
@@ -431,6 +479,9 @@ final class Indicator {
         lastMusicTitle = nil
         lastMusicArtist = nil
         stopVisualizer()
+        if !settings.spacerEnabled {
+            killAllAnimations()
+        }
         refresh()
     }
 
@@ -481,15 +532,6 @@ final class Indicator {
         let spacerOn = settings.spacerEnabled
         let musicOn = settings.musicEnabled
 
-        guard spacerOn || musicOn else {
-            statusItem.isVisible = false
-            return
-        }
-        statusItem.isVisible = true
-
-        let info = spaceWatcher.currentInfo
-        guard let button = statusItem.button else { return }
-
         if musicMonitor.isPlaying {
             musicLastPlayedAt = ProcessInfo.processInfo.systemUptime
             musicLingerActive = false
@@ -511,6 +553,29 @@ final class Indicator {
         let showMusic = musicOn
             && musicModeAllowsDisplay
             && ProcessInfo.processInfo.systemUptime >= musicSuppressUntil
+
+        // If neither the space indicator nor music should be shown, hide the status item
+        // and clear any cached display contents.
+        if !spacerOn && !showMusic && !musicDisplayShown {
+            if statusItem.isVisible {
+                statusItem.isVisible = false
+            }
+            if let button = statusItem.button {
+                button.image = nil
+                button.title = ""
+                button.attributedTitle = NSAttributedString()
+            }
+            lastSetLength = 0
+            stopVisualizer()
+            return
+        }
+
+        if !statusItem.isVisible {
+            statusItem.isVisible = true
+        }
+
+        let info = spaceWatcher.currentInfo
+        guard let button = statusItem.button else { return }
 
         // Swap between music and space indicator
         if showMusic != musicDisplayShown && !musicSwapFadeActive {
@@ -710,7 +775,7 @@ final class Indicator {
     /// established design — see CLAUDE.md, deliberately not CVDisplayLink).
     /// `onTick` receives clamped progress every frame; `onDone` runs once at 1.
     private func runProgressTimer(
-        interval: TimeInterval = 1.0 / 60.0,
+        interval: TimeInterval = DisplayRate.interval,
         duration: TimeInterval,
         commonModes: Bool = false,
         onTick: @escaping (Indicator, CGFloat) -> Void,
@@ -739,18 +804,14 @@ final class Indicator {
         animSpacePillCapturedGrid = currentGridLayout
 
         let style = settings.animationStyle
-        let distance = abs(newSpace - oldSpace)
-        let base: TimeInterval = style == .liquid ? 0.75 : 0.30
-        let k = 0.5
-        let duration: TimeInterval = base * (1.0 + Double(distance - 1) * k)
-        let interval: TimeInterval = 1.0 / 60.0
-        let useSpring = style == .liquid
+        let duration = SpacePillAnimationPipeline.duration(style: style, from: oldSpace, to: newSpace)
+        let interval = SpacePillAnimationPipeline.frameInterval
         let startTime = CACurrentMediaTime() + pillStartHoldDelay
 
         // Single-pass frame renderer: bakes focus into the frame at call time.
         let renderFrame: (CGFloat, Int) -> NSImage? = { [weak self] raw, focusIdx in
             guard let self, let cap = self.animSpacePillCaptured else { return nil }
-            let p = useSpring ? Easing.spring(raw) : Easing.inOutQuart(raw)
+            let p = SpacePillAnimationPipeline.easedProgress(raw, style: style)
             let idx = max(0, min(focusIdx, cap.displays.count - 1))
             let effectiveInfo = idx == cap.activeDisplayIndex ? cap : SpaceInfo(
                 displays: cap.displays, activeDisplayIndex: idx, mainDisplayIndex: cap.mainDisplayIndex
@@ -807,7 +868,11 @@ final class Indicator {
             if let cache = self.preRenderedPillFrames, liveFocus == snapshotFocus {
                 let raw_idx = Int(raw * CGFloat(cache.count)) - 1
                 let idx = min(cache.count - 1, max(0, raw_idx))
-                self.statusItem.button?.image = cache[idx]
+                // The timer can outpace the frame count; re-setting the same
+                // frame still re-publishes the item to every menu bar.
+                if self.statusItem.button?.image !== cache[idx] {
+                    self.statusItem.button?.image = cache[idx]
+                }
                 return
             }
 
@@ -873,7 +938,7 @@ final class Indicator {
         animRowMorphFromCount = fromCount
         animRowMorphFromStacked = fromStacked
         animRowMorphProgress = 0.0
-        animRowMorphTimer = runProgressTimer(interval: 0.016, duration: 0.4, onTick: { me, p in
+        animRowMorphTimer = runProgressTimer(interval: DisplayRate.interval, duration: 0.4, onTick: { me, p in
             me.animRowMorphProgress = p
             me.refresh(); me.statusItem.button?.display()
         })
@@ -882,7 +947,7 @@ final class Indicator {
     private func startFocusAnimation(from: Int, to: Int) {
         animFocusTimer?.invalidate()
         animFocusOldDisplay = from; animFocusNewDisplay = to; animFocusProgress = 0.0
-        animFocusTimer = runProgressTimer(interval: 0.016, duration: 0.25, onTick: { me, p in
+        animFocusTimer = runProgressTimer(interval: DisplayRate.interval, duration: 0.25, onTick: { me, p in
             me.animFocusProgress = p
             me.refresh()
         }, onDone: { me in
@@ -943,7 +1008,7 @@ final class Indicator {
             renderSystemHUD()
             return
         }
-        systemHUDFillTimer = runProgressTimer(interval: 1.0 / 60.0, duration: 0.18, commonModes: true, onTick: { me, p in
+        systemHUDFillTimer = runProgressTimer(interval: DisplayRate.interval, duration: 0.18, commonModes: true, onTick: { me, p in
             me.systemHUDValue = start + delta * Easing.outQuart(p)
             me.renderSystemHUD()
         }, onDone: { me in
@@ -994,12 +1059,14 @@ final class Indicator {
             guard !self.inputSourceHUDActive else { return }
             self.lastSetLength = 0          // force length recompute on restore
             self.refresh()
-            if let b = self.statusItem.button {
+            if self.statusItem.isVisible, let b = self.statusItem.button {
                 b.alphaValue = 0
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.2
                     b.animator().alphaValue = 1
                 }
+            } else {
+                self.statusItem.button?.alphaValue = 1
             }
         })
     }
@@ -1085,12 +1152,14 @@ final class Indicator {
             guard !self.systemHUDActive else { return }
             self.lastSetLength = 0          // force length recompute on restore
             self.refresh()
-            if let b = self.statusItem.button {
+            if self.statusItem.isVisible, let b = self.statusItem.button {
                 b.alphaValue = 0
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.2
                     b.animator().alphaValue = 1
                 }
+            } else {
+                self.statusItem.button?.alphaValue = 1
             }
         })
     }

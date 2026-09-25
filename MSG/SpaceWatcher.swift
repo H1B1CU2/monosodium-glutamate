@@ -144,6 +144,26 @@ final class SpaceWatcher {
         CGSGetActiveSpace(CGSMainConnectionID())
     }
 
+    /// A global active-space change can be just focus moving to another monitor.
+    /// Only spaces owned by the same display represent a local space switch.
+    /// Read the full list only on an ID change, not on every poll tick.
+    static func isSameDisplaySpaceSwitch(from previous: Int, to current: Int) -> Bool {
+        guard let raw = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()),
+              let displays = raw as? [[String: Any]] else { return false }
+        return isSameDisplaySpaceSwitch(from: previous, to: current, displays: displays)
+    }
+
+    static func isSameDisplaySpaceSwitch(
+        from previous: Int, to current: Int, displays: [[String: Any]]
+    ) -> Bool {
+        guard previous > 0, current > 0, previous != current else { return false }
+        return displays.contains { display in
+            guard let spaces = display["Spaces"] as? [[String: Any]] else { return false }
+            let ids = spaces.compactMap { $0["ManagedSpaceID"] as? Int }
+            return ids.contains(previous) && ids.contains(current)
+        }
+    }
+
     /// CGS space type for a fullscreen / tiled (Split View) space. A plain
     /// desktop space is type 0. Verified on macOS 26 against a live fullscreen
     /// space: `Current Space` = `{type = 4, fs_wid, pid, TileLayoutManager, …}`.
@@ -176,6 +196,74 @@ final class SpaceWatcher {
             out.insert(ident)
         }
         return out
+    }
+
+    /// Window IDs for each pane in a genuine fullscreen Split View layout.
+    /// A single fullscreen app is also type 4, but has no two-pane
+    /// TileLayoutManager and therefore intentionally returns no entries.
+    static func splitViewPaneWindowIDsByDisplay(
+        from displayDicts: [[String: Any]], primaryUUID: String?
+    ) -> [String: [CGWindowID]] {
+        var result: [String: [CGWindowID]] = [:]
+        for display in displayDicts {
+            guard let current = display["Current Space"] as? [String: Any],
+                  (current["type"] as? Int) == fullscreenSpaceType,
+                  let manager = current["TileLayoutManager"] as? [String: Any],
+                  let tiles = manager["TileSpaces"] as? [[String: Any]],
+                  tiles.count >= 2 else { continue }
+
+            var identifier = display["Display Identifier"] as? String ?? ""
+            if identifier == "Main" { identifier = primaryUUID ?? "" }
+            guard !identifier.isEmpty else { continue }
+
+            let ids = tiles.compactMap { tile -> CGWindowID? in
+                if let value = tile["TileWindowID"] as? Int, value > 0 {
+                    return CGWindowID(value)
+                }
+                if let value = tile["TileWindowID"] as? NSNumber,
+                   value.uint32Value > 0 {
+                    return value.uint32Value
+                }
+                return nil
+            }
+            if ids.count >= 2 { result[identifier] = ids }
+        }
+        return result
+    }
+
+    /// Exact pane content frames in AppKit's global coordinate system. The CGS
+    /// tile rect includes the menu-bar strip; the live window bounds do not, so
+    /// using TileWindowID avoids painting corners 33 points too high.
+    static func splitViewPaneFramesByDisplay() -> [String: [CGRect]]? {
+        guard let raw = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()),
+              let displayDicts = raw as? [[String: Any]] else { return nil }
+
+        let primaryUUID = NSScreen.screens.first?.uuid
+        let idsByDisplay = splitViewPaneWindowIDsByDisplay(
+            from: displayDicts, primaryUUID: primaryUUID
+        )
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        var result: [String: [CGRect]] = [:]
+
+        for (display, ids) in idsByDisplay {
+            let frames = ids.compactMap { id -> CGRect? in
+                guard let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, id)
+                        as? [[String: Any]],
+                      let row = rows.first,
+                      let bounds = row[kCGWindowBounds as String] as? [String: Any]
+                else { return nil }
+                var quartzFrame = CGRect.zero
+                guard CGRectMakeWithDictionaryRepresentation(bounds as CFDictionary,
+                                                              &quartzFrame),
+                      quartzFrame.width > 0, quartzFrame.height > 0 else { return nil }
+                return CGRect(x: quartzFrame.minX,
+                              y: primaryTop - quartzFrame.maxY,
+                              width: quartzFrame.width,
+                              height: quartzFrame.height)
+            }
+            if frames.count >= 2 { result[display] = frames }
+        }
+        return result
     }
 
     // MARK: - CGS read

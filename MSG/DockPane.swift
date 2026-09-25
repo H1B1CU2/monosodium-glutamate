@@ -1,136 +1,211 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Dock Previews settings pane
+// MARK: - Window Preview settings pane
 
 @available(macOS 14.0, *)
 struct DockPane: View {
     @ObservedObject var vm: SettingsViewModel
-    @State private var previewWallpaper: NSImage? = nil
+    @State private var previewWallpaper: NSImage?
 
     var body: some View {
-        PaneContainer(section: .dock, headerToggle: Binding(
-            get: { vm.dockPreviewEnabled },
-            set: { vm.dockPreviewEnabled = $0; NotificationCenter.default.post(name: .dockPreviewChanged, object: nil) }
-        )) {
-            Section("Preview") {
-                DockPreviewScene(
-                    thumbHeight: vm.dockPreviewThumbHeight,
-                    offset: vm.dockPreviewOffset,
-                    hoverDelay: vm.dockPreviewHoverDelay,
-                    wallpaperImage: previewWallpaper
-                )
-                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                .listRowBackground(Color.clear)
-            }
-
-            Section("Behavior") {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Hover delay")
-                        Spacer()
-                        Text(String(format: "%.2fs", vm.dockPreviewHoverDelay))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+        PaneContainer(section: .dock) {
+            Section {
+                SettingsToggleRow("Dock previews", detail: "Point at a Dock app to see its windows.", isOn: Binding(
+                    get: { vm.dockPreviewEnabled },
+                    set: {
+                        vm.dockPreviewEnabled = $0
+                        NotificationCenter.default.post(name: .dockPreviewChanged, object: nil)
                     }
-                    Slider(value: Binding(
-                        get: { vm.dockPreviewHoverDelay },
-                        set: { vm.dockPreviewHoverDelay = $0 }
-                    ), in: 0.10...1.0, step: 0.05)
-                }
-                Text("How long to rest the pointer on a Dock tile before the preview appears.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Preview size")
-                        Spacer()
-                        Text("\(Int(vm.dockPreviewThumbHeight)) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                ))
+                SettingsToggleRow("Notch previews", detail: "Point at the screen notch to preview open windows.", isOn: Binding(
+                    get: { vm.notchPreviewEnabled },
+                    set: {
+                        vm.notchPreviewEnabled = $0
+                        NotificationCenter.default.post(name: .notchPreviewChanged, object: nil)
                     }
-                    Slider(value: Binding(
-                        get: { vm.dockPreviewThumbHeight },
-                        set: { vm.dockPreviewThumbHeight = $0 }
-                    ), in: 90...260, step: 10)
-                }
-                Text("How large each window thumbnail is drawn in the preview card.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Distance from Dock")
-                        Spacer()
-                        Text("\(Int(vm.dockPreviewOffset)) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: Binding(
-                        get: { vm.dockPreviewOffset },
-                        set: { vm.dockPreviewOffset = $0 }
-                    ), in: -40...120, step: 2)
-                }
-                Text("Adjusts the gap between the Dock tile and the preview card.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("App Switcher") {
-                Toggle(isOn: Binding(
+                ))
+                SettingsToggleRow("Cmd-Tab previews", detail: "Preview windows while switching apps with the keyboard.", isOn: Binding(
                     get: { vm.appSwitcherPreviewEnabled },
                     set: {
                         vm.appSwitcherPreviewEnabled = $0
                         NotificationCenter.default.post(name: .appSwitcherPreviewChanged, object: nil)
                     }
-                )) {
-                    Text("Preview in the app switcher")
-                }
-                Text("Hold ⌘ and rest the selection on an app in the ⌘-Tab switcher to see the same card. It layers over the switcher and never intercepts your keys or clicks.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                ))
+            } footer: {
+                Text("Choose where you want window previews. Each works independently.")
+            }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Hold delay")
-                        Spacer()
-                        Text(String(format: "%.2fs", vm.appSwitcherPreviewDelay))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: Binding(
-                        get: { vm.appSwitcherPreviewDelay },
-                        set: { vm.appSwitcherPreviewDelay = $0 }
-                    ), in: 0.10...1.5, step: 0.05)
+            if vm.dockPreviewEnabled || vm.appSwitcherPreviewEnabled {
+                Section {
+                    settingSlider("Preview size", value: Binding(
+                        get: { Double(vm.dockPreviewThumbHeight) },
+                        set: { vm.dockPreviewThumbHeight = CGFloat($0) }
+                    ), range: 90...260, step: 10,
+                       valueLabel: "\(Int(vm.dockPreviewThumbHeight)) pt")
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("Window thumbnail size for both Dock and Cmd-Tab previews.")
                 }
-                .disabled(!vm.appSwitcherPreviewEnabled)
-                Text("How long the selection must rest on one app before its preview appears. Once it's up, tabbing moves it instantly.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+            }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Distance from switcher")
-                        Spacer()
-                        Text("\(Int(vm.appSwitcherPreviewOffset)) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: Binding(
-                        get: { vm.appSwitcherPreviewOffset },
-                        set: { vm.appSwitcherPreviewOffset = $0 }
-                    ), in: -40...120, step: 2)
+            if vm.dockPreviewEnabled { dockSettings }
+            if vm.notchPreviewEnabled { notchSettings }
+            if vm.appSwitcherPreviewEnabled { switcherSettings }
+            if vm.dockPreviewEnabled || vm.notchPreviewEnabled || (vm.appSwitcherPreviewEnabled && vm.appSwitcherMode == "replacement") {
+                Section("Card controls") {
+                    Label("Red closes a window, or quits its app when only one card is shown for that app.", systemImage: "xmark.circle")
+                    Label("Green toggles full screen in supported apps.", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
-                .disabled(!vm.appSwitcherPreviewEnabled)
-                Text("Adjusts the gap between the switcher and the preview card. The card uses the Dock preview's thumbnail size.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
         }
-        .onAppear {
-            if let screen = NSScreen.main ?? NSScreen.screens.first {
+    }
+
+    private var dockSettings: some View {
+        Section("Dock") {
+            DockPreviewScene(
+                thumbHeight: vm.dockPreviewThumbHeight,
+                offset: vm.dockPreviewOffset,
+                hoverDelay: vm.dockPreviewHoverDelay,
+                wallpaperImage: previewWallpaper
+            )
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+            .listRowBackground(Color.clear)
+            .onAppear {
+                guard previewWallpaper == nil,
+                      let screen = NSScreen.main ?? NSScreen.screens.first else { return }
                 WallpaperEngine.shared.previewWallpaper(for: screen) { previewWallpaper = $0 }
+            }
+
+            settingSlider("Hover delay", value: $vm.dockPreviewHoverDelay,
+                          range: 0.10...1.0, step: 0.05,
+                          valueLabel: String(format: "%.2f s", vm.dockPreviewHoverDelay),
+                          detail: "Time before a preview appears when you point at a Dock app.")
+
+            DisclosureGroup("Advanced") {
+                settingSlider("Distance from Dock", value: Binding(
+                    get: { Double(vm.dockPreviewOffset) },
+                    set: { vm.dockPreviewOffset = CGFloat($0) }
+                ), range: -40...120, step: 2,
+                   valueLabel: "\(Int(vm.dockPreviewOffset)) pt")
+            }
+        }
+    }
+
+    private var notchSettings: some View {
+        Section("Notch") {
+            settingSlider("Hover delay", value: $vm.notchPreviewHoverDelay,
+                          range: 0.10...1.0, step: 0.05,
+                          valueLabel: String(format: "%.2f s", vm.notchPreviewHoverDelay),
+                          detail: "Time before a preview appears when you point at the notch.")
+
+            settingSlider("Preview size", value: Binding(
+                get: { Double(vm.notchPreviewThumbHeight) },
+                set: { vm.notchPreviewThumbHeight = CGFloat($0) }
+            ), range: 90...220, step: 10,
+               valueLabel: "\(Int(vm.notchPreviewThumbHeight)) pt",
+               detail: "Window thumbnail size for the notch preview.")
+
+            SettingsToggleRow("Show other Desktop Spaces",
+                              detail: "Include window previews from other desktop Spaces.",
+                              isOn: $vm.notchPreviewShowOtherSpaces)
+
+            SettingsToggleRow("Show App Dock",
+                              detail: "Show the mirrored macOS Dock underneath the notch preview.",
+                              isOn: $vm.notchShowDock)
+        }
+    }
+
+    private var switcherSettings: some View {
+        Section("Cmd-Tab") {
+            Picker("Switcher", selection: Binding(
+                get: { vm.appSwitcherMode },
+                set: {
+                    vm.appSwitcherMode = $0
+                    NotificationCenter.default.post(name: .appSwitcherPreviewChanged, object: nil)
+                }
+            )) {
+                Text("macOS with previews").tag("native")
+                Text("MSG window switcher").tag("replacement")
+            }
+
+            if vm.appSwitcherMode == "native" {
+                Text("Adds a window preview beside the macOS app switcher.")
+                    .font(.callout).foregroundStyle(.secondary)
+                settingSlider("Preview delay", value: $vm.appSwitcherPreviewDelay,
+                              range: 0.1...1.5, step: 0.05,
+                              valueLabel: String(format: "%.2f s", vm.appSwitcherPreviewDelay))
+                DisclosureGroup("Advanced") {
+                    settingSlider("Distance from switcher", value: Binding(
+                        get: { Double(vm.appSwitcherPreviewOffset) },
+                        set: { vm.appSwitcherPreviewOffset = CGFloat($0) }
+                    ), range: -40...120, step: 2,
+                       valueLabel: "\(Int(vm.appSwitcherPreviewOffset)) pt")
+                }
+            } else {
+                Text("Choose a window directly, or press F to search while holding ⌘.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Picker("Layout", selection: $vm.appSwitcherLayout) {
+                    Text("Grid").tag("grid")
+                    Text("Single row (Notch style)").tag("singleRow")
+                    Text("Desktop space per row").tag("spacePerRow")
+                }
+                if NSScreen.screens.count > 1 {
+                    Picker("Displays", selection: $vm.appSwitcherDisplayMode) {
+                        Text("One list").tag("all")
+                        Text("Group by display").tag("grouped")
+                        Text("Active display only").tag("current")
+                    }
+                }
+                if vm.appSwitcherLayout == "grid" {
+                    SettingsToggleRow("Group by Desktop Space", detail: "Keep windows from the same desktop together.", isOn: $vm.appSwitcherGroupBySpace)
+                    settingSlider("Max windows per row", value: Binding(
+                        get: { Double(vm.appSwitcherMaxPerRow) },
+                        set: { vm.appSwitcherMaxPerRow = Int($0) }
+                    ), range: 3...6, step: 1,
+                       valueLabel: "\(vm.appSwitcherMaxPerRow)",
+                       detail: "Maximum number of windows shown in each row (3 to 6).")
+                } else if vm.appSwitcherLayout == "singleRow" {
+                    SettingsToggleRow("Group by Desktop Space", detail: "Separate windows by desktop space with a divider.", isOn: $vm.appSwitcherGroupBySpace)
+                }
+                SettingsToggleRow("Show App Dock",
+                                  detail: "Show the mirrored macOS Dock underneath the window switcher.",
+                                  isOn: $vm.appSwitcherShowDock)
+                DisclosureGroup("Advanced") {
+                    Toggle("Start at the current window", isOn: $vm.appSwitcherStartAtCurrent)
+                }
+                DisclosureGroup("Keyboard shortcuts") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Hold ⌘ and press Tab to browse. Release ⌘ to switch, or press Esc to cancel.")
+                        Text("Use arrow keys to select. Press F, then type to search.")
+                        Text("Outside search, ⌘W closes the window, ⌘Q quits its app, and ⌘H hides its app.")
+                        Text("Accessibility access is required. Manage it in General → Permissions.")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private func settingSlider(_ title: String, value: Binding<Double>,
+                               range: ClosedRange<Double>, step: Double,
+                               valueLabel: String, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(valueLabel).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Slider(value: value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(valueLabel)
+            if let detail {
+                Text(detail).font(.callout).foregroundStyle(.secondary)
             }
         }
     }
@@ -138,6 +213,7 @@ struct DockPane: View {
 
 extension Notification.Name {
     static let dockPreviewChanged = Notification.Name("dockPreviewChanged")
+    static let notchPreviewChanged = Notification.Name("notchPreviewChanged")
     static let appSwitcherPreviewChanged = Notification.Name("appSwitcherPreviewChanged")
 }
 
@@ -177,8 +253,8 @@ struct DockPreviewScene: View {
     }
 
     private func stage(layout: DockSceneLayout) -> some View {
-        TimelineView(.animation) { timeline in
-            let anim = sceneAnim(at: timeline.date, layout: layout)
+        PreviewTimeline { now in
+            let anim = sceneAnim(at: now, layout: layout)
             ZStack(alignment: .topLeading) {
                 background(layout: layout)
 
@@ -402,14 +478,14 @@ private struct ReplicaWindowCard: View {
         VStack(spacing: 10) {
             SampleWindowThumb(kind: kind)
                 .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(8)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(6)
                 .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Color.white.opacity(hovering ? 0.10 : 0.05))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(hovering ? Color.accentColor : Color.white.opacity(0.12),
                                       lineWidth: hovering ? 2 : 1)
                 )

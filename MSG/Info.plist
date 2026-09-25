@@ -5,12 +5,16 @@
 	<key>CFBundleIdentifier</key>
 	<string>H1D3S1GN.MSG</string>
 	<key>CFBundleIconFile</key>
-	<string></string>
+	<string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>MSG analyzes the system audio output so the now-playing visualizer bars react to the actual sound.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>MSG needs to check Music.app playback state to show now-playing track in the menu bar.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>macOS only shares Wi-Fi network names with apps that have Location access. MSG uses it to list networks in its Wi-Fi menu.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>macOS only shares Wi-Fi network names with apps that have Location access. MSG uses it to list networks in its Wi-Fi menu.</string>
 </dict>
 </plist>

@@ -174,12 +174,50 @@ final class HardwareMonitor {
     /// Number of logical CPUs (including hyperthreading).
     private var cpuCount: Int32 = 0
 
-    private init() {}
+    private init() {
+        PresentationState.shared.addObserver { [weak self] in
+            self?.restartPollingIfNeeded()
+        }
+    }
 
     // MARK: - Observer list
 
     func addObserver(_ cb: @escaping () -> Void) { observers.append(cb) }
     private func notify() { observers.forEach { $0() } }
+
+    // MARK: - Power history
+
+    /// Recent system wattage, oldest first, for the popover's watt graph.
+    ///
+    /// Sampling is driven by the poll timer, so the spacing between points is
+    /// whatever interval the user picked — the graph is "the last N readings",
+    /// not a fixed time window, which is why it carries no time axis.
+    private(set) var powerHistory: [Double] = []
+    /// Dynamic sample limit, configured in Settings.
+    var powerHistoryLimit: Int { max(2, AppSettings.shared.hardwareStatsPowerSamples) }
+
+    /// Appended once per completed sweep. A poll that resolves no wattage
+    /// contributes nothing rather than a fake zero, which would draw a cliff
+    /// down to the axis that never happened.
+    private func recordPowerSample() {
+        guard let w = stats.powerWatts, w.isFinite, w >= 0 else { return }
+        powerHistory.append(w)
+        trimPowerHistory()
+    }
+
+    func trimPowerHistory() {
+        let trim = {
+            let limit = self.powerHistoryLimit
+            if self.powerHistory.count > limit {
+                self.powerHistory.removeFirst(self.powerHistory.count - limit)
+            }
+        }
+        if Thread.isMainThread {
+            trim()
+        } else {
+            DispatchQueue.main.async(execute: trim)
+        }
+    }
 
     // MARK: - Demand Gating & Lifecycle
 
@@ -196,7 +234,16 @@ final class HardwareMonitor {
     }
 
     private var wantsPolling: Bool {
-        AppSettings.shared.hardwareStatsEnabled || demandTokens > 0
+        // A fan preset puts the fans in SMC *manual* mode at whatever RPM the
+        // curve last wrote, and manual mode survives both display sleep and app
+        // relaunch. Stop polling and `applyFanCurve()` stops with it — the fans
+        // would then hold that RPM while the machine keeps working with the
+        // display off (a build running past the Energy Saver timeout). So the
+        // presentation gate applies only when the curve isn't driving anything.
+        let drivingFans = AppSettings.shared.hardwareStatsFanPreset != "default"
+            || fansForced || helperFanControlActive
+        if !drivingFans, !PresentationState.shared.canPresent { return false }
+        return AppSettings.shared.hardwareStatsEnabled || demandTokens > 0
     }
 
     private func restartPollingIfNeeded() {
@@ -255,6 +302,10 @@ final class HardwareMonitor {
         fpsTimer?.invalidate(); fpsTimer = nil
     }
 
+    /// True while the sampling timers are live — what the popover header's
+    /// status dot reports.
+    var isPolling: Bool { timer != nil }
+
     func updateInterval(_ seconds: Double) {
         let clamped = max(1.0, min(10.0, seconds))
         hardwarePollInterval = clamped
@@ -269,19 +320,60 @@ final class HardwareMonitor {
 
     // MARK: - Poll
 
+    /// Serialises every SMC sensor sweep, off the main thread.
+    ///
+    /// Temps and fans are the expensive half of a poll: each SMC key costs two
+    /// `IOConnectCallStructMethod` round trips into the kernel, and a sweep
+    /// covers every live temperature sensor plus four keys per fan. Running
+    /// that inline on main blocked the run loop — and therefore the menu bar
+    /// animations — for the whole sweep, once per poll interval.
+    private let sensorQueue = DispatchQueue(label: "msg.hardware.sensors", qos: .utility)
+    /// Main-only. Drops a sweep if the previous one is still running rather
+    /// than queueing them up behind a slow SMC (same guard as
+    /// `SystemState.scanInFlight`).
+    private var sensorSampleInFlight = false
+
     private func poll() {
         stats.cpuPercent = readCPU()
         stats.gpuPercent = readGPU()
         readMemory()
-        readTemps()
-        readFans()
         // While charging, power/battery has its own 1-second timer. Avoid
         // duplicating that read on the slower general hardware poll.
         if batteryTimer == nil { readPower() }
         stats.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
-        applyFanCurve()
         updateBatteryPollingState()
-        notify()
+        sampleSensors()
+    }
+
+    /// Sweeps temps + fans on `sensorQueue`, then applies them on main. The fan
+    /// curve runs from here rather than from `poll()` because it needs the
+    /// temperatures this sweep produced.
+    private func sampleSensors() {
+        guard !sensorSampleInFlight else {
+            // A dropped sweep must not drop the fan curve with it: the curve is
+            // a control loop, and skipping a cycle means the fans hold their
+            // last RPM. Re-run it against the temperatures we already have.
+            recordPowerSample()
+            applyFanCurve()
+            // Still publish the cheap readings poll() just took.
+            notify()
+            return
+        }
+        sensorSampleInFlight = true
+        sensorQueue.async { [weak self] in
+            guard let self else { return }
+            let temps = self.sampleTemps()
+            let fans = self.sampleFans()
+            DispatchQueue.main.async {
+                self.sensorSampleInFlight = false
+                self.stats.cpuTemp = temps.cpu
+                self.stats.gpuTemp = temps.gpu
+                self.stats.fans = fans
+                self.recordPowerSample()
+                self.applyFanCurve()
+                self.notify()
+            }
+        }
     }
 
     /// Raw charge capacity changes quickly enough to make a decimal useful,
@@ -293,6 +385,7 @@ final class HardwareMonitor {
             let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.readPower()
+                self.recordPowerSample()
                 self.updateBatteryPollingState()
                 self.notify()
             }
@@ -478,7 +571,10 @@ final class HardwareMonitor {
     private var liveGPUSensorKeys: [UInt32]?
     private var lastSensorProbeAt: TimeInterval = 0
 
-    private func readTemps() {
+    /// Sensor-queue only — see `sampleSensors()`. Returns the temperatures
+    /// instead of writing `stats` so the caller can apply them on main.
+    private func sampleTemps() -> (cpu: Double?, gpu: Double?) {
+        dispatchPrecondition(condition: .onQueue(sensorQueue))
         let now = ProcessInfo.processInfo.systemUptime
         let bothEmpty = (liveCPUSensorKeys?.isEmpty == true) && (liveGPUSensorKeys?.isEmpty == true)
         if liveCPUSensorKeys == nil || (bothEmpty && now - lastSensorProbeAt > 60) {
@@ -496,8 +592,7 @@ final class HardwareMonitor {
                 tempLogOnce = true
             }
         }
-        stats.cpuTemp = averageTemp(liveCPUSensorKeys ?? [])
-        stats.gpuTemp = averageTemp(liveGPUSensorKeys ?? [])
+        return (averageTemp(liveCPUSensorKeys ?? []), averageTemp(liveGPUSensorKeys ?? []))
     }
 
     private func logDiscoveredSensors() {
@@ -882,7 +977,25 @@ final class HardwareMonitor {
     private var helperFanControlActive = false
     private var fanPresetApplyInFlight = false
 
-    private func readFans() {
+    /// Re-read fan state after a control write, without blocking the caller.
+    ///
+    /// The fan-control paths call this to reflect a write they just made. It
+    /// goes through `sensorQueue` like every other SMC read so it can't
+    /// interleave with an in-flight sweep on the shared connection.
+    private func refreshFansAsync() {
+        sensorQueue.async { [weak self] in
+            guard let self else { return }
+            let fans = self.sampleFans()
+            DispatchQueue.main.async {
+                self.stats.fans = fans
+                self.notify()
+            }
+        }
+    }
+
+    /// Sensor-queue only — see `sampleSensors()`.
+    private func sampleFans() -> [FanInfo] {
+        dispatchPrecondition(condition: .onQueue(sensorQueue))
         let fanCountRaw = SMCController.readUInt16(Self.fnumKey)
         if !fanLogOnce {
             NSLog("[HW] FNum raw: %d (SMC open: %@)",
@@ -899,8 +1012,7 @@ final class HardwareMonitor {
         }
 
         guard let fanCount = fanCountRaw, fanCount > 0, fanCount < 10 else {
-            stats.fans = []
-            return
+            return []
         }
         var fans: [FanInfo] = []
         for i in 0..<Int(fanCount) {
@@ -918,7 +1030,7 @@ final class HardwareMonitor {
             fans.append(FanInfo(index: i, name: fanName,
                                 current: Int(cur), min: Int(mn), max: Int(mx)))
         }
-        stats.fans = fans
+        return fans
     }
 
     /// Ftst key — diagnostic mode flag that suppresses thermalmonitord.
@@ -939,7 +1051,7 @@ final class HardwareMonitor {
             return
         }
         _ = SMCController.open()
-        readFans()
+        refreshFansAsync()
         guard !stats.fans.isEmpty else {
             NSLog("[HW] fanFullBlast: no fans to control")
             return
@@ -958,7 +1070,7 @@ final class HardwareMonitor {
                     self.lastHelperFanWriteAt = Date()
                 }
                 self.fanControlUnlocking = false
-                DispatchQueue.main.async { self.readFans() }
+                self.refreshFansAsync()
             }
             return
         }
@@ -1014,7 +1126,7 @@ final class HardwareMonitor {
                 }
             }
             self.fanControlUnlocking = false
-            DispatchQueue.main.async { self.readFans() }
+            self.refreshFansAsync()
         }
     }
 
@@ -1045,7 +1157,7 @@ final class HardwareMonitor {
             return
         }
         _ = SMCController.open()
-        readFans()
+        refreshFansAsync()
         guard !stats.fans.isEmpty else {
             NSLog("[HW] fanReset: no fans to control")
             return
@@ -1067,7 +1179,7 @@ final class HardwareMonitor {
                     self.lastHelperFanWriteAt = nil
                 }
                 self.fanControlUnlocking = false
-                DispatchQueue.main.async { self.readFans() }
+                self.refreshFansAsync()
             }
             return
         }
@@ -1109,7 +1221,7 @@ final class HardwareMonitor {
                 self.lastHelperFanWriteAt = nil
             }
             self.fanControlUnlocking = false
-            DispatchQueue.main.async { self.readFans() }
+            self.refreshFansAsync()
         }
     }
 
@@ -1151,7 +1263,7 @@ final class HardwareMonitor {
             return
         }
         _ = SMCController.open()
-        readFans()
+        refreshFansAsync()
         let preset = AppSettings.shared.hardwareStatsFanPreset
         guard preset != "default" else {
             fanReset()
@@ -1180,7 +1292,7 @@ final class HardwareMonitor {
             }
             self.fanPresetApplyInFlight = false
             self.fanControlUnlocking = false
-            DispatchQueue.main.async { self.readFans() }
+            self.refreshFansAsync()
         }
     }
 
@@ -1325,7 +1437,7 @@ final class HardwareMonitor {
                 }
             }
             self.fanControlUnlocking = false
-            DispatchQueue.main.async { self.readFans() }
+            self.refreshFansAsync()
         }
     }
 
@@ -1383,6 +1495,41 @@ final class HardwareMonitor {
         case notRunning
         case success
         case commandFailed(Int32)
+    }
+
+    /// Translates a legacy helper command line into an XPC call.
+    ///
+    /// Returns nil when the daemon can't answer, so the caller falls back to the
+    /// socket rather than reporting a failure the user would see as "fan control
+    /// is broken". Synchronous to keep the existing call sites unchanged; the
+    /// timeout is short because `applyFanCurve()` reaches here from the main
+    /// thread on every poll.
+    @available(macOS 14.0, *)
+    private static func sendViaDaemon(_ arguments: [String]) -> FanHelperCommandResult? {
+        guard let command = arguments.first else { return nil }
+        let client = FanControlClient.shared
+        let semaphore = DispatchSemaphore(value: 0)
+        var reply: FanHelperReply?
+        let done: (FanHelperReply?) -> Void = { r in reply = r; semaphore.signal() }
+
+        switch command {
+        case "auto":
+            client.restoreAutomatic(completion: done)
+        case "full":
+            client.setPercent(100, completion: done)
+        case "set":
+            guard let pct = arguments.dropFirst().first.flatMap(Double.init) else { return nil }
+            client.setPercent(pct, completion: done)
+        case "powermode":
+            guard let mode = arguments.dropFirst().first.flatMap(Int.init) else { return nil }
+            client.setPowerMode(mode, completion: done)
+        default:
+            return nil
+        }
+
+        guard semaphore.wait(timeout: .now() + 1.5) == .success else { return nil }
+        guard let reply else { return nil }
+        return reply.ok ? .success : .commandFailed(1)
     }
 
     /// All privileged fan helper work runs on this serial queue so a stale
@@ -1446,7 +1593,23 @@ final class HardwareMonitor {
         }
     }
 
+    /// Single choke point for every privileged fan command.
+    ///
+    /// Prefers the `SMAppService` daemon over the legacy socket helper whenever
+    /// the user has approved it. Both are kept because approval is a manual step
+    /// in System Settings that may never happen: until then the old
+    /// osascript-launched helper is still the only thing that can move a fan,
+    /// and silently losing fan control would be worse than the weaker auth.
+    ///
+    /// Once approved, the daemon is strictly better — the kernel checks the
+    /// caller's code signature instead of a shared token, and its lease
+    /// watchdog restores automatic control if this app dies while the fans are
+    /// pinned. See FanControlClient.
     private static func sendFanHelperCommand(arguments: [String]) -> FanHelperCommandResult {
+        if #available(macOS 14.0, *), FanControlClient.shared.access == .enabled,
+           let viaDaemon = sendViaDaemon(arguments) {
+            return viaDaemon
+        }
         guard let fd = connectFanHelperSocket() else {
             return .notRunning
         }
@@ -1530,6 +1693,8 @@ final class SMCController {
     // MARK: - Connect / disconnect
 
     static func open() -> Bool {
+        connLock.lock()
+        defer { connLock.unlock() }
         guard conn == 0 else { return true }
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                    IOServiceMatching("AppleSMC"))
@@ -1541,9 +1706,12 @@ final class SMCController {
     }
 
     static func close() {
-        guard conn != 0 else { return }
-        IOServiceClose(conn)
-        conn = 0
+        connLock.lock()
+        if conn != 0 {
+            IOServiceClose(conn)
+            conn = 0
+        }
+        connLock.unlock()
         cacheLock.lock()
         keyInfoCache.removeAll()
         cacheLock.unlock()
@@ -1570,6 +1738,8 @@ final class SMCController {
 
     private static var keyInfoCache: [UInt32: (type: UInt32, size: UInt32)] = [:]
     private static let cacheLock = NSLock()
+    /// Guards `conn` itself — see `callSMC`.
+    private static let connLock = NSLock()
 
     /// Read a decoded value from any SMC key. Reads the key's metadata first
     /// (data type + size), then decodes the payload — works for `flt` (Apple
@@ -1696,6 +1866,13 @@ final class SMCController {
     private static func callSMC(_ input: inout SMCKeyData, _ output: inout SMCKeyData) -> kern_return_t {
         let inputSize = MemoryLayout<SMCKeyData>.stride
         var outputSize = MemoryLayout<SMCKeyData>.stride
+        // One `io_connect_t` is shared by every caller. Sensor sampling now runs
+        // on a background queue (HardwareMonitor.sensorQueue) while fan control
+        // still writes from main, so the connection has to be serialised or two
+        // threads can interleave calls on the same kernel handle.
+        connLock.lock()
+        defer { connLock.unlock() }
+        guard conn != 0 else { return KERN_FAILURE }
         return IOConnectCallStructMethod(conn, kernelIndex, &input, inputSize, &output, &outputSize)
     }
 
