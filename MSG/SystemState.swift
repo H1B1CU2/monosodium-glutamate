@@ -53,8 +53,46 @@ final class SystemState {
         pollTimer = t
     }
 
+    /// The display SP8CE's page full screen covers: it has no full screen Space for the checks here
+    /// to find, so SP8CE says so (heard by the Edge Keys strip), and it counts as full screen —
+    /// while the desktop Space it went full screen on is the one showing. The display's other
+    /// Spaces have nothing full screen on them.
+    private(set) static var pageFullscreenDisplay: String? {
+        didSet { if pageFullscreenDisplay != oldValue { NotificationCenter.default.post(name: pageFullscreenChanged, object: nil) } }
+    }
+    static let pageFullscreenChanged = Notification.Name("H1D3S1GN.MSG.pageFullscreenChanged")
+    /// SP8CE's page full screen as it said: the display, and the Space showing there then.
+    private static var pageFullscreen: (display: String, space: UInt64?)?
+    private static var pageFullscreenSpaceObserver: NSObjectProtocol?
+
+    /// SP8CE's page went full screen on `display` (on the Space showing there now), or left it (nil).
+    static func setPageFullscreen(display: String?) {
+        pageFullscreen = display.map { ($0, currentSpace(on: $0)) }
+        if pageFullscreenSpaceObserver == nil {
+            pageFullscreenSpaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+            ) { _ in refreshPageFullscreen() }
+        }
+        refreshPageFullscreen()
+    }
+
+    private static func refreshPageFullscreen() {
+        guard let page = pageFullscreen else { pageFullscreenDisplay = nil; return }
+        let current = currentSpace(on: page.display)
+        // A Space that can't be read counts as SP8CE's, as before Spaces were told apart.
+        pageFullscreenDisplay = page.space == nil || current == nil || current == page.space ? page.display : nil
+    }
+
+    private static func currentSpace(on display: String) -> UInt64? {
+        NSScreen.screens.first { $0.uuid?.caseInsensitiveCompare(display) == .orderedSame }
+            .flatMap(WindowPreviewCapture.currentManagedSpaceID(for:))
+    }
+
     func start() {
         rescheduleScan()
+        fsObservers.append(NotificationCenter.default.addObserver(
+            forName: Self.pageFullscreenChanged, object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshFullscreen() })
         
         fsObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -121,9 +159,10 @@ final class SystemState {
 
     private func refreshFullscreen() {
         detectionQueue.async { [weak self] in
-            let fs = Self.detectFullscreen()
+            let detected = Self.detectFullscreen()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                let fs = detected || Self.pageFullscreenDisplay != nil
                 if fs != self.isFullscreen {
                     self.isFullscreen = fs
                     self.onChange?()

@@ -1,4 +1,5 @@
 import IOKit
+import IOKit.ps
 import AppKit
 import Darwin
 
@@ -116,7 +117,8 @@ struct HardwareStats {
     var fans: [FanInfo] = []
     var powerWatts: Double? = nil // system power draw, nil = unavailable
     var isCharging: Bool? = nil   // nil = no battery / charge state unknown (e.g. desktop Mac)
-    var adapterWatts: Int? = nil  // rated wattage of the connected AC adapter, nil = none connected
+    var adapterWatts: Int? = nil  // rated wattage when available; nil does not necessarily mean unplugged
+    var isExternalPowerConnected: Bool = false // macOS power-source state, paired with isCharging
     var batteryPercent: Int? = nil // 0–100 charge level, nil = no battery
     var batteryRawPercent: Double? = nil // raw charge estimate used for one decimal while charging
     var chargeLimitPercent: Int? = nil // user-set macOS charge limit %, nil = none/unknown
@@ -131,7 +133,7 @@ struct HardwareStats {
     func batteryPercentText(includeSymbol: Bool = true) -> String? {
         guard let percent = batteryPercent else { return nil }
         let value: String
-        if isCharging == true, let raw = batteryRawPercent {
+        if isCharging == true, AppSettings.shared.hardwareStatsBatteryChargingDecimals, let raw = batteryRawPercent {
             value = String(format: "%.2f", raw)
         } else {
             value = "\(percent)"
@@ -150,6 +152,8 @@ final class HardwareMonitor {
 
     private var timer: Timer?
     private var batteryTimer: Timer?
+    private var powerSource: CFRunLoopSource?
+    private var powerChangeRetry: DispatchWorkItem?
     private var fpsTimer: Timer?
     private var hardwarePollInterval = 2.0
     private var observers: [() -> Void] = []
@@ -279,6 +283,7 @@ final class HardwareMonitor {
         if let t = fpsTimer { RunLoop.current.add(t, forMode: .common) }
         poll()
         pollFPS()
+        watchPowerChanges()
 
         // The SMC keeps manual fan mode across app relaunches, but the
         // ownership flags don't. Reconcile once after launch: re-apply a
@@ -300,6 +305,11 @@ final class HardwareMonitor {
         timer?.invalidate(); timer = nil
         batteryTimer?.invalidate(); batteryTimer = nil
         fpsTimer?.invalidate(); fpsTimer = nil
+        powerChangeRetry?.cancel(); powerChangeRetry = nil
+        if let powerSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, CFRunLoopMode.commonModes)
+            self.powerSource = nil
+        }
     }
 
     /// True while the sampling timers are live — what the popover header's
@@ -337,7 +347,7 @@ final class HardwareMonitor {
         stats.cpuPercent = readCPU()
         stats.gpuPercent = readGPU()
         readMemory()
-        // While charging, power/battery has its own 1-second timer. Avoid
+        // Battery state has its own 1-second timer. Avoid
         // duplicating that read on the slower general hardware poll.
         if batteryTimer == nil { readPower() }
         stats.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -376,11 +386,10 @@ final class HardwareMonitor {
         }
     }
 
-    /// Raw charge capacity changes quickly enough to make a decimal useful,
-    /// so sample battery state once per second while actively charging. Other
-    /// hardware sensors retain the interval selected in Settings.
+    /// Keep battery state responsive even after charging pauses or an adapter
+    /// is unplugged. Other hardware sensors retain the interval in Settings.
     private func updateBatteryPollingState() {
-        let needsDedicatedTimer = stats.isCharging == true && hardwarePollInterval > 1.0
+        let needsDedicatedTimer = stats.batteryPercent != nil && hardwarePollInterval > 1.0
         if needsDedicatedTimer, batteryTimer == nil {
             let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
@@ -396,6 +405,55 @@ final class HardwareMonitor {
             batteryTimer?.invalidate()
             batteryTimer = nil
         }
+    }
+
+    /// Power-source notifications change the icon without waiting for a poll.
+    /// A short second read covers the battery registry updating just after the
+    /// notification (the 1-second timer remains a fallback).
+    private func watchPowerChanges() {
+        guard powerSource == nil else { return }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        guard let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            Unmanaged<HardwareMonitor>.fromOpaque(context).takeUnretainedValue().powerDidChange()
+        }, context) else { return }
+        let retainedSource = source.takeRetainedValue()
+        powerSource = retainedSource
+        CFRunLoopAddSource(CFRunLoopGetMain(), retainedSource, CFRunLoopMode.commonModes)
+    }
+
+    private func powerDidChange() {
+        guard timer != nil else { return }
+        // Publish the macOS battery state before the slower IORegistry/SMC
+        // wattage read, so the menu-bar icon can change on this event turn.
+        if let state = systemBatteryPowerState(),
+           state.external != stats.isExternalPowerConnected || state.charging != stats.isCharging {
+            if state.external != stats.isExternalPowerConnected {
+                // The old reading describes the previous source. Show the
+                // ring's placeholder until the fresh input-watt read arrives.
+                stats.powerWatts = nil
+            }
+            stats.isExternalPowerConnected = state.external
+            stats.isCharging = state.charging
+            notify()
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.timer != nil else { return }
+            self.readPower()
+            self.updateBatteryPollingState()
+            self.notify()
+        }
+
+        powerChangeRetry?.cancel()
+        let retry = DispatchWorkItem { [weak self] in
+            guard let self, self.timer != nil else { return }
+            self.readPower()
+            self.updateBatteryPollingState()
+            self.notify()
+            self.powerChangeRetry = nil
+        }
+        powerChangeRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: retry)
     }
 
     private func pollFPS() {
@@ -667,10 +725,11 @@ final class HardwareMonitor {
             cachedChargeLimit = Self.readChargeLimitPercent()
         }
         stats.chargeLimitPercent = cachedChargeLimit
-        if let (watts, charging, adapterWatts, percent, rawPercent, chargeRate) = readPowerFromBattery() {
+        if let (watts, charging, adapterWatts, external, percent, rawPercent, chargeRate) = readPowerFromBattery() {
             stats.powerWatts = watts
             stats.isCharging = charging
             stats.adapterWatts = adapterWatts
+            stats.isExternalPowerConnected = external
             stats.batteryPercent = percent
             stats.batteryRawPercent = chargingPercentEstimate(
                 systemPercent: percent, rawPercent: rawPercent,
@@ -688,6 +747,7 @@ final class HardwareMonitor {
                 stats.powerWatts = v
                 stats.isCharging = nil
                 stats.adapterWatts = nil
+                stats.isExternalPowerConnected = false
                 stats.batteryPercent = nil
                 stats.batteryRawPercent = nil
                 resetChargingPercentEstimate()
@@ -701,6 +761,7 @@ final class HardwareMonitor {
         stats.powerWatts = nil
         stats.isCharging = nil
         stats.adapterWatts = nil
+        stats.isExternalPowerConnected = false
         stats.batteryPercent = nil
         stats.batteryRawPercent = nil
         resetChargingPercentEstimate()
@@ -708,6 +769,27 @@ final class HardwareMonitor {
             NSLog("[HW] No power source resolved (no AppleSmartBattery, no SMC power keys)")
             powerLogOnce = true
         }
+    }
+
+    /// Read AC/battery and charging together from one macOS power-source
+    /// snapshot so the icon never combines values from different update cycles.
+    private func systemBatteryPowerState() -> (external: Bool, charging: Bool)? {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [Any]
+        else { return nil }
+        for source in sources {
+            guard let details = IOPSGetPowerSourceDescription(snapshot, source as CFTypeRef)?
+                .takeUnretainedValue() as? [String: Any],
+                details["Type"] as? String == "InternalBattery" else { continue }
+            guard let sourceState = details["Power Source State"] as? String,
+                  let charging = details["Is Charging"] as? Bool else { return nil }
+            switch sourceState {
+            case "AC Power": return (true, charging)
+            case "Battery Power": return (false, false)
+            default: return nil
+            }
+        }
+        return nil
     }
 
     /// Real-time power + charge direction from the AppleSmartBattery
@@ -729,7 +811,7 @@ final class HardwareMonitor {
     /// `PowerTelemetryData.SystemPowerIn` as the fallback where PDTR is
     /// absent. Plugged in but not drawing (PD handshake, paused charger) and
     /// on-battery states show the battery figure, which IS the system draw.
-    private func readPowerFromBattery() -> (watts: Double, charging: Bool, adapterWatts: Int?, percent: Int?, rawPercent: Double?, chargeRate: Double?)? {
+    private func readPowerFromBattery() -> (watts: Double, charging: Bool, adapterWatts: Int?, external: Bool, percent: Int?, rawPercent: Double?, chargeRate: Double?)? {
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                    IOServiceMatching("AppleSmartBattery"))
         guard service != 0 else { return nil }
@@ -748,15 +830,17 @@ final class HardwareMonitor {
             return nil
         }
         let amperage = Double(amperageNum.int64Value)
-        let charging = (props["IsCharging"] as? Bool) ?? (amperage > 0)
+        let systemState = systemBatteryPowerState()
         var adapterWatts = (props["AdapterDetails"] as? [String: Any])
             .flatMap { ($0["Watts"] as? NSNumber)?.intValue }
         // AdapterDetails.Watts vanishes for a read or two during PD
         // renegotiation even though power never dropped. ExternalConnected is
         // the stable plugged-in signal, so gate on it and bridge Watts
         // dropouts with the last-known rating.
-        let external = (props["ExternalConnected"] as? Bool) ?? (adapterWatts != nil)
-        if external {
+        let hardwareExternal = (props["ExternalConnected"] as? Bool) ?? (adapterWatts != nil)
+        let external = systemState?.external ?? hardwareExternal
+        let charging = systemState?.charging ?? ((props["IsCharging"] as? Bool) ?? (amperage > 0))
+        if hardwareExternal {
             if adapterWatts == nil { adapterWatts = lastAdapterWatts }
             else { lastAdapterWatts = adapterWatts }
         } else {
@@ -794,10 +878,10 @@ final class HardwareMonitor {
         // PowerTelemetryData) only refresh every ~10s and lag badly right
         // after plug-in.
         let batteryWatts = abs(amperage) * voltage / 1_000_000.0
-        if external {
+        if hardwareExternal {
             let dcIn = SMCController.read(Self.dcInPowerKey)
             if let dcIn, dcIn > 1, dcIn < 1000 {
-                return (dcIn, charging, adapterWatts, percent, rawPercent, chargeRate)
+                return (dcIn, charging, adapterWatts, external, percent, rawPercent, chargeRate)
             }
             // No PDTR key on this machine: fall back to the slow-but-correct
             // telemetry average.
@@ -805,7 +889,7 @@ final class HardwareMonitor {
                let telemetry = props["PowerTelemetryData"] as? [String: Any],
                let systemMilliwatts = (telemetry["SystemPowerIn"] as? NSNumber)?.doubleValue,
                systemMilliwatts > 100 {
-                return (systemMilliwatts / 1000.0, charging, adapterWatts, percent, rawPercent, chargeRate)
+                return (systemMilliwatts / 1000.0, charging, adapterWatts, external, percent, rawPercent, chargeRate)
             }
             // PDTR ≈ 0 while plugged in: the adapter isn't delivering (PD
             // handshake in progress, or macOS paused the charger) — the
@@ -816,9 +900,9 @@ final class HardwareMonitor {
         // Amperage × Voltage goes ~10s stale.
         if let sysTotal = SMCController.read(Self.systemPowerKey),
            sysTotal > 0.5, sysTotal < 1000 {
-            return (sysTotal, charging, adapterWatts, percent, rawPercent, chargeRate)
+            return (sysTotal, charging, adapterWatts, external, percent, rawPercent, chargeRate)
         }
-        return (batteryWatts, charging, adapterWatts, percent, rawPercent, chargeRate)
+        return (batteryWatts, charging, adapterWatts, external, percent, rawPercent, chargeRate)
     }
 
     /// The gas gauge publishes RemainingCapacity in batches, so polling it

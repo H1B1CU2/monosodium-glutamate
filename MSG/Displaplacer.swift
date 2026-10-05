@@ -409,6 +409,29 @@ final class DisplaplacerEngine {
         configureEnabled(Array(ids), true)
     }
 
+    // MARK: - Hot-plug resync
+
+    private static var lastResync: [CGDirectDisplayID: CFTimeInterval] = [:]
+
+    /// An external display just plugged in (not one MSG itself reconnected):
+    /// once it has settled, disconnect and reconnect it — what the user
+    /// otherwise did by hand for a monitor that stays dark on first plug.
+    static func resyncAfterPlug(_ id: CGDirectDisplayID) {
+        guard AppSettings.shared.displayResyncOnPlug, CGDisplayIsBuiltin(id) == 0 else { return }
+        let now = CACurrentMediaTime()
+        // Once per plug: the reconnect below is itself an "add".
+        if let last = lastResync[id], now - last < 20 { return }
+        lastResync[id] = now
+        DisplayLog.write("resync after plug [\(id)] scheduled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard CGDisplayIsOnline(id) != 0, CGDisplayIsActive(id) != 0 else { return }
+            configureEnabled([id], false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                configureEnabled([id], true)
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private static var cachedNames: [String: String] = [:]

@@ -11,7 +11,15 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>MSG analyzes the system audio output so the now-playing visualizer bars react to the actual sound.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>MSG needs to check Music.app playback state to show now-playing track in the menu bar.</string>
+	<string>MSG controls Music playback and the Amphetamine keep-awake session from Edge Keys.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>MSG shows your upcoming events in the menu bar and notch calendar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>MSG shows your upcoming events in the menu bar and notch calendar.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>MSG shows your reminders in the menu bar and notch calendar, and lets you mark reminders as complete.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>MSG shows your reminders in the menu bar and notch calendar, and lets you mark reminders as complete.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>macOS only shares Wi-Fi network names with apps that have Location access. MSG uses it to list networks in its Wi-Fi menu.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

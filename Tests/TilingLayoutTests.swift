@@ -11,7 +11,74 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
 @main
 struct TilingLayoutTests {
     static func main() {
+        expect(TilingLayout.keepsPendingTabSelection(target: 2, previousFocus: 1,
+                                                     observedFocus: 1, age: 0.2),
+               "an outgoing focus snapshot must not undo an explicit tab switch")
+        expect(!TilingLayout.keepsPendingTabSelection(target: 2, previousFocus: 1,
+                                                      observedFocus: 2, age: 0.2),
+               "the pending selection settles when the new tab gains focus")
+        expect(!TilingLayout.keepsPendingTabSelection(target: 2, previousFocus: 1,
+                                                      observedFocus: 3, age: 0.2),
+               "a different user focus must supersede the pending selection")
+        expect(!TilingLayout.keepsPendingTabSelection(target: 2, previousFocus: 1,
+                                                      observedFocus: 1, age: 1.5),
+               "a failed activation must not pin the selected tab forever")
         let bounds = CGRect(x: 4, y: 4, width: 992, height: 792)
+        let leftTabs = TilingLayout.columnPillSides(windowIDs: [1, 2, 3],
+                                                    mainTabIDs: [1, 2], masterID: 1, enabled: true)
+        expect(leftTabs.left && !leftTabs.right,
+               "a left tab stack must reserve only the left screen-edge rail")
+        let rightTabs = TilingLayout.columnPillSides(windowIDs: [1, 2, 3],
+                                                     mainTabIDs: [1], masterID: 1, enabled: true)
+        expect(!rightTabs.left && rightTabs.right,
+               "a right tab stack must reserve only the right screen-edge rail")
+        let bothTabs = TilingLayout.columnPillSides(windowIDs: [1, 2, 3, 4],
+                                                    mainTabIDs: [1, 2], masterID: 1, enabled: true)
+        let edgeAtZero = TilingLayout.columnPillGeometry(in: bounds, gap: 0,
+                                                          left: bothTabs.left, right: bothTabs.right,
+                                                          edgeAttached: true)
+        let insetAtZero = TilingLayout.columnPillGeometry(in: bounds, gap: 0,
+                                                           left: bothTabs.left, right: bothTabs.right,
+                                                           edgeAttached: false)
+        expect(edgeAtZero.leftRail?.width == 9 && insetAtZero.leftRail?.width == 11,
+               "rail width must adapt to the pill alignment instead of staying fixed")
+        expect(edgeAtZero.work.height == bounds.height && insetAtZero.work.height == bounds.height,
+               "side rails must not consume vertical window space")
+        let edgeGlyphInner = edgeAtZero.leftRail!.minX + TilingLayout.columnPillEdgeOffset + TilingLayout.columnPillThickness
+        let insetGlyphInner = insetAtZero.leftRail!.midX + TilingLayout.columnPillThickness / 2
+        expect(edgeAtZero.work.minX - edgeGlyphInner == 4.5 &&
+               insetAtZero.work.minX - insetGlyphInner == 4,
+               "both modes should place the window about four points from the painted pill")
+        let disabledTabs = TilingLayout.columnPillSides(windowIDs: [1, 2, 3, 4],
+                                                        mainTabIDs: [1, 2], masterID: 1, enabled: false)
+        expect(!disabledTabs.left && !disabledTabs.right,
+               "turning column pills off must return both side rails to windows")
+        let edgeRails = TilingLayout.columnPillGeometry(in: bounds, gap: 4,
+                                                         left: true, right: true,
+                                                         edgeAttached: true)
+        let insetRails = TilingLayout.columnPillGeometry(in: bounds, gap: 4,
+                                                          left: true, right: true,
+                                                          edgeAttached: false)
+        expect(edgeRails.leftRail?.minX == bounds.minX &&
+               edgeRails.rightRail?.maxX == bounds.maxX,
+               "Screen Edge mode must attach both rails to the usable display edges")
+        expect(insetRails.leftRail?.minX == bounds.minX + 4 &&
+               insetRails.rightRail?.maxX == bounds.maxX - 4,
+               "Inset mode must preserve the original outer tiling gap")
+        expect(edgeRails.work.minX < insetRails.work.minX &&
+               edgeRails.work.minX >= edgeRails.leftRail!.maxX &&
+               edgeRails.work.maxX <= edgeRails.rightRail!.minX,
+               "either mode must reserve rail space without covering a window")
+        let largeGap = TilingLayout.columnPillGeometry(in: bounds, gap: 18,
+                                                        left: true, right: false,
+                                                        edgeAttached: true)
+        expect(largeGap.work.minX == bounds.minX + 18,
+               "a larger user-configured outer padding remains a minimum")
+        expect(TilingLayout.orderedColumnTabs([1, 2, 3], barOrder: [3, 1, 2]) == [3, 1, 2],
+               "pill tab order must match the swipe switcher's bar order")
+        expect(TilingLayout.verticalPillIndex(tabIndex: 0, count: 3) == 3 &&
+               TilingLayout.verticalPillIndex(tabIndex: 1, count: 3) == 2,
+               "advancing a tab must move the pill upward with the window transition")
         expect(TilingLayout.containsIncludingEdges(CGPoint(x: bounds.midX, y: bounds.maxY), in: bounds),
                "a pointer stopped exactly at the screen top edge must remain inside the reveal zone")
         expect(!TilingLayout.containsIncludingEdges(CGPoint(x: bounds.midX, y: bounds.maxY + 0.01), in: bounds),
@@ -23,6 +90,36 @@ struct TilingLayoutTests {
                                                                  progress: 0.5)
         expect(dockMidFrame.maxX == 1449,
                "frame animation must keep the Dock-adjacent edge pixel-stable")
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let fullWork = CGRect(x: 0, y: 0, width: 1512, height: 949)
+        let rightDock = CGRect(x: 1450, y: 120, width: 62, height: 740)
+        let reserved = TilingLayout.excludingFixedDock(fullWork, screen: screen,
+                                                        dock: rightDock, orientation: "right")
+        expect(reserved.maxX == rightDock.minX,
+               "fixed right Dock must constrain tiles even if visibleFrame does not")
+        let axDock = CGRect(x: 1445, y: 124, width: 57, height: 701)
+        expect(TilingLayout.excludingFixedDock(fullWork, screen: screen,
+                                                dock: axDock, orientation: "right").maxX == 1445,
+               "the Dock Accessibility frame must reserve its actual inset")
+        let hiddenAXDock = CGRect(x: 1512, y: 124, width: 57, height: 701)
+        expect(TilingLayout.excludingFixedDock(fullWork, screen: screen,
+                                                dock: hiddenAXDock, orientation: "right") == fullWork,
+               "a Dock AX frame fully outside the display must not reserve space")
+        let alreadyVisible = CGRect(x: 0, y: 0, width: 1444, height: 949)
+        expect(TilingLayout.excludingFixedDock(alreadyVisible, screen: screen,
+                                                dock: rightDock, orientation: "right") == alreadyVisible,
+               "Dock reservation must not double-inset an accurate visibleFrame")
+        expect(TilingLayout.excludingFixedDock(fullWork, screen: screen,
+                                                dock: nil, orientation: "right") == fullWork,
+               "an auto-hidden or absent Dock must not reserve space")
+        let leftDock = CGRect(x: 0, y: 120, width: 60, height: 740)
+        expect(TilingLayout.excludingFixedDock(fullWork, screen: screen,
+                                                dock: leftDock, orientation: "left").minX == 60,
+               "fixed left Dock must constrain tiles")
+        let bottomDock = CGRect(x: 200, y: 0, width: 1000, height: 70)
+        expect(TilingLayout.excludingFixedDock(screen, screen: screen,
+                                                dock: bottomDock, orientation: "bottom").minY == 70,
+               "fixed bottom Dock must constrain tiles")
         let springStart = CGRect(x: 100, y: 50, width: 500, height: 700)
         let springTarget = CGRect(x: 20, y: 50, width: 580, height: 700)
         let springAtZero = TilingLayout.springFrame(from: springStart, to: springTarget, elapsed: 0)

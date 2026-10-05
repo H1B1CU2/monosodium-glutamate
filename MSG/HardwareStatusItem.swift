@@ -31,7 +31,10 @@ final class HardwareStatusItem {
 
         barView.onAnimationFrame = { [weak self] in
             guard let self else { return }
-            self.setImageIfChanged(self.barView.renderedImage())
+            let image = self.barView.renderedImage()
+            if abs(self.item.length - image.size.width) > 0.5 { self.item.length = image.size.width }
+            self.setImageIfChanged(image)
+            if EdgeKeyStrip.statsInTouchID { EdgeKeyStrip.shared.showStats(self.moduleImages()) }
         }
 
         HardwareMonitor.shared.addObserver { [weak self] in
@@ -48,12 +51,25 @@ final class HardwareStatusItem {
         if let popover, popover.isShown {
             popover.close()
         } else {
-            if popover == nil {
-                popover = HardwarePopover()
-                popover?.hidesBatteryCard = hidesBatteryCard
-            }
+            makePopoverIfNeeded()
             popover?.show(relativeTo: item.button!)
         }
+    }
+
+    /// From the stats on the Edge Keys strip: the same window, opened above them.
+    func toggleStripPopover(above rect: NSRect) {
+        if let popover, popover.isShown {
+            popover.close()
+        } else {
+            makePopoverIfNeeded()
+            popover?.show(above: rect)
+        }
+    }
+
+    private func makePopoverIfNeeded() {
+        guard popover == nil else { return }
+        popover = HardwarePopover()
+        popover?.hidesBatteryCard = hidesBatteryCard
     }
 
     func remove() {
@@ -61,7 +77,73 @@ final class HardwareStatusItem {
         NSStatusBar.system.removeStatusItem(item)
     }
 
+    // MARK: Edge Keys
+
+    /// One view per module, drawn exactly as the bar draws it.
+    private var moduleViews: [String: HardwareBarView] = [:]
+
+    /// Each shown module on its own, trimmed to its ink — so the strip can
+    /// space them evenly itself.
+    func moduleImages() -> [NSImage] {
+        let bar = barView
+        let order = bar.moduleOrder + AppSettings.hardwareModuleIDs.filter { !bar.moduleOrder.contains($0) }
+        let shown: [String: Bool] = [
+            "cpu": bar.showCPU, "gpu": bar.showGPU, "memory": bar.showMemory, "temp": bar.showTemp,
+            "fps": bar.showFPS, "fan": bar.showFan, "power": bar.showPower, "battery": bar.showBattery,
+        ]
+        return order.compactMap { id -> NSImage? in
+            guard shown[id] == true else { return nil }
+            let view = moduleViews[id] ?? HardwareBarView(frame: NSRect(x: 0, y: 0, width: 40, height: 22))
+            moduleViews[id] = view
+            view.showCPU = id == "cpu"; view.showGPU = id == "gpu"; view.showMemory = id == "memory"
+            view.showTemp = id == "temp"; view.showFPS = id == "fps"; view.showFan = id == "fan"
+            view.showPower = id == "power"; view.showBattery = id == "battery"
+            view.moduleOrder = [id]
+            view.cpuRaw = bar.cpuRaw; view.gpuRaw = bar.gpuRaw; view.memoryRaw = bar.memoryRaw
+            view.tempRaw = bar.tempRaw; view.fanRaw = bar.fanRaw; view.powerRaw = bar.powerRaw
+            view.batteryStyle = bar.batteryStyle; view.batteryIconScale = bar.batteryIconScale
+            view.barStyle = bar.barStyle; view.labelPosition = bar.labelPosition
+            view.colorScale = bar.colorScale; view.menuBarIsDark = true
+            view.animatesPowerGlyph = false
+            view.animatesBatteryRing = false
+            view.usesBatteryPowerReadout = id == "battery"
+            view.stats = bar.stats
+            if id == "battery" { view.copyPowerGlyphAnimation(from: bar) }
+            return Self.trimmed(view.renderedImage())
+        }
+    }
+
+    /// The image cut down to the columns that have any ink.
+    private static func trimmed(_ image: NSImage) -> NSImage {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
+        let w = cg.width, h = cg.height
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var minX = w, maxX = -1
+        for x in 0..<w {
+            for y in 0..<h where pixels[(y * w + x) * 4 + 3] > 8 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                break
+            }
+        }
+        guard maxX >= minX, let cut = cg.cropping(to: CGRect(x: minX, y: 0, width: maxX - minX + 1, height: h))
+        else { return image }
+        let scale = CGFloat(w) / max(1, image.size.width)
+        return NSImage(cgImage: cut, size: CGSize(width: CGFloat(cut.width) / scale, height: image.size.height))
+    }
+
+    /// Off the menu bar while the stats sit on the Edge Keys strip.
+    func setShownInMenuBar(_ shown: Bool) {
+        if item.isVisible != shown { item.isVisible = shown }
+    }
+
     func refreshImage() {
+        defer {
+            if EdgeKeyStrip.statsInTouchID { EdgeKeyStrip.shared.showStats(moduleImages()) }
+        }
         let size = barView.intrinsicContentSize
         barView.frame.size = size
         if abs(item.length - size.width) > 0.5 { item.length = size.width }
@@ -98,9 +180,18 @@ final class HardwareBarView: NSView {
     var stats = HardwareStats() {
         didSet {
             needsDisplay = true
+            retargetPowerGlyph()
+            retargetBatteryRing()
             retargetAnimation()
         }
     }
+
+    /// Offscreen module snapshots should use the final icon immediately.
+    var animatesPowerGlyph = true
+    var animatesBatteryRing = true
+
+    /// The right-side hardware widget keeps watts readable in both power states.
+    var usesBatteryPowerReadout = false
 
     /// Fired on each animation tick so image-based hosts can re-render; live
     /// hosts (the status items, the settings preview) redraw via needsDisplay.
@@ -198,6 +289,25 @@ final class HardwareBarView: NSView {
     static let valueFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
     static let valueUnitFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .bold)
     static let valueLabelFont = NSFont.systemFont(ofSize: 6, weight: .heavy)
+    private static let circularStrokeWidth: CGFloat = 2.5
+    private static let batteryPowerFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+    private static let batteryPowerUnitFont = NSFont.systemFont(ofSize: 8, weight: .semibold)
+    private static let batteryPowerGlyphSize: CGFloat = 8.5
+    private static let batteryPowerGlyphGap: CGFloat = 3.5
+
+    private var batteryPowerReadoutWidth: CGFloat {
+        let watts = batteryPowerText
+        let numberWidth = max(("100" as NSString).size(withAttributes: [.font: Self.batteryPowerFont]).width,
+                              (watts as NSString).size(withAttributes: [.font: Self.batteryPowerFont]).width)
+        // Symmetric side room keeps the readout centred while the icon fades
+        // beside it. Strip snapshots trim this room when no icon is visible.
+        return 2 * (Self.batteryPowerGlyphSize + Self.batteryPowerGlyphGap) + numberWidth + 1 + ("W" as NSString).size(withAttributes: [.font: Self.batteryPowerUnitFont]).width + 6
+    }
+
+    private var batteryPowerText: String {
+        guard let watts = stats.powerWatts, watts.isFinite, watts >= 0 else { return "—" }
+        return String(format: "%.0f", watts)
+    }
 
     /// Bar height depends on label position: shorter when text is below.
     private var barH: CGFloat {
@@ -211,7 +321,11 @@ final class HardwareBarView: NSView {
     override init(frame: NSRect) { super.init(frame: frame) }
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-    deinit { animTimer?.invalidate() }
+    deinit {
+        animTimer?.invalidate()
+        powerGlyphTimer?.invalidate()
+        batteryRingTimer?.invalidate()
+    }
 
     // -----------------------------------------------------------------------
     // MARK: - Value animation
@@ -223,6 +337,107 @@ final class HardwareBarView: NSView {
     private var animStartTime: CFTimeInterval = 0
     private var animTimer: Timer?
     private let animDuration: CFTimeInterval = 0.35
+
+    private enum PowerGlyph: String {
+        case none, bolt, plug
+    }
+    private var hasPowerGlyphState = false
+    private var powerGlyphCurrent: PowerGlyph = .none
+    private var powerGlyphPrevious: PowerGlyph = .none
+    private var powerGlyphProgress: CGFloat = 1
+    private var powerGlyphStartTime: CFTimeInterval = 0
+    private var powerGlyphTimer: Timer?
+
+    /// Strip snapshots follow the live view's animation instead of snapping
+    /// to the newest power state on every freshly rendered image.
+    func copyPowerGlyphAnimation(from source: HardwareBarView) {
+        powerGlyphCurrent = source.powerGlyphCurrent
+        powerGlyphPrevious = source.powerGlyphPrevious
+        powerGlyphProgress = source.powerGlyphProgress
+    }
+    private var hasBatteryRingState = false
+    private var batteryRingBlend: CGFloat = 0
+    private var batteryRingTarget: CGFloat = 0
+    private var batteryRingTimer: Timer?
+
+    private func retargetBatteryRing() {
+        let target: CGFloat = stats.isExternalPowerConnected && stats.batteryPercent != nil ? 1 : 0
+        guard hasBatteryRingState else {
+            hasBatteryRingState = true
+            batteryRingBlend = target
+            batteryRingTarget = target
+            return
+        }
+        if !animatesBatteryRing {
+            batteryRingTimer?.invalidate()
+            batteryRingTimer = nil
+            batteryRingBlend = target
+            batteryRingTarget = target
+            return
+        }
+        guard target != batteryRingTarget else { return }
+        batteryRingTarget = target
+        batteryRingTimer?.invalidate()
+        let start = batteryRingBlend
+        let startedAt = CACurrentMediaTime()
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let progress = max(0, min(1, CGFloat((CACurrentMediaTime() - startedAt) / 0.32)))
+            self.batteryRingBlend = start + (target - start) * Easing.outQuart(progress)
+            if progress >= 1 {
+                timer.invalidate()
+                self.batteryRingTimer = nil
+            }
+            self.needsDisplay = true
+            self.onAnimationFrame?()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        batteryRingTimer = timer
+    }
+
+    private func retargetPowerGlyph() {
+        let target: PowerGlyph
+        if stats.isCharging == true {
+            target = .bolt
+        } else if stats.isExternalPowerConnected {
+            target = .plug
+        } else {
+            target = .none
+        }
+        guard hasPowerGlyphState else {
+            hasPowerGlyphState = true
+            powerGlyphCurrent = target
+            return
+        }
+        guard target != powerGlyphCurrent else { return }
+        let outgoing = powerGlyphProgress < 0.5 ? powerGlyphPrevious : powerGlyphCurrent
+        powerGlyphTimer?.invalidate()
+        powerGlyphPrevious = outgoing
+        powerGlyphCurrent = target
+        guard animatesPowerGlyph else {
+            powerGlyphPrevious = .none
+            powerGlyphProgress = 1
+            powerGlyphTimer = nil
+            return
+        }
+        powerGlyphProgress = 0
+        powerGlyphStartTime = CACurrentMediaTime()
+        let timer = Timer(timeInterval: DisplayRate.interval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - self.powerGlyphStartTime
+            let progress = max(0, min(1, CGFloat(elapsed / 0.22)))
+            self.powerGlyphProgress = Easing.outQuart(progress)
+            if progress >= 1 {
+                timer.invalidate()
+                self.powerGlyphTimer = nil
+                self.powerGlyphPrevious = .none
+            }
+            self.needsDisplay = true
+            self.onAnimationFrame?()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        powerGlyphTimer = timer
+    }
 
     /// Ease each bar's displayed ratio toward the new stats-derived target.
     private func retargetAnimation() {
@@ -302,20 +517,148 @@ final class HardwareBarView: NSView {
             if !mod.isValue, let shown = displayedRatios[mod.label] { mod.ratio = shown }
             let x = leftPadding + CGFloat(i) * moduleW
             let rect = NSRect(x: x, y: 0, width: moduleW, height: bounds.height)
-            if mod.isBatteryIcon {
-                drawBatteryIcon(module: mod, in: rect)
-            } else if mod.isValue {
-                drawValue(module: mod, in: rect)
-            } else if barStyle == "circular" {
-                drawCircular(module: mod, in: rect)
-            } else if barStyle == "horizontal" {
-                drawHorizontalBar(module: mod, in: rect)
-            } else if barStyle == "dot" {
-                drawDot(module: mod, in: rect)
+            if mod.isBatteryModule && usesBatteryPowerReadout {
+                drawBatteryPowerReadout(module: mod, in: rect)
+            } else if mod.isBatteryModule && batteryRingBlend > 0 {
+                if batteryRingBlend < 1 {
+                    drawWithOpacity(1 - batteryRingBlend) { drawBaseModule(mod, in: rect) }
+                }
+                drawWithOpacity(batteryRingBlend) { drawBatteryPowerRing(in: rect) }
             } else {
-                drawVertical(module: mod, in: rect)
+                drawBaseModule(mod, in: rect)
             }
         }
+    }
+
+    private func drawWithOpacity(_ opacity: CGFloat, _ body: () -> Void) {
+        guard let context = NSGraphicsContext.current?.cgContext else { body(); return }
+        context.saveGState()
+        context.setAlpha(opacity)
+        body()
+        context.restoreGState()
+    }
+
+    private func drawBaseModule(_ module: Module, in rect: NSRect) {
+        if module.isBatteryIcon {
+            drawBatteryIcon(module: module, in: rect)
+        } else if module.isValue {
+            drawValue(module: module, in: rect)
+        } else if barStyle == "circular" {
+            drawCircular(module: module, in: rect)
+        } else if barStyle == "horizontal" {
+            drawHorizontalBar(module: module, in: rect)
+        } else if barStyle == "dot" {
+            drawDot(module: module, in: rect)
+        } else {
+            drawVertical(module: module, in: rect)
+        }
+    }
+
+    /// Live input/draw watts above a charge bar; discharge has no glyph.
+    private func drawBatteryPowerReadout(module: Module, in rect: NSRect) {
+        let number = batteryPowerText as NSString
+        let unit = "W" as NSString
+        let numberAttributes: [NSAttributedString.Key: Any] = [.font: Self.batteryPowerFont, .foregroundColor: ink]
+        let unitAttributes: [NSAttributedString.Key: Any] = [.font: Self.batteryPowerUnitFont, .foregroundColor: ink]
+        let numberWidth = number.size(withAttributes: numberAttributes).width
+        let unitWidth = unit.size(withAttributes: unitAttributes).width
+        let reservedNumberWidth = max(numberWidth, ("100" as NSString).size(withAttributes: numberAttributes).width)
+        let barWidth = reservedNumberWidth + 1 + unitWidth
+        let numberX = rect.midX - (numberWidth + 1 + unitWidth) / 2
+        let iconOffset = Self.batteryPowerGlyphSize + Self.batteryPowerGlyphGap
+        let iconX = rect.midX - barWidth / 2 - iconOffset
+        let baseline = rect.midY - 1
+        func drawGlyph(_ glyph: PowerGlyph, opacity: CGFloat) {
+            guard glyph != .none, opacity > 0 else { return }
+            let symbolName = glyph == .bolt ? "bolt.fill" : "powerplug.portrait.fill"
+            let fallback = glyph == .bolt ? "bolt.fill" : "powerplug.fill"
+            guard let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+                ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil) else { return }
+            let configuration = NSImage.SymbolConfiguration(pointSize: Self.batteryPowerGlyphSize, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [ink]))
+            let tinted = icon.withSymbolConfiguration(configuration) ?? icon
+            let natural = tinted.size
+            let scale = Self.batteryPowerGlyphSize * (0.75 + 0.25 * opacity) / max(1, max(natural.width, natural.height))
+            let size = NSSize(width: natural.width * scale, height: natural.height * scale)
+            tinted.draw(in: NSRect(x: iconX + (Self.batteryPowerGlyphSize - size.width) / 2,
+                                  y: baseline + Self.batteryPowerFont.capHeight / 2 - size.height / 2,
+                                  width: size.width, height: size.height),
+                        from: .zero, operation: .sourceOver, fraction: opacity)
+        }
+        if powerGlyphProgress < 1 {
+            drawGlyph(powerGlyphPrevious, opacity: 1 - powerGlyphProgress)
+            drawGlyph(powerGlyphCurrent, opacity: powerGlyphProgress)
+        } else {
+            drawGlyph(powerGlyphCurrent, opacity: 1)
+        }
+        number.draw(at: NSPoint(x: numberX, y: baseline + Self.batteryPowerFont.descender), withAttributes: numberAttributes)
+        unit.draw(at: NSPoint(x: numberX + numberWidth + 1, y: baseline + Self.batteryPowerUnitFont.descender), withAttributes: unitAttributes)
+
+        let track = NSRect(x: rect.midX - barWidth / 2, y: 2.5, width: barWidth, height: Self.circularStrokeWidth)
+        let radius = Self.circularStrokeWidth / 2
+        ink.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+        let ratio = max(0, min(1, module.ratio))
+        if ratio > 0 {
+            let fill = NSRect(x: track.minX, y: track.minY, width: track.width * ratio, height: track.height)
+            ink.withAlphaComponent(0.9).setFill()
+            NSBezierPath(roundedRect: fill, xRadius: min(radius, fill.width / 2), yRadius: radius).fill()
+        }
+    }
+
+    /// The connected-power design: battery level around the outside and live
+    /// adapter input watts in the centre. Dots stand in until a fresh sample.
+    private func drawBatteryPowerRing(in rect: NSRect) {
+        // Same 20 pt, 2 pt, 235° → -55° open ring as EdgeKeyStrip's music
+        // visualizer. Keep its flat ends and 70° bottom gap unchanged.
+        let side = min(20, rect.height)
+        let lineWidth: CGFloat = 2
+        let radius = side / 2 - lineWidth / 2
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let startAngle: CGFloat = 235 * .pi / 180
+        let endAngle: CGFloat = -55 * .pi / 180
+        let track = CGMutablePath()
+        track.addArc(center: center, radius: radius,
+                     startAngle: startAngle, endAngle: endAngle, clockwise: true)
+        if let context = NSGraphicsContext.current?.cgContext {
+            context.addPath(track)
+            context.setLineWidth(lineWidth)
+            context.setLineCap(.butt)
+            context.setStrokeColor(ink.withAlphaComponent(0.2).cgColor)
+            context.strokePath()
+        }
+
+        let ratio = CGFloat(max(0, min(100, stats.batteryPercent ?? 0))) / 100
+        if ratio > 0.01, let context = NSGraphicsContext.current?.cgContext {
+            let progress = CGMutablePath()
+            progress.addArc(center: center, radius: radius,
+                            startAngle: startAngle,
+                            endAngle: startAngle + (endAngle - startAngle) * ratio,
+                            clockwise: true)
+            context.addPath(progress)
+            context.setLineWidth(lineWidth)
+            context.setLineCap(.butt)
+            context.setStrokeColor(ink.withAlphaComponent(0.9).cgColor)
+            context.strokePath()
+        }
+
+        let watts = stats.powerWatts.flatMap { $0.isFinite && $0 >= 0 ? Int($0.rounded()) : nil }
+        let label = (watts.map { "\($0)W" } ?? "•••") as NSString
+        let availableWidth = max(8, (radius - lineWidth / 2) * 2 - 3)
+        var pointSize: CGFloat = watts.map { $0 >= 100 ? 4.8 : 5.6 } ?? 5.5
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: pointSize, weight: .bold),
+            .foregroundColor: ink,
+        ]
+        let measuredWidth = label.size(withAttributes: attributes).width
+        if measuredWidth > availableWidth {
+            pointSize *= availableWidth / measuredWidth
+            attributes[.font] = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .bold)
+        }
+        let labelSize = label.size(withAttributes: attributes)
+        label.draw(at: NSPoint(x: center.x - labelSize.width / 2,
+                               y: center.y - labelSize.height / 2 - 0.5),
+                   withAttributes: attributes)
     }
 
     // -----------------------------------------------------------------------
@@ -356,8 +699,8 @@ final class HardwareBarView: NSView {
     // -----------------------------------------------------------------------
 
     private func drawHorizontalBar(module: Module, in rect: NSRect) {
-        let isHorizontal = labelPosition == "horizontal"
-        let labelW = estimatedLabelWidth(module.label)
+        let isHorizontal = labelPosition == "horizontal" || module.label.isEmpty
+        let labelW = module.label.isEmpty ? 0 : estimatedLabelWidth(module.label)
         let trackH: CGFloat = 5
         let trackW: CGFloat
         let trackX: CGFloat
@@ -366,7 +709,7 @@ final class HardwareBarView: NSView {
         if isHorizontal {
             trackW = min(28, max(20, rect.width - 4))
             trackX = rect.midX - trackW / 2
-            trackY = 13
+            trackY = module.label.isEmpty ? rect.midY - trackH / 2 : 13
         } else {
             trackW = max(18, rect.width - labelW - gap - 4)
             trackX = rect.minX + labelW + gap
@@ -386,10 +729,12 @@ final class HardwareBarView: NSView {
             fillPath.fill()
         }
 
-        if isHorizontal {
-            drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
-        } else {
-            drawHorizontalLabelCentered(module.label, x: rect.minX + labelW / 2, centerY: rect.midY, in: rect)
+        if !module.label.isEmpty {
+            if isHorizontal {
+                drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
+            } else {
+                drawHorizontalLabelCentered(module.label, x: rect.minX + labelW / 2, centerY: rect.midY, in: rect)
+            }
         }
     }
 
@@ -398,14 +743,14 @@ final class HardwareBarView: NSView {
     // -----------------------------------------------------------------------
 
     private func drawDot(module: Module, in rect: NSRect) {
-        let isHorizontal = labelPosition == "horizontal"
+        let isHorizontal = labelPosition == "horizontal" || module.label.isEmpty
         let dotD: CGFloat = isHorizontal ? 7 : 6
         let dotX: CGFloat
         let dotY: CGFloat
 
         if isHorizontal {
             dotX = rect.midX - dotD / 2
-            dotY = 12
+            dotY = module.label.isEmpty ? rect.midY - dotD / 2 : 12
         } else {
             let labelW = estimatedCharWidth()
             let contentW = labelW + gap + dotD
@@ -419,11 +764,13 @@ final class HardwareBarView: NSView {
         moduleColor(module, preferredScale: "green").setFill()
         dotPath.fill()
 
-        if isHorizontal {
-            drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
-        } else {
-            let labelX = dotX - gap - estimatedCharWidth()
-            drawVerticalLabel(module.label, x: labelX, in: rect)
+        if !module.label.isEmpty {
+            if isHorizontal {
+                drawHorizontalLabel(module.label, x: rect.midX, y: 1, in: rect)
+            } else {
+                let labelX = dotX - gap - estimatedCharWidth()
+                drawVerticalLabel(module.label, x: labelX, in: rect)
+            }
         }
     }
 
@@ -435,13 +782,13 @@ final class HardwareBarView: NSView {
         let isHorizontal = labelPosition == "horizontal"
         // Smaller ring when the label sits below, so it fits between the
         // label and the top edge without clipping.
-        let r: CGFloat = isHorizontal ? 5.25 : circularRadius
-        let centerY: CGFloat = isHorizontal ? rect.midY + 4 : rect.midY
-        let lineW: CGFloat = 2.5
+        let r: CGFloat = (isHorizontal && !module.label.isEmpty) ? 5.25 : circularRadius
+        let centerY: CGFloat = (isHorizontal && !module.label.isEmpty) ? rect.midY + 4 : rect.midY
+        let lineW = Self.circularStrokeWidth
         let strokeInset = lineW / 2
         let labelW = estimatedCharWidth()
         let ringX: CGFloat
-        if isHorizontal {
+        if isHorizontal || module.label.isEmpty {
             ringX = rect.midX
         } else {
             let contentW = labelW + gap + (r + strokeInset) * 2
@@ -471,11 +818,13 @@ final class HardwareBarView: NSView {
         }
 
         // Label on the left side of the ring
-        if isHorizontal {
-            drawHorizontalLabel(module.label, x: center.x, y: 1, in: rect, fontSize: circularHorizontalLabelFontSize)
-        } else {
-            let labelX = center.x - r - strokeInset - gap - labelW
-            drawVerticalLabel(module.label, x: labelX, in: rect)
+        if !module.label.isEmpty {
+            if isHorizontal {
+                drawHorizontalLabel(module.label, x: center.x, y: 1, in: rect, fontSize: circularHorizontalLabelFontSize)
+            } else {
+                let labelX = center.x - r - strokeInset - gap - labelW
+                drawVerticalLabel(module.label, x: labelX, in: rect)
+            }
         }
     }
 
@@ -606,6 +955,7 @@ final class HardwareBarView: NSView {
     // -----------------------------------------------------------------------
 
     private func drawVerticalLabel(_ text: String, x: CGFloat, in rect: NSRect) {
+        guard !text.isEmpty else { return }
         let chars = Array(text)
         let charH = min(fontSize + 1, (rect.height - 2) / CGFloat(max(1, chars.count)))
         let totalH = charH * CGFloat(chars.count)
@@ -624,6 +974,7 @@ final class HardwareBarView: NSView {
     }
 
     private func drawHorizontalLabel(_ text: String, x: CGFloat, y: CGFloat, in rect: NSRect, fontSize: CGFloat? = nil) {
+        guard !text.isEmpty else { return }
         let s = text as NSString
         let labelFontSize = fontSize ?? horizontalLabelFontSize
         let attrs: [NSAttributedString.Key: Any] = [
@@ -637,6 +988,7 @@ final class HardwareBarView: NSView {
     }
 
     private func drawHorizontalLabelCentered(_ text: String, x: CGFloat, centerY: CGFloat, in rect: NSRect) {
+        guard !text.isEmpty else { return }
         let s = text as NSString
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: horizontalLabelFontSize, weight: .bold),
@@ -678,61 +1030,92 @@ final class HardwareBarView: NSView {
         let unitGap: CGFloat = hasUnit ? 1.5 : 0
         let numberUnitW = valSize.width + unitGap + unitSize.width
 
-        if module.showChargeIcon {
-            let iconSize: CGFloat = 8
-            let iconGap: CGFloat = 2
-            let totalWidth = numberUnitW + iconGap + iconSize
+        let numberFont = Self.valueFont
+        let labelFont = Self.valueLabelFont
+        let unitFont = Self.valueUnitFont
+        let numberCap = numberFont.capHeight
+        let unitCap = unitFont.capHeight
+        let unitLift: CGFloat = (module.unit.hasPrefix("°") || module.unit == "%") ? 1.5 : (numberCap - unitCap) / 2
+
+        let fadingOut = module.isPowerValue && animatesPowerGlyph
+            && powerGlyphProgress < 1 && powerGlyphPrevious != .none
+        if module.showChargeIcon || module.showPlugIcon || fadingOut {
+            let iconH: CGFloat = 8.0
+            let iconW: CGFloat = 8.0
+            let iconGap: CGFloat = 2.0
+            let totalWidth = iconW + iconGap + numberUnitW
             let startX = rect.midX - totalWidth / 2
-            let valY = rect.midY - valSize.height / 2
-            valStr.draw(at: NSPoint(x: startX, y: valY), withAttributes: valAttrs)
-            if hasUnit {
-                let baseline = valY - Self.valueFont.descender
-                unitStr.draw(at: NSPoint(x: startX + valSize.width + unitGap,
-                                         y: baseline + Self.valueUnitFont.descender),
-                             withAttributes: unitAttrs)
+            let baseline = rect.midY - numberCap / 2 - 1.0
+
+            func drawGlyph(_ glyph: PowerGlyph, opacity: CGFloat) {
+                guard glyph != .none, opacity > 0 else { return }
+                let symbolName = glyph == .bolt ? "bolt.fill" : "powerplug.portrait.fill"
+                let fallbackName = glyph == .bolt ? "bolt.fill" : "powerplug.fill"
+                guard let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+                    ?? NSImage(systemSymbolName: fallbackName, accessibilityDescription: nil) else { return }
+                let config = NSImage.SymbolConfiguration(pointSize: iconH, weight: .bold)
+                    .applying(NSImage.SymbolConfiguration(paletteColors: [ink]))
+                let tinted = icon.withSymbolConfiguration(config) ?? icon
+                let natural = tinted.size
+                let drawW = natural.height > 0 ? min(iconW, iconH * natural.width / natural.height) : iconW
+                let iconLift: CGFloat = 1.5
+                let iconRect = NSRect(x: startX + (iconW - drawW) / 2,
+                                      y: (rect.midY - 1.0 + iconLift) - iconH / 2,
+                                      width: drawW, height: iconH)
+                tinted.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: opacity)
             }
 
-            if let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) {
-                let config = NSImage.SymbolConfiguration(pointSize: iconSize, weight: .bold)
-                    .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
-                let tinted = bolt.withSymbolConfiguration(config) ?? bolt
-                let iconRect = NSRect(x: startX + numberUnitW + iconGap,
-                                      y: rect.midY - iconSize / 2,
-                                      width: iconSize, height: iconSize)
-                tinted.draw(in: iconRect)
+            if module.isPowerValue && animatesPowerGlyph && powerGlyphProgress < 1 {
+                drawGlyph(powerGlyphPrevious, opacity: 1 - powerGlyphProgress)
+                drawGlyph(powerGlyphCurrent, opacity: powerGlyphProgress)
+            } else {
+                drawGlyph(module.showChargeIcon ? .bolt : .plug, opacity: 1)
+            }
+
+            let numX = startX + iconW + iconGap
+            valStr.draw(at: NSPoint(x: numX, y: baseline + numberFont.descender), withAttributes: valAttrs)
+            if hasUnit {
+                let unitBaseline = baseline + unitLift
+                unitStr.draw(at: NSPoint(x: numX + valSize.width + unitGap,
+                                         y: unitBaseline + unitFont.descender),
+                             withAttributes: unitAttrs)
             }
             return
         }
 
-        let lblSize = lblStr.size(withAttributes: lblAttrs)
-
-        // Lay the number (+ unit) and label out as one block. Center it on the
-        // cell using the fonts' cap heights (not their padded glyph boxes, which
-        // sink the pair and leave loose leading) and lift it slightly, so the
-        // module reads centered against the neighboring gauges.
-        let numberFont = Self.valueFont
-        let labelFont = Self.valueLabelFont
-        let unitFont = Self.valueUnitFont
-        let gap: CGFloat = 3.5    // spacing from the number's baseline to the label's cap
-        let lift: CGFloat = -1.0  // nudge the whole block (positive = up, negative = down)
-        let numberCap = numberFont.capHeight
-        let labelCap = labelFont.capHeight
-
-        // Baseline that vertically centers [number cap | gap | label cap], + lift.
-        let baseline = rect.midY + lift + (gap + labelCap - numberCap) / 2
-
-        // Center the number + unit together, then hang the label under the pair.
         let startX = rect.midX - numberUnitW / 2
-        valStr.draw(at: NSPoint(x: startX, y: baseline + numberFont.descender), withAttributes: valAttrs)
-        if hasUnit {
-            unitStr.draw(at: NSPoint(x: startX + valSize.width + unitGap,
-                                     y: baseline + unitFont.descender),
-                         withAttributes: unitAttrs)
-        }
 
-        let lblX = rect.midX - lblSize.width / 2
-        let lblY = baseline - gap + labelFont.descender - labelCap
-        lblStr.draw(at: NSPoint(x: lblX, y: lblY), withAttributes: lblAttrs)
+        if module.label.isEmpty {
+            let baseline = rect.midY - numberCap / 2 - 1.0
+            valStr.draw(at: NSPoint(x: startX, y: baseline + numberFont.descender), withAttributes: valAttrs)
+            if hasUnit {
+                let unitBaseline = baseline + unitLift
+                unitStr.draw(at: NSPoint(x: startX + valSize.width + unitGap,
+                                         y: unitBaseline + unitFont.descender),
+                             withAttributes: unitAttrs)
+            }
+        } else {
+            let lblSize = lblStr.size(withAttributes: lblAttrs)
+            let gap: CGFloat = 3.5    // spacing from the number's baseline to the label's cap
+            let lift: CGFloat = -1.0  // nudge the whole block (positive = up, negative = down)
+            let labelCap = labelFont.capHeight
+
+            // Baseline that vertically centers [number cap | gap | label cap], + lift.
+            let baseline = rect.midY + lift + (gap + labelCap - numberCap) / 2
+
+            // Center the number + unit together, then hang the label under the pair.
+            valStr.draw(at: NSPoint(x: startX, y: baseline + numberFont.descender), withAttributes: valAttrs)
+            if hasUnit {
+                let unitBaseline = baseline + unitLift
+                unitStr.draw(at: NSPoint(x: startX + valSize.width + unitGap,
+                                         y: unitBaseline + unitFont.descender),
+                             withAttributes: unitAttrs)
+            }
+
+            let lblX = rect.midX - lblSize.width / 2
+            let lblY = baseline - gap + labelFont.descender - labelCap
+            lblStr.draw(at: NSPoint(x: lblX, y: lblY), withAttributes: lblAttrs)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -770,12 +1153,15 @@ final class HardwareBarView: NSView {
         /// Unit suffix drawn smaller after the number (e.g. "%", "°", "GB").
         var unit: String = ""
         var forceWhite: Bool = false
-        /// Draw a small lightning-bolt icon beside the value instead of the
-        /// text label below it — used for the Power module while charging.
+        /// Draw a small lightning-bolt icon beside the value while charging.
         var showChargeIcon: Bool = false
-        /// Battery icon style only: plug overlay for "connected, not
-        /// charging" (full, or paused by Optimized Battery Charging).
+        /// Show a plug beside the value or over the battery glyph when
+        /// connected to power but not charging.
         var showPlugIcon: Bool = false
+        /// Enables icon crossfading for numeric power/battery modules.
+        var isPowerValue: Bool = false
+        /// Battery module may crossfade into the connected-power ring.
+        var isBatteryModule: Bool = false
         /// Overrides the threshold color entirely — used by the battery
         /// module, whose scale is inverted (low charge is the bad end).
         var customColor: NSColor? = nil
@@ -858,14 +1244,14 @@ final class HardwareBarView: NSView {
             default:     t = stats.cpuTemp ?? stats.gpuTemp ?? 30
             }
             if tempRaw {
-                mods.append(Module(label: "TMP", ratio: 0, isValue: true,
+                mods.append(Module(label: "", ratio: 0, isValue: true,
                                    valueText: "\(Int(t.rounded()))", unit: "°C", forceWhite: true))
             } else {
                 let minT = AppSettings.shared.hardwareStatsTempMin
                 let maxT = AppSettings.shared.hardwareStatsTempMax
                 let range = max(1.0, maxT - minT)
                 let tempRatio = CGFloat(max(0, min(1, (t - minT) / range)))
-                mods.append(Module(label: "TMP", ratio: tempRatio))
+                mods.append(Module(label: "", ratio: tempRatio))
             }
         case "fan":
             guard showFan else { return }
@@ -885,7 +1271,9 @@ final class HardwareBarView: NSView {
                 let valueText = stats.powerWatts.map { "\(Int($0.rounded()))" } ?? "—"
                 mods.append(Module(label: "PWR", ratio: 0, isValue: true,
                                    valueText: valueText, unit: "W", forceWhite: true,
-                                   showChargeIcon: stats.isCharging == true))
+                                   showChargeIcon: stats.isCharging == true,
+                                   showPlugIcon: stats.isCharging == false && stats.isExternalPowerConnected,
+                                   isPowerValue: true))
             } else if let watts = stats.powerWatts {
                 let powerRatio = CGFloat(max(0, min(1, watts / HardwareMonitor.modelMaxChargeWatts)))
                 mods.append(Module(label: "PWR", ratio: powerRatio))
@@ -894,27 +1282,42 @@ final class HardwareBarView: NSView {
             }
         case "battery":
             guard showBattery else { return }
+            if usesBatteryPowerReadout {
+                mods.append(Module(label: "", ratio: CGFloat(stats.batteryPercent ?? 0) / 100,
+                                   forceWhite: true, isBatteryModule: true))
+                return
+            }
+            // While crossfading to/from the connected-power ring, keep the
+            // underlying battery style free of its own bolt/plug. Otherwise
+            // that glyph flashes underneath the new ring on the first frame.
+            let ringVisible = stats.isExternalPowerConnected || batteryRingBlend > 0
             if batteryStyle == "watts" {
                 let valueText = stats.powerWatts.map { "\(Int($0.rounded()))" } ?? "—"
                 mods.append(Module(label: "PWR", ratio: 0, isValue: true,
                                    valueText: valueText, unit: "W", forceWhite: true,
-                                   showChargeIcon: stats.isCharging == true))
+                                   showChargeIcon: !ringVisible && stats.isCharging == true,
+                                   showPlugIcon: !ringVisible && stats.isCharging == false && stats.isExternalPowerConnected,
+                                   isPowerValue: !ringVisible, isBatteryModule: true))
             } else if batteryStyle == "number" {
-                let valueText = stats.batteryPercentText(includeSymbol: false) ?? "—"
-                mods.append(Module(label: "BAT", ratio: 0, isValue: true,
-                                   valueText: valueText, unit: "%", forceWhite: true))
+                let valueText = ringVisible ? stats.batteryPercent.map(String.init) ?? "—"
+                    : stats.batteryPercentText(includeSymbol: false) ?? "—"
+                mods.append(Module(label: "", ratio: 0, isValue: true,
+                                   valueText: valueText, unit: "%", forceWhite: true,
+                                   showChargeIcon: !ringVisible && stats.isCharging == true,
+                                   showPlugIcon: !ringVisible && stats.isCharging == false && stats.isExternalPowerConnected,
+                                   isPowerValue: !ringVisible, isBatteryModule: true))
             } else if batteryStyle == "icon" {
                 let ratio = CGFloat(stats.batteryPercent ?? 0) / 100.0
-                mods.append(Module(label: "BAT", ratio: ratio,
-                                   showChargeIcon: stats.isCharging == true,
-                                   showPlugIcon: stats.isCharging == false && stats.adapterWatts != nil,
-                                   isBatteryIcon: true))
+                mods.append(Module(label: "", ratio: ratio,
+                                   showChargeIcon: !ringVisible && stats.isCharging == true,
+                                   showPlugIcon: !ringVisible && stats.isCharging == false && stats.isExternalPowerConnected,
+                                   isBatteryModule: true, isBatteryIcon: true))
             } else if let pct = stats.batteryPercent {
                 let ratio = CGFloat(pct) / 100.0
-                mods.append(Module(label: "BAT", ratio: ratio,
-                                   customColor: batteryColor(ratio: ratio)))
+                mods.append(Module(label: "", ratio: ratio,
+                                   isBatteryModule: true, customColor: batteryColor(ratio: ratio)))
             } else {
-                mods.append(Module(label: "BAT", ratio: 0, forceWhite: true))
+                mods.append(Module(label: "", ratio: 0, forceWhite: true, isBatteryModule: true))
             }
         case "fps":
             guard showFPS else { return }
@@ -933,6 +1336,10 @@ final class HardwareBarView: NSView {
     override var intrinsicContentSize: NSSize {
         let modules = activeModules()
         let count = max(1, modules.count)
+
+        if usesBatteryPowerReadout, count == 1, modules.first?.isBatteryModule == true {
+            return NSSize(width: batteryPowerReadoutWidth + 4 + leftPadding, height: 22)
+        }
 
         // Solo battery-icon module needs extra width to fit the scaled glyph
         // beyond what the generic per-module formula below would allot.
@@ -972,7 +1379,9 @@ final class HardwareBarView: NSView {
         if !m.unit.isEmpty {
             w += 1.5 + (m.unit as NSString).size(withAttributes: [.font: Self.valueUnitFont]).width
         }
-        if m.showChargeIcon { w += 2 + 8 }   // icon gap + icon
+        let fadingOut = m.isPowerValue && animatesPowerGlyph
+            && powerGlyphProgress < 1 && powerGlyphPrevious != .none
+        if m.showChargeIcon || m.showPlugIcon || fadingOut { w += 2 + 8 }   // icon gap + icon
         return w + 6
     }
 
@@ -998,6 +1407,11 @@ final class HardwareBarView: NSView {
             barStyle, labelPosition, colorScale,
             menuBarIsDark ? "dark" : "light",
             stats.isLowPowerMode ? "lpm" : "-",
+            usesBatteryPowerReadout ? "battery-readout" : "-",
+            stats.isExternalPowerConnected ? "ac" : "dc",
+            stats.isCharging == true ? "charging" : "paused",
+            powerGlyphCurrent.rawValue, powerGlyphPrevious.rawValue, "\(Int((powerGlyphProgress * 64).rounded()))",
+            "ring:\(Int((batteryRingBlend * 64).rounded())):\(stats.batteryPercent ?? -1):\(batteryPowerText)",
         ]
         for m in activeModules() {
             let ratio = m.isValue ? m.ratio : (displayedRatios[m.label] ?? m.ratio)
@@ -1095,6 +1509,11 @@ final class PopoverShellView: NSView {
         didSet { needsLayout = true }
     }
 
+    /// False when opened above the Edge Keys strip: a plain rounded card, no arrow.
+    var showsArrow = true {
+        didSet { needsLayout = true }
+    }
+
     init(cornerRadius: CGFloat, arrowWidth: CGFloat, arrowHeight: CGFloat, blendingMode: NSVisualEffectView.BlendingMode = .behindWindow) {
         self.cornerRadius = cornerRadius
         self.arrowWidth = arrowWidth
@@ -1180,7 +1599,7 @@ final class PopoverShellView: NSView {
         opaqueBacking.frame = bounds
         glassEffect?.frame = bounds
         let path = Self.shellPath(size: bounds.size, radius: cornerRadius,
-                                   arrowWidth: arrowWidth, arrowHeight: arrowHeight,
+                                   arrowWidth: arrowWidth, arrowHeight: showsArrow ? arrowHeight : 0,
                                    arrowCenterX: arrowCenterX)
         // The window frame animation (popover resize) already interpolates
         // bounds smoothly; letting these layers pick up their own implicit
@@ -1814,8 +2233,36 @@ final class HardwarePopover: NSObject {
         menuTrackingObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
+    /// Where it opens above the Edge Keys strip (screen coordinates); nil when
+    /// it hangs from the menu bar.
+    private var stripAnchor: NSRect?
+
+    /// Above the strip's hardware stats: flush with the display's right edge,
+    /// no arrow, growing upward.
+    func show(above rect: NSRect) {
+        sourceButton = nil
+        stripAnchor = rect
+        contentView.shell.showsArrow = false
+        contentView.shell.refreshAppearance()
+        refreshEnergyModes()
+        rebuild()
+        window.setFrame(stripFrame(for: rect), display: true)
+        if let parent = window.parent { parent.removeChildWindow(window) }
+        window.orderFrontRegardless()
+        startTracking()
+    }
+
+    private func stripFrame(for rect: NSRect) -> NSRect {
+        let width = contentView.popWidth, height = contentView.contentHeight
+        let screen = NSScreen.screens.first { $0.frame.intersects(rect) } ?? NSScreen.main
+        let right = screen?.frame.maxX ?? rect.maxX
+        return NSRect(x: right - width, y: rect.maxY + 8, width: width, height: height)
+    }
+
     func show(relativeTo button: NSStatusBarButton) {
         sourceButton = button
+        stripAnchor = nil
+        contentView.shell.showsArrow = true
         contentView.shell.refreshAppearance()
         refreshEnergyModes()
         rebuild()
@@ -1859,7 +2306,11 @@ final class HardwarePopover: NSObject {
             btnWin.addChildWindow(window, ordered: .above)
         }
         window.orderFrontRegardless()
+        startTracking()
+    }
 
+    /// Closing on outside clicks, and the live refresh while it's open.
+    private func startTracking() {
         if closeMonitor == nil {
             closeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
                 guard let self, self.window.isVisible else { return }
@@ -1936,6 +2387,11 @@ final class HardwarePopover: NSObject {
 
     private func resizeWindow(animated: Bool = false) {
         guard window.isVisible else { return }
+        if let stripAnchor {
+            // Above the strip the bottom stays put and it grows upward.
+            window.setFrame(stripFrame(for: stripAnchor), display: true, animate: animated)
+            return
+        }
         let h = contentView.contentHeight
         let popWidth = contentView.popWidth
         let lockedTopY = window.frame.maxY
@@ -2745,7 +3201,10 @@ func makeBatteryDetailCard(stats s: HardwareStats,
             if let aw = s.adapterWatts { return "Charging · \(aw)W adapter" }
             return "Charging"
         }
-        if let aw = s.adapterWatts { return "Plugged in · \(aw)W adapter" }
+        if s.isExternalPowerConnected {
+            if let aw = s.adapterWatts { return "Plugged in · \(aw)W adapter" }
+            return "Plugged in"
+        }
         return "Discharging"
     }()
     let status = NSTextField(labelWithString: statusText)
@@ -2815,7 +3274,7 @@ func makeBatteryDetailCard(stats s: HardwareStats,
     // While on power, mark where a charge limit stops charging. Kept visible
     // once it's holding at the limit (not just while actively charging), since
     // that's when the tick best explains why it stopped short of 100%.
-    let onPower = s.isCharging == true || s.adapterWatts != nil
+    let onPower = s.isExternalPowerConnected
     let showsLimit = onPower && (s.chargeLimitPercent.map { $0 < 100 } ?? false)
     if showsLimit, let limit = s.chargeLimitPercent {
         bar.trackThickness = CardStyle.barHeight
@@ -2874,7 +3333,7 @@ func makeBatteryDetailCard(stats s: HardwareStats,
         emHeader.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
         inner.setCustomSpacing(5, after: emHeader)
 
-        let current = s.adapterWatts != nil ? energyModes.ac : energyModes.battery
+        let current = s.isExternalPowerConnected ? energyModes.ac : energyModes.battery
         let titles = ["Automatic", "Low Power", "High Power"]
         let chips = titles.enumerated().map { index, title in
             EnergyModeChip(title: title, isSelected: current == index) {
@@ -2943,7 +3402,9 @@ final class BatteryStatusItem {
 
         barView.onAnimationFrame = { [weak self] in
             guard let self else { return }
-            self.setImageIfChanged(self.barView.renderedImage())
+            let image = self.barView.renderedImage()
+            if abs(self.item.length - image.size.width) > 0.5 { self.item.length = image.size.width }
+            self.setImageIfChanged(image)
         }
 
         HardwareMonitor.shared.addObserver { [weak self] in

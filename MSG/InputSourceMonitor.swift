@@ -11,30 +11,35 @@ import Carbon
 // source's language ("TH" / "ENG"); other languages fall back to the
 // localized name the Input menu shows.
 
-final class InputSourceMonitor {
+final class InputSourceMonitor: NSObject {
 
     /// Fired on the main thread with the new input source's localized name.
     var onChange: ((String) -> Void)?
 
-    private var observer: NSObjectProtocol?
+    private var observing = false
     private var lastSourceID: String?
     private var retryWorkItem: DispatchWorkItem?
 
     func start() {
-        guard observer == nil else { return }
+        guard !observing else { return }
+        observing = true
         lastSourceID = currentSource()?.id
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleChange(allowRetry: true)
-        }
+        // Delivered immediately: by default AppKit holds distributed
+        // notifications while the app is inactive, and MSG never is active.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(sourceChanged),
+            name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, suspensionBehavior: .deliverImmediately)
+    }
+
+    @objc private func sourceChanged() {
+        // Distributed notifications arrive on the main run loop already.
+        DispatchQueue.main.async { [weak self] in self?.handleChange(allowRetry: true) }
     }
 
     func stop() {
-        if let observer { DistributedNotificationCenter.default().removeObserver(observer) }
-        observer = nil
+        if observing { DistributedNotificationCenter.default().removeObserver(self) }
+        observing = false
         retryWorkItem?.cancel(); retryWorkItem = nil
     }
 

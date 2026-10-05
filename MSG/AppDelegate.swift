@@ -51,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var cornerWindows: [CornerWindow] = []
     private var wakeRebuildItem: DispatchWorkItem?
-    private lazy var lidOpeningGlass = LidOpeningGlassController(settings: settings)
 
     // MARK: - Focus detection
 
@@ -110,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         musicMonitor = MusicMonitor(settings: settings)
-
+        NotchHUD.shared.attachMusic(musicMonitor)
         musicMonitor.start()
 
         hardwareMonitor = HardwareMonitor.shared
@@ -123,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indicator.start()
 
         applySystemHUD()
+        applyCalendarStatusItem()
         applyInputSourceHUD()
 
         // Liveness for WallpaperEngine's editing mode: the Cornermizer pane's
@@ -135,8 +135,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         WallpaperEngine.shared.start()
-        lidOpeningGlass.start()
         LockScreenTouchIDController.shared.start()
+        AgentLockScreen.shared.start()
+        AgentNotchCard.shared.start()
+        LimitResetNotice.shared.start()
+        AgentDoneNotice.shared.start()
+        ChargerNotchNotice.shared.start()
+        SystemEventNotchNotice.shared.start()
+        SystemNotificationNotch.shared.start()
+        CortexActivityPill.shared.start()
+        NotchDropZone.shared.isSuppressed = { AgentNotchCard.shared.isShowingTray || AgentNotchCard.shared.isSuppressedByCortex }
+        if settings.notchDropTray { NotchDropZone.shared.start() }
+        MusicEdgeHUD.shared.attach(to: musicMonitor)
+        // Tiled windows stay above the strip (see TilingController.workArea).
+        EdgeKeyStrip.shared.onReserveChanged = { [weak self] in self?.tilingController.settingsChanged() }
+        EdgeKeyStrip.shared.onSwitchDesktop = { [weak self] number in
+            self?.tilingController.switchToSpaceOnFocusedDisplay(number)
+        }
+        EdgeKeyStrip.shared.start(music: musicMonitor)
+        FunctionRowCalibration.shared.start()
         if #available(macOS 14.0, *) {
             // Pictures for previews of windows that later get hidden or minimized.
             WindowThumbnailKeeper.shared.start()
@@ -145,7 +162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Fills the DDC input cache the menu and the settings pane read. The scan
         // is ~2 s of blocking I2C per panel, so it happens once here in the
         // background and again only when the display set changes.
-        DisplayInputEngine.refresh()
+        DisplayInputEngine.refresh {
+            // Monitors listed: bring their backlight in line with the built-in panel.
+            ExternalBrightnessSync.shared.displaysChanged()
+        }
 
         if #available(macOS 14.0, *), settings.dockPreviewEnabled {
             dockHover.start()
@@ -207,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.redrawCornerWindows()
                 self.applySlideDetection()
                 WallpaperEngine.shared.settingsChanged()
-                self.lidOpeningGlass.settingsChanged()
+                EdgeKeyStrip.shared.update()
             case .indicator:
                 self.indicator.applySettings()
                 self.applyFocusDetectionMode()
@@ -225,8 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 WallpaperEngine.shared.settingsChanged()
                 self.applyHardwareStats()
                 self.applySystemHUD()
+                self.applyCalendarStatusItem()
                 self.applyInputSourceHUD()
                 self.musicMonitor.settingsChanged()
+                EdgeKeyStrip.shared.update()
             }
         }
 
@@ -260,22 +282,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.settingsMenu.updateExternalMonitorVisibility()
             self?.scheduleDisplayHeal()
             // A panel that just appeared has inputs to offer; one that left must
-            // drop out of the menu. Delayed so the link has finished negotiating —
-            // DDC on a half-brought-up display returns nothing.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                DisplayInputEngine.refresh()
+            // drop out of the menu. Listing needs no DDC, so it runs now; any DDC
+            // waits out the settle window this opens.
+            DisplayInputEngine.noteDisplayChange()
+            DisplayInputEngine.refresh {
+                ExternalBrightnessSync.shared.displaysChanged()
             }
         }
 
         PresentationState.shared.addObserver { [weak self] in
             guard PresentationState.shared.canPresent else { return }
             self?.scheduleCornerRecovery()
+            // Awake again: the monitor may have lost its level while asleep.
+            ExternalBrightnessSync.shared.resync()
         }
 
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
+                DisplayInputEngine.noteDisplayChange()
                 self?.scheduleCornerRecovery()
             }
         }
@@ -299,6 +325,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.redrawCornerWindows()
         }
 
+        // SP8CE's page fullscreen covers a display without creating a native
+        // fullscreen Space. Recheck the top corners as soon as that state flips.
+        NotificationCenter.default.addObserver(
+            forName: SystemState.pageFullscreenChanged,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.applyCornerWindowTopState()
+        }
+
         // CGDisplay callback for arrangement changes
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         CGDisplayRegisterReconfigurationCallback({ display, flags, userInfo in
@@ -308,8 +343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DisplayLog.write("reconfig id=\(display) \(DisplayLog.describe(flags))"
                              + (DisplayLog.inOurTransaction ? " [ours]" : ""))
             guard let ctx = userInfo else { return }
+            // A monitor plugged in by hand (not one MSG just reconnected).
+            if flags.contains(.addFlag), !DisplayLog.inOurTransaction {
+                DispatchQueue.main.async { DisplaplacerEngine.resyncAfterPlug(display) }
+            }
             let ad = Unmanaged<AppDelegate>.fromOpaque(ctx).takeUnretainedValue()
             DispatchQueue.main.async {
+                // Ours or not, the link is renegotiating: hold DDC off.
+                DisplayInputEngine.noteDisplayChange()
                 ad.settingsMenu.updateExternalMonitorVisibility()
                 ad.checkScreenArrangement()
                 // A panel handed to another machine comes back through here. Undo
@@ -367,13 +408,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             WallpaperEngine.shared.restore()
             DisplaplacerEngine.reconnectAll()
             hardwareMonitor.fanQuitCleanup()
-            lidOpeningGlass.stop()
         }
         if #available(macOS 14.0, *) {
             (_appSwitcherHover as? AppSwitcherHoverController)?.stop()
             (_dockHover as? DockHoverController)?.stop()
             (_notchHover as? NotchHoverController)?.stop()
         }
+        DisplayInputEngine.drainBeforeExit()
         return .terminateNow
     }
 
@@ -383,6 +424,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hardwareMonitor.start()
             if hardwareStatusItem == nil {
                 hardwareStatusItem = HardwareStatusItem()
+                EdgeKeyStrip.shared.onStatsClicked = { [weak self] rect in
+                    self?.hardwareStatusItem?.toggleStripPopover(above: rect)
+                }
             }
             let batterySeparate = s.hardwareStatsShowBattery && s.hardwareStatsBatterySeparate
             if let bv = hardwareStatusItem?.barView {
@@ -410,6 +454,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 hardwareStatusItem?.refreshImage()
             }
             hardwareStatusItem?.hidesBatteryCard = batterySeparate
+            hardwareStatusItem?.setShownInMenuBar(!EdgeKeyStrip.statsInTouchID)
+            if !EdgeKeyStrip.statsInTouchID { EdgeKeyStrip.shared.showStats(nil) }
 
             if batterySeparate {
                 if batteryStatusItem == nil {
@@ -433,11 +479,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A `CalendarStatusItem` (macOS 14+).
+    private var calendarStatusItem: AnyObject?
+
+    private func applyCalendarStatusItem() {
+        guard #available(macOS 14.0, *) else { return }
+        if settings.calendarStatusItem {
+            if calendarStatusItem == nil {
+                calendarStatusItem = CalendarStatusItem()
+            } else {
+                (calendarStatusItem as? CalendarStatusItem)?.refresh()
+            }
+        } else {
+            (calendarStatusItem as? CalendarStatusItem)?.remove()
+            calendarStatusItem = nil
+        }
+    }
+
     private func applySystemHUD() {
         if settings.systemHUDEnabled {
             if settings.systemHUDPresentationMode == .separate, systemHUDStatusItem == nil {
                 systemHUDStatusItem = SystemHUDStatusItem(settings: settings)
-            } else if settings.systemHUDPresentationMode == .dynamic {
+            } else if settings.systemHUDPresentationMode != .separate {
                 systemHUDStatusItem?.remove()
                 systemHUDStatusItem = nil
             }
@@ -445,14 +508,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             systemHUDStatusItem?.remove()
             systemHUDStatusItem = nil
         }
+        if !settings.systemHUDEnabled || settings.systemHUDPresentationMode != .notch {
+            NotchHUD.shared.hide(animated: false)
+        }
 
         // One tap serves both features: the volume/brightness HUD and Apple
         // Music media-key routing. Either alone is reason enough to keep it up.
-        if settings.systemHUDEnabled || settings.mediaKeyPriorityMusic {
+        if settings.systemHUDEnabled || settings.mediaKeyPriorityMusic || settings.edgeKeysMode == .strip {
             if systemHUDMonitor == nil {
                 let monitor = SystemHUDMonitor(settings: settings)
                 monitor.onChange = { [weak self] kind, value, muted, audioOutputKind in
                     guard let self else { return }
+                    // Notch: out of the notch, like the TokenBar card. Without
+                    // one (lid closed), the HUDs below as in Dynamic.
+                    if self.settings.systemHUDPresentationMode == .notch,
+                       NotchHUD.shared.show(kind: kind, value: value, muted: muted,
+                                            audioOutputKind: audioOutputKind) { return }
+                    // Right above the keys that changed it, on the built-in
+                    // display; declines with the lid closed, then the HUDs
+                    // below take over.
+                    if EdgeKeyStrip.shared.showLevel(kind: kind, value: value, muted: muted,
+                                                     audioOutputKind: audioOutputKind) { return }
+                    if KeyEdgeHUD.shared.show(kind: kind, value: value, muted: muted,
+                                              audioOutputKind: audioOutputKind) { return }
                     if self.settings.systemHUDPresentationMode == .separate {
                         if self.systemHUDStatusItem == nil {
                             self.systemHUDStatusItem = SystemHUDStatusItem(settings: self.settings)
@@ -472,10 +550,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 monitor.onMediaKey = { [weak self] action in
                     self?.musicMonitor.handleRoutedMediaKey(action)
                 }
+                // Previous / play-pause / next over F7–F9, like the
+                // brightness and volume HUDs over their keys.
+                monitor.onTransportAction = { action in
+                    MusicEdgeHUD.shared.show(action: action)
+                }
+                monitor.onAuxKeyDown = { code, posted in
+                    EdgeKeyStrip.shared.auxKeyDown(code, posted: posted)
+                }
+                monitor.auxKeyOverride = { code, isDown, isRepeat in
+                    EdgeKeyStrip.shared.auxKeyOverride(code: code, isDown: isDown, isRepeat: isRepeat)
+                }
                 monitor.onTransportKey = { [weak self] in
                     self?.musicMonitor.pokeNow()
                 }
                 systemHUDMonitor = monitor
+                NotchHUD.shared.levels = monitor
             }
             systemHUDMonitor?.start()
         } else {
@@ -490,6 +580,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let monitor = InputSourceMonitor()
                 monitor.onChange = { [weak self] name in
                     guard let self else { return }
+                    if self.settings.systemHUDPresentationMode == .notch,
+                       NotchHUD.shared.showInputSource(label: name) { return }
                     if !(self.settings.systemHUDInTilingBar
                          && self.tilingController.showInputSourceHUD(name: name)) {
                         self.indicator.showInputSourceHUD(name: name)
@@ -511,6 +603,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitInProgress = true
         tilingController.stop()
         systemHUDMonitor?.stop()
+        // Right ⇧ is Shift again once MSG is gone.
+        RightShiftRemap.set(false)
+        EdgeKeyStrip.shared.releaseTouchIDLockBlock()
         removeAllStatusItems()
         WallpaperEngine.shared.restore()
         DisplaplacerEngine.reconnectAll()
@@ -774,10 +869,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   back when that display enters a fullscreen space — the same hidden→shown
     ///   transition, so the grow-in comes free.
     ///
-    /// Fullscreen is read per display from the CGS space type rather than from
-    /// `SystemState.isFullscreen` (Accessibility, and global to the frontmost
-    /// app), so a fullscreen window on one display doesn't round the corners on
-    /// the others.
+    /// Fullscreen is read per display from the CGS space type or SP8CE's page
+    /// fullscreen signal. `SystemState.isFullscreen` is global to the frontmost
+    /// app and would round the corners on other displays too.
     private func applyCornerWindowTopState() {
         let mc = indicator.isMissionControl
         if mc {
@@ -801,9 +895,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 : settings.extTopCornersFullscreenOnly(for: uuid)
             // Fail open in both unknown cases — CGS unreadable, or a display whose
             // UUID won't resolve — so the corners show rather than silently vanish.
-            let isFullscreen = fsDisplays.map { set in
+            let nativeFullscreen = fsDisplays.map { set in
                 win.displayUUID.map(set.contains) ?? true
             } ?? true
+            let pageFullscreen = SystemState.pageFullscreenDisplay.map {
+                $0 == win.displayUUID
+            } ?? false
+            let isFullscreen = nativeFullscreen || pageFullscreen
             win.setSkipTop((hideTop && underBar) || (fullscreenOnly && !isFullscreen))
         }
         refreshSplitViewPaneFrames()

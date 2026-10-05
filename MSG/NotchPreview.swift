@@ -175,6 +175,7 @@ final class NotchHoverController {
 
     private let settings: AppSettings
 
+    private var observesCortex = false
     private var globalMoveMonitor: Any?
     private var localMoveMonitor: Any?
     private var clickMonitorGlobal: Any?
@@ -199,6 +200,15 @@ final class NotchHoverController {
     // MARK: Lifecycle
 
     func start() {
+        if !observesCortex {
+            observesCortex = true
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.pongsiri.cortex.notch.opened"),
+                                                               object: nil, queue: .main) { [weak self] _ in
+                self?.dismiss()
+                self?.previewPanel?.orderOut()
+                self?.dockPanel?.orderOut()
+            }
+        }
         guard globalMoveMonitor == nil else { return }
 
         let moveHandler: (NSEvent?) -> Void = { [weak self] _ in self?.handleMouseMoved() }
@@ -228,6 +238,7 @@ final class NotchHoverController {
     // MARK: Mouse Handling
 
     private func handleMouseMoved() {
+        if AgentNotchCard.shared.isSuppressedByCortex { dismiss(); return }
         let now = CFAbsoluteTimeGetCurrent()
         guard now - lastMoveStamp >= 0.025 else { return }
         lastMoveStamp = now
@@ -342,7 +353,7 @@ final class NotchHoverController {
     // MARK: Presentation & Dismissal
 
     private func triggerCaptureAndPresent() {
-        guard !isPanelVisible, !isCapturing else { return }
+        guard !AgentNotchCard.shared.isSuppressedByCortex, !isPanelVisible, !isCapturing else { return }
         guard let screen = activeScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
         isCapturing = true
         captureToken &+= 1
@@ -365,7 +376,7 @@ final class NotchHoverController {
                 WindowPreviewCapture.scanScreenWindows(screen: screen, includeOtherSpaces: includeOtherSpaces)
             }.value
             let dockItems = await dockTask
-            guard self.captureToken == token else { return }
+            guard self.captureToken == token, !AgentNotchCard.shared.isSuppressedByCortex else { return }
             let windows = scan.items
 
             if windows.isEmpty && dockItems.isEmpty {
@@ -395,6 +406,17 @@ final class NotchHoverController {
                     },
                     onClose: { [weak self] item in
                         self?.closeWindow(item)
+                    },
+                    onMinimize: { [weak self] item in
+                        self?.dismiss()
+                        Task { await WindowPreviewCapture.minimizeWindow(pid: item.pid, windowID: item.id) }
+                    },
+                    onFullscreen: { [weak self] item in
+                        self?.dismiss()
+                        Task {
+                            await WindowPreviewCapture.toggleFullscreen(pid: item.pid, windowID: item.id,
+                                                                        bounds: item.bounds)
+                        }
                     },
                     onDismiss: { [weak self] in
                         self?.dismiss()
@@ -473,6 +495,7 @@ final class NotchHoverController {
 final class NotchPreviewPanel {
 
     private var panel: NSPanel?
+    private var presentationGeneration = 0
     private var hosting: NSHostingController<NotchPreviewView>?
     private let model = NotchPreviewModel()
 
@@ -487,6 +510,8 @@ final class NotchPreviewPanel {
                  notchRect: CGRect,
                  onSelect: @escaping (NotchWindowItem) -> Void,
                  onClose: @escaping (NotchWindowItem) -> Void,
+                 onMinimize: @escaping (NotchWindowItem) -> Void = { _ in },
+                 onFullscreen: @escaping (NotchWindowItem) -> Void = { _ in },
                  onDismiss: @escaping () -> Void = {},
                  onRelayout: @escaping () -> Void) -> NSRect {
 
@@ -494,22 +519,30 @@ final class NotchPreviewPanel {
         guard let panel, let hosting else { return .zero }
 
         model.onSelect = onSelect
+        model.onMinimize = onMinimize
+        model.onFullscreen = onFullscreen
         model.onDismiss = onDismiss
         model.sourcePanelFrame = { [weak self] in self?.panel?.frame ?? .zero }
         model.onClose = { [weak self] item in
+            guard let self, self.model.items.contains(where: { $0.id == item.id }) else { return }
             onClose(item)
-            guard let self else { return }
+            if self.model.items.count == 1 {
+                // Keep the last card drawn while its panel fades away. Removing
+                // it first leaves an empty material panel with no close motion.
+                self.dismiss { [weak self] in
+                    self?.model.items.removeAll { $0.id == item.id }
+                    onRelayout()
+                }
+                return
+            }
             withAnimation(.easeInOut(duration: 0.20)) {
                 self.model.items.removeAll { $0.id == item.id }
             }
-            if self.model.items.isEmpty {
-                self.dismiss()
-            } else {
-                self.updateFrame(for: screen, notchRect: notchRect)
-            }
+            self.updateFrame(for: screen, notchRect: notchRect)
             onRelayout()
         }
 
+        presentationGeneration &+= 1
         let wasVisible = panel.isVisible
         let apply = {
             self.model.items = Self.grouped(windows)
@@ -535,6 +568,7 @@ final class NotchPreviewPanel {
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 ctx.allowsImplicitAnimation = true
                 panel.animator().setFrame(targetFrame, display: true)
+                panel.animator().alphaValue = 1
             }
             panel.orderFrontRegardless()
         } else {
@@ -602,18 +636,25 @@ final class NotchPreviewPanel {
         }
     }
 
-    func dismiss() {
+    func dismiss(completion: (() -> Void)? = nil) {
         guard let panel, panel.isVisible else { return }
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        let closingFrame = panel.frame.offsetBy(dx: 0, dy: 6)
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.12
+            ctx.duration = 0.20
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
+            panel.animator().setFrame(closingFrame, display: true)
         }, completionHandler: { [weak self] in
-            self?.panel?.orderOut(nil)
+            guard let self, self.presentationGeneration == generation else { return }
+            self.panel?.orderOut(nil)
+            completion?()
         })
     }
 
     func orderOut() {
+        presentationGeneration &+= 1
         panel?.orderOut(nil)
     }
 
@@ -944,6 +985,8 @@ private final class NotchPreviewModel: ObservableObject {
     @Published var hoveredID: CGWindowID?
     var onSelect: (NotchWindowItem) -> Void = { _ in }
     var onClose: (NotchWindowItem) -> Void = { _ in }
+    var onMinimize: (NotchWindowItem) -> Void = { _ in }
+    var onFullscreen: (NotchWindowItem) -> Void = { _ in }
     var onDismiss: () -> Void = {}
     var sourcePanelFrame: () -> CGRect = { .zero }
 }
@@ -1103,6 +1146,8 @@ private struct NotchPreviewView: View {
                     onDismissPanel: model.onDismiss,
                     onSelect: { model.onSelect(item) },
                     onClose: { model.onClose(item) },
+                    onMinimize: { model.onMinimize(item) },
+                    onFullscreen: { model.onFullscreen(item) },
                     onHoverChanged: { hovering in
                         if hovering {
                             model.hoveredID = item.id
@@ -1152,6 +1197,8 @@ private struct NotchWindowCard: View {
     let onDismissPanel: () -> Void
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onMinimize: () -> Void
+    let onFullscreen: () -> Void
     let onHoverChanged: (Bool) -> Void
 
     @State private var isHovering = false
@@ -1208,10 +1255,12 @@ private struct NotchWindowCard: View {
                     Spacer(minLength: 0)
                     ZStack(alignment: .trailing) {
                         if isHovering {
-                            PreviewCloseButton(
-                                action: onClose,
-                                helpText: "Close window",
-                                accessibilityText: "Close \(item.title ?? item.appName) window"
+                            PreviewTrafficLights(
+                                onClose: onClose,
+                                onMinimize: onMinimize,
+                                onFullscreen: onFullscreen,
+                                closeHelp: "Close window",
+                                closeAccessibility: "Close \(item.title ?? item.appName) window"
                             )
                             .transition(.opacity)
                         } else if item.isHidden {
@@ -1275,7 +1324,8 @@ private struct NotchWindowCard: View {
                     // Top identity row is height 22 + spacing 8 = 30 from the top of the card
                     // Close button is in top-trailing of thumbnail, padding 6, size 17 (circle 13)
                     let topEdge = bounds.height - 30
-                    return point.x > bounds.width - 32 && point.y <= topEdge && point.y >= topEdge - 32
+                    let lights = PreviewTrafficLights.width(minimize: true, fullscreen: true)
+                    return point.x > bounds.width - (lights + 15) && point.y <= topEdge && point.y >= topEdge - 32
                 }
             )
         )

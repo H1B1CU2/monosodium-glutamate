@@ -342,6 +342,10 @@ final class DockHoverController {
             onQuit: {
                 NSRunningApplication(processIdentifier: item.pid)?.terminate()
             },
+            onMinimize: { [weak self] win in
+                self?.hide()
+                Task { await WindowPreviewCapture.minimizeWindow(pid: item.pid, windowID: win.id) }
+            },
             onFullscreen: { [weak self] win in
                 self?.hide()
                 Task {
@@ -553,6 +557,7 @@ final class DockPreviewPanel {
                  onSelect: @escaping (CapturedWindow) -> Void = { _ in },
                  onClose: @escaping (CapturedWindow) -> Void = { _ in },
                  onQuit: @escaping () -> Void = {},
+                 onMinimize: @escaping (CapturedWindow) -> Void = { _ in },
                  onFullscreen: @escaping (CapturedWindow) -> Void = { _ in },
                  onHoverChanged: @escaping (Bool) -> Void = { _ in }) {
 
@@ -563,6 +568,7 @@ final class DockPreviewPanel {
         model.panelFrame = { [weak self] in self?.frame ?? .zero }
         model.onDismiss = { [weak self] in self?.dismiss() }
         model.onSelect = onSelect
+        model.onMinimize = onMinimize
         model.onFullscreen = onFullscreen
         model.onClose = { [weak self] win in
             guard let self, self.model.windows.contains(where: { $0.id == win.id }) else { return }
@@ -826,6 +832,7 @@ private final class DockPreviewModel: ObservableObject {
     @Published var maxContentWidth: CGFloat = 1200
     var onSelect: (CapturedWindow) -> Void = { _ in }
     var onClose: (CapturedWindow) -> Void = { _ in }
+    var onMinimize: (CapturedWindow) -> Void = { _ in }
     var onFullscreen: (CapturedWindow) -> Void = { _ in }
     var onHoverChanged: (Bool) -> Void = { _ in }
 }
@@ -893,6 +900,8 @@ private struct DockPreviewView: View {
                                onClose: {
                                    model.onClose(win)
                                },
+                               onMinimize: { model.onMinimize(win) },
+                               onFullscreen: { model.onFullscreen(win) },
                                closeQuitsApp: model.windows.count == 1,
                                pid: model.pid,
                                appIcon: model.appIcon,
@@ -919,15 +928,15 @@ private struct DockPreviewView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
                 if let appIcon = model.appIcon {
                     Image(nsImage: appIcon)
                         .resizable()
-                        .frame(width: 24, height: 24)
+                        .frame(width: 18, height: 18)
                 }
                 Text(model.appName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .contentTransition(.opacity)
             }
@@ -1060,6 +1069,81 @@ struct PreviewCloseButton: View {
     }
 }
 
+/// Red, yellow and green lights for a preview card, in the order a window
+/// shows them. Yellow and green appear only when the host can act on them and
+/// the matching setting is on. As on a real window, pointing at any light
+/// colours all three and shows their glyphs.
+@available(macOS 14.0, *)
+struct PreviewTrafficLights: View {
+    let onClose: () -> Void
+    var onMinimize: (() -> Void)? = nil
+    var onFullscreen: (() -> Void)? = nil
+    var closeHelp: String = "Close"
+    var closeAccessibility: String? = nil
+
+    @State private var isHovering = false
+
+    static let lightSize: CGFloat = 17
+
+    /// Width of the group a host with these actions draws, for hit-testing.
+    static func width(minimize: Bool, fullscreen: Bool) -> CGFloat {
+        let s = AppSettings.shared
+        let count = 1 + (minimize && s.previewMinimizeButton ? 1 : 0) + (fullscreen && s.previewFullscreenButton ? 1 : 0)
+        return CGFloat(count) * lightSize
+    }
+
+    private struct Light {
+        let fill: Color
+        let rim: Color
+        let glyph: String
+        let glyphSize: CGFloat
+        let ink: Color
+    }
+
+    private static let red = Light(fill: Color(red: 1, green: 0.37, blue: 0.34), rim: Color(red: 0.78, green: 0.24, blue: 0.21),
+                                   glyph: "xmark", glyphSize: 6.5, ink: Color(red: 0.36, green: 0.08, blue: 0.06))
+    private static let yellow = Light(fill: Color(red: 1, green: 0.74, blue: 0.18), rim: Color(red: 0.80, green: 0.56, blue: 0.10),
+                                      glyph: "minus", glyphSize: 7, ink: Color(red: 0.45, green: 0.26, blue: 0.0))
+    private static let green = Light(fill: Color(red: 0.16, green: 0.78, blue: 0.25), rim: Color(red: 0.10, green: 0.58, blue: 0.16),
+                                     glyph: "arrow.up.left.and.arrow.down.right", glyphSize: 5.5, ink: Color(red: 0.0, green: 0.30, blue: 0.04))
+
+    var body: some View {
+        let s = AppSettings.shared
+        HStack(spacing: 0) {
+            light(Self.red, help: closeHelp, accessibility: closeAccessibility ?? closeHelp, action: onClose)
+            if let onMinimize, s.previewMinimizeButton {
+                light(Self.yellow, help: "Minimize", accessibility: "Minimize window", action: onMinimize)
+            }
+            if let onFullscreen, s.previewFullscreenButton {
+                light(Self.green, help: "Full Screen", accessibility: "Toggle full screen", action: onFullscreen)
+            }
+        }
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+    }
+
+    private func light(_ l: Light, help: String, accessibility: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Circle()
+                .fill(isHovering ? l.fill : Color(white: 0.55).opacity(0.8))
+                .overlay(Circle().strokeBorder(isHovering ? l.rim : Color.white.opacity(0.20), lineWidth: 0.5))
+                .overlay {
+                    Image(systemName: l.glyph)
+                        .font(.system(size: l.glyphSize, weight: .bold))
+                        .foregroundStyle(l.ink)
+                        .opacity(isHovering ? 1.0 : 0.0)
+                }
+                .frame(width: 13, height: 13)
+                .shadow(color: .black.opacity(isHovering ? 0.25 : 0.12), radius: 1, y: 0.5)
+                .frame(width: Self.lightSize, height: Self.lightSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(accessibility)
+    }
+}
+
 /// A single window rendered as its own card: rounded thumbnail (radius 10) with
 /// the window's title beneath it.
 @available(macOS 14.0, *)
@@ -1070,7 +1154,9 @@ struct DockWindowCard: View {
     let maxWidth: CGFloat
     let action: () -> Void
     let onClose: () -> Void
-    var onFullscreen: () -> Void = {}
+    /// Yellow and green lights; nil hides that light on this card.
+    var onMinimize: (() -> Void)? = nil
+    var onFullscreen: (() -> Void)? = nil
     var closeQuitsApp: Bool = false
     var selected: Bool = false
     /// Keep the caption line's height even when there is no caption to draw.
@@ -1135,10 +1221,12 @@ struct DockWindowCard: View {
                     Spacer(minLength: 0)
                     ZStack(alignment: .trailing) {
                         if window.id != 0 && canHover && hovering {
-                            PreviewCloseButton(
-                                action: onClose,
-                                helpText: closeQuitsApp ? "Quit \(appName)" : "Close window",
-                                accessibilityText: closeQuitsApp ? "Quit \(appName)" : "Close \(window.title ?? appName) window"
+                            PreviewTrafficLights(
+                                onClose: onClose,
+                                onMinimize: onMinimize,
+                                onFullscreen: onFullscreen,
+                                closeHelp: closeQuitsApp ? "Quit \(appName)" : "Close window",
+                                closeAccessibility: closeQuitsApp ? "Quit \(appName)" : "Close \(window.title ?? appName) window"
                             )
                             .transition(.opacity)
                         } else if isHidden {
@@ -1192,8 +1280,9 @@ struct DockWindowCard: View {
                 },
                 isHitExcluded: { point, bounds in
                     guard canHover && hovering && window.id != 0 else { return false }
-                    // Allow traffic light close button in the top-trailing corner to receive clicks
-                    return point.x > bounds.width - 32 && point.y > bounds.height - 32
+                    // Let the traffic lights in the top-trailing corner receive clicks
+                    let lights = PreviewTrafficLights.width(minimize: onMinimize != nil, fullscreen: onFullscreen != nil)
+                    return point.x > bounds.width - (lights + 15) && point.y > bounds.height - 32
                 }
             )
         )

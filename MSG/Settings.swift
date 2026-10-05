@@ -18,6 +18,11 @@ enum TilingControlBarMode: String, CaseIterable {
     case hybridNotch = "Hybrid Notch"
 }
 
+enum TilingColumnPillPosition: String, CaseIterable {
+    case inset = "Inset"
+    case screenEdge = "Screen Edge"
+}
+
 enum DisplayOrderMode: String, CaseIterable {
     case physicalDetection = "Physical Display Detection"
     case prioritizeMain    = "Prioritize Main Display"
@@ -46,9 +51,139 @@ enum MusicSource: String, CaseIterable {
     }
 }
 
+/// How long the lock-screen AI card stays up, holding the display on, after
+/// the AIs finish. While one works it always stays on. The raw values are what
+/// is stored; `label` is what the picker says.
+enum LockScreenStay: String, CaseIterable {
+    case always = "Always"
+    case fifteenMinutes = "15 minutes"
+    case thirtyMinutes = "30 minutes"
+    case oneHour = "1 hour"
+    case whileWorking = "Only while AI works"
+
+    var label: String {
+        switch self {
+        case .always:       return "Until unlocked"
+        case .whileWorking: return "Don't keep it on"
+        default:            return rawValue
+        }
+    }
+
+    /// How long after the work ends; nil = until the Mac is unlocked.
+    var idleLimit: TimeInterval? {
+        switch self {
+        case .always:         return nil
+        case .fifteenMinutes: return 15 * 60
+        case .thirtyMinutes:  return 30 * 60
+        case .oneHour:        return 60 * 60
+        case .whileWorking:   return 0
+        }
+    }
+}
+
 enum SystemHUDPresentationMode: String, CaseIterable {
     case dynamic = "Dynamic"
     case separate = "Separate Menu Bar"
+    /// Grows out of the notch, like the TokenBar card; falls back to Dynamic
+    /// on a display without one (or with the lid closed).
+    case notch = "Notch"
+}
+
+/// How the function-row keys show on the built-in display's bottom edge.
+enum EdgeKeysMode: String, CaseIterable {
+    case off = "Off"
+    /// A HUD rises above the key that was pressed, then goes away.
+    case popup = "Pop-up"
+    /// A Touch Bar–like strip across the whole bottom edge, always there.
+    case strip = "Strip"
+}
+
+/// Where the strip's keys sit against the screen's bottom edge.
+enum EdgeKeysKeyPlacement: String, CaseIterable {
+    /// A gap all round, like keys on a bar.
+    case floating = "Floating"
+    /// Rounded all round, reaching down to touch the edge.
+    case touching = "Touching Edge"
+    /// Running into the edge: square at the bottom, rounded on top.
+    case rising = "From Edge"
+}
+
+/// The modifier that, held, switches the Edge Keys strip to its second row.
+enum EdgeKeysModifier: String, CaseIterable {
+    case command = "⌘"
+    case option = "⌥"
+    case control = "⌃"
+    case shift = "⇧"
+    /// The right Shift key only, leaving the left one to typing.
+    case rightShift = "R⇧"
+    case fn = "fn"
+    /// One of F1…F12 (`edgeKeysTriggerKey`), held.
+    case functionKey = "F key"
+
+    var label: String { self == .rightShift ? "Right ⇧" : rawValue }
+}
+
+/// What an Edge Keys key does.
+enum EdgeKeyAction: Codable, Hashable {
+    /// First row only: the key's own function (brightness, play/pause…).
+    case keyDefault
+    case none
+    case app(String)
+    case desktop(Int)
+    case screenshot(ScreenshotKind)
+    case system(SystemAction)
+    case control(Control)
+    /// Connect or disconnect an external display (its UUID), or every one ("all").
+    case displayToggle(String)
+    /// Toggle an Amphetamine session that keeps the Mac running with its lid closed.
+    case amphetamineToggle
+    /// Connect or disconnect the installed Cloudflare WARP client.
+    case cloudflareWARPToggle
+    /// Mute or unmute the macOS default input device.
+    case microphoneToggle
+    /// Tap to choose a route. Keep the legacy case names so saved key maps decode.
+    case cycleAudioInput
+    case cycleAudioOutput
+    /// Open MSG Settings window or a specific pane.
+    case settings(String?)
+    /// One of the front app's shortcuts (App keys, F3–F9).
+    case shortcut(AppShortcut)
+    /// How much of an AI app's usage limit is used ("codex": ChatGPT/Codex).
+    case usage(String)
+
+    enum ScreenshotKind: String, Codable, CaseIterable {
+        case fullScreen, selection, window, fullScreenToClipboard, selectionToClipboard, toolbar
+    }
+
+    enum SystemAction: String, Codable, CaseIterable {
+        case missionControl, showDesktop, apps, forceQuitFrontApp, lockScreen, sleepDisplay, restart, shutDown, cleanKeyboard
+    }
+
+    /// Brightness, volume and media keys, for putting them on another key.
+    enum Control: String, Codable, CaseIterable {
+        case brightnessDown, brightnessUp, volumeDown, volumeUp, mute, previous, playPause, next
+        /// The player's own switches, filled while on (see `PlayerExtras`).
+        case shuffle, repeatMode, favorite, lyrics, queue
+
+        var isPlayerExtra: Bool { [.shuffle, .repeatMode, .favorite, .lyrics, .queue].contains(self) }
+
+        /// Held down, it keeps stepping like the real key.
+        var repeats: Bool { [.brightnessDown, .brightnessUp, .volumeDown, .volumeUp].contains(self) }
+    }
+
+    /// F1…F12 of the first row when nothing has been set yet.
+    static let defaultFirstRow: [Int: EdgeKeyAction] = [
+        3: .app("com.google.antigravity"),
+        4: .app("com.anthropic.claudefordesktop"),
+        5: .app("com.openai.codex"),
+    ]
+
+    /// F1…F12 of the second row when nothing has been set yet.
+    static let defaultSecondRow: [Int: EdgeKeyAction] = [
+        1: .desktop(1), 2: .desktop(2), 3: .desktop(3), 4: .amphetamineToggle, 5: .desktop(5), 6: .cloudflareWARPToggle,
+        7: .screenshot(.selection), 8: .screenshot(.window), 9: .screenshot(.fullScreen),
+        10: .screenshot(.toolbar), 11: .system(.missionControl), 12: .settings(nil),
+    ]
 }
 
 enum CornerCurve: String, CaseIterable, Codable {
@@ -109,7 +244,6 @@ final class AppSettings {
         static let topCornersUnderMenuBar   = "topCornersUnderMenuBar"
         static let topCornersFullscreenOnly = "topCornersFullscreenOnly"
         static let cornerGrowEnabled        = "cornerGrowEnabled"
-        static let lidOpeningGlassEnabled   = "lidOpeningGlassEnabled"
         static let extCornerRadius          = "extCornerRadius"
         static let extCornerCurve           = "extCornerCurve"
         static let extTopCornersEnabled     = "extTopCornersEnabled"
@@ -147,6 +281,8 @@ final class AppSettings {
         static let notchPreviewThumbHeight  = "notchPreviewThumbHeight"
         static let notchPreviewShowOtherSpaces = "notchPreviewShowOtherSpaces"
         static let notchShowDock             = "notchShowDock"
+        static let previewMinimizeButton     = "previewMinimizeButton"
+        static let previewFullscreenButton   = "previewFullscreenButton"
         static let appSwitcherLayout         = "appSwitcherLayout"
         static let appSwitcherShowDock       = "appSwitcherShowDock"
         static let appSwitcherPreviewEnabled = "appSwitcherPreviewEnabled"
@@ -159,6 +295,8 @@ final class AppSettings {
         static let tilingControlBarMode       = "tilingControlBarMode"
         static let tilingControlBarScope      = "tilingControlBarScope"
         static let tilingPillScope            = "tilingPillScope"
+        static let tilingColumnTabPills       = "tilingColumnTabPills"
+        static let tilingColumnPillPosition   = "tilingColumnPillPosition"
         static let tilingOneAppPerDeskspace   = "tilingOneAppPerDeskspace"
         static let tilingAutoDeleteEmptySpaces = "tilingAutoDeleteEmptySpaces"
         static let tilingPadding              = "tilingPadding"
@@ -172,6 +310,22 @@ final class AppSettings {
         static let displaplacerPresets      = "displaplacerPresets"
         static let displaplacerEnabled      = "displaplacerEnabled"
         static let monitorInputAutoEject    = "monitorInputAutoEject"
+        static let displayResyncOnPlug      = "displayResyncOnPlug"
+        static let externalBrightnessSync   = "externalBrightnessSync"
+        static let lockScreenAgentActivity  = "lockScreenAgentActivity"
+        static let lockScreenAgentStay      = "lockScreenAgentStay"
+        static let notchAgentCard           = "notchAgentCard"
+        static let notchLimitResetNotice    = "notchLimitResetNotice"
+        static let notchAgentDoneNotice     = "notchAgentDoneNotice"
+        static let notchChargerNotice       = "notchChargerNotice"
+        static let notchAmphetamineNotice   = "notchAmphetamineNotice"
+        static let notchDisplayNotice       = "notchDisplayNotice"
+        static let notchWARPNotice          = "notchWARPNotice"
+        static let notchAppNotifications    = "notchAppNotifications"
+        static let notchNotificationApps    = "notchNotificationApps"
+        static let notchNoticeSound         = "notchNoticeSound"
+        static let notchDropTray            = "notchDropTray"
+        static let notchDisabledPanes       = "notchDisabledPanes"
         static let menuBarSpacing           = "menuBarSpacing"
         static let menuBarSpacingPadding    = "menuBarSpacingPadding"
         static let showDeveloper            = "showDeveloper"
@@ -203,6 +357,7 @@ final class AppSettings {
         static let hardwareStatsPowerRaw       = "hardwareStatsPowerRaw"
         static let hardwareStatsPowerSamples   = "hardwareStatsPowerSamples"
         static let hardwareStatsBatteryStyle   = "hardwareStatsBatteryStyle"
+        static let hardwareStatsBatteryChargingDecimals = "hardwareStatsBatteryChargingDecimals"
         static let hardwareStatsModuleOrder    = "hardwareStatsModuleOrder"
         static let hardwareStatsHiddenCards    = "hardwareStatsHiddenCards"
         static let hardwareStatsColumns        = "hardwareStatsColumns"
@@ -215,6 +370,42 @@ final class AppSettings {
         static let systemHUDPresentationMode   = "systemHUDPresentationMode"
         static let systemHUDDeviceIcons        = "systemHUDDeviceIcons"
         static let systemHUDInTilingBar        = "systemHUDInTilingBar"
+        static let edgeKeysMode                = "edgeKeysMode"
+        static let edgeKeysStripMatchMenuBar   = "edgeKeysStripMatchMenuBar"
+        static let edgeKeysStripHeight         = "edgeKeysStripHeight"
+        static let edgeKeysRoundedCorners      = "edgeKeysRoundedCorners"
+        static let edgeKeysHideInFullscreen    = "edgeKeysHideInFullscreen"
+        static let edgeKeysLayerModifier       = "edgeKeysLayerModifier"
+        static let edgeKeysSecondRow           = "edgeKeysSecondRow"
+        static let edgeKeysAmphetamineF4Assigned = "edgeKeysAmphetamineF4Assigned"
+        static let edgeKeysSettingsF12Assigned  = "edgeKeysSettingsF12Assigned"
+        static let edgeKeysWARPF6Assigned       = "edgeKeysWARPF6Assigned"
+        static let edgeKeysFirstRow            = "edgeKeysFirstRow"
+        static let edgeKeysRedFingerprint      = "edgeKeysRedFingerprint"
+        static let edgeKeysTouchIDHint         = "edgeKeysTouchIDHint"
+        static let edgeKeysRightShiftExclusive = "edgeKeysRightShiftExclusive"
+        static let edgeKeysStripFlush          = "edgeKeysStripFlush"
+        static let edgeKeysKeyPlacement        = "edgeKeysKeyPlacement"
+        static let edgeKeysPinnedPlayer        = "edgeKeysPinnedPlayer"
+        static let edgeKeysMediaPlayer         = "edgeKeysMediaPlayer"
+        static let edgeKeysSP8CEVideo          = "edgeKeysSP8CEVideo"
+        static let edgeKeysShowEsc             = "edgeKeysShowEsc"
+        static let edgeKeysPlayerInEsc         = "edgeKeysPlayerInEsc"
+        static let calendarStatusItem          = "calendarStatusItem"
+        static let calendarMaxTitleLength      = "calendarMaxTitleLength"
+        static let edgeKeysWeatherInEsc        = "edgeKeysWeatherInEsc"
+        static let edgeKeysCalendarInEsc       = "edgeKeysCalendarInEsc"
+        static let edgeKeysUsageInEsc          = "edgeKeysUsageInEsc"
+        static let edgeKeysUsageBars           = "edgeKeysUsageBars"
+        static let edgeKeysStatsInTouchID      = "edgeKeysStatsInTouchID"
+        static let edgeKeysAppKeysFollowPointer = "edgeKeysAppKeysFollowPointer"
+        static let edgeKeysShowTouchID         = "edgeKeysShowTouchID"
+        static let edgeKeysAppKeys             = "edgeKeysAppKeys"
+        static let edgeKeysAppKeysLearn        = "edgeKeysAppKeysLearn"
+        static let edgeKeysDoublePressWindow   = "edgeKeysDoublePressWindow"
+        static let edgeKeysTriggerKey          = "edgeKeysTriggerKey"
+        static let edgeKeysTriggerTapActs      = "edgeKeysTriggerTapActs"
+        static let edgeKeysLayerHoldDelay      = "edgeKeysLayerHoldDelay"
         static let inputSourceHUDEnabled       = "inputSourceHUDEnabled"
         static let mediaKeyPriorityMusic       = "mediaKeyPriorityMusic"
     }
@@ -250,10 +441,6 @@ final class AppSettings {
     /// Grow-in animation for corners (space switch, Mission Control exit).
     /// Behavioral (all displays), so no ext-mirroring.
     var cornerGrowEnabled: Bool {
-        didSet { save(); onChange?(.corners) }
-    }
-    /// Angle-driven full-screen glass shown briefly when a MacBook lid opens.
-    var lidOpeningGlassEnabled: Bool {
         didSet { save(); onChange?(.corners) }
     }
 
@@ -370,6 +557,9 @@ final class AppSettings {
     var notchPreviewThumbHeight: CGFloat { didSet { save() } }
     var notchPreviewShowOtherSpaces: Bool { didSet { save() } }
     var notchShowDock: Bool { didSet { save() } }
+    /// Yellow and green lights beside the red close button on preview cards.
+    var previewMinimizeButton: Bool { didSet { save() } }
+    var previewFullscreenButton: Bool { didSet { save() } }
     var appSwitcherMode: String { didSet { save() } }
     var appSwitcherLayout: String { didSet { save() } }
     var appSwitcherShowDock: Bool { didSet { save() } }
@@ -390,6 +580,8 @@ final class AppSettings {
     var tilingControlBarMode: TilingControlBarMode { didSet { save(); onChange?(.tiling) } }
     var tilingControlBarScope: TilingControlBarScope { didSet { save(); onChange?(.tiling) } }
     var tilingPillScope: TilingPillScope { didSet { save(); onChange?(.tiling) } }
+    var tilingColumnTabPills: Bool { didSet { save(); onChange?(.tiling) } }
+    var tilingColumnPillPosition: TilingColumnPillPosition { didSet { save(); onChange?(.tiling) } }
     var tilingOneAppPerDeskspace: Bool { didSet { save(); onChange?(.tiling) } }
     var tilingAutoDeleteEmptySpaces: Bool { didSet { save(); onChange?(.tiling) } }
     /// One value drives both the outer display inset and inner window gaps.
@@ -437,6 +629,34 @@ final class AppSettings {
     /// on a panel that is now showing something else. Only ever acts when the
     /// monitor's "This Mac" input has been marked — see DisplayInputEngine.
     var monitorInputAutoEject: Bool { didSet { save() } }
+    /// A display just plugged in is disconnected and reconnected once, for
+    /// monitors that stay dark until they've been brought up twice.
+    var displayResyncOnPlug: Bool { didSet { save() } }
+    /// External monitors follow the built-in panel's brightness over DDC,
+    /// auto-brightness included — see ExternalBrightnessSync.
+    var externalBrightnessSync: Bool { didSet { save() } }
+    /// A card on the locked Mac's built-in display saying what the AIs are
+    /// doing, holding the display on while they work — see AgentLockScreen.
+    var lockScreenAgentActivity: Bool { didSet { save() } }
+    var lockScreenAgentStay: LockScreenStay { didSet { save() } }
+    /// Pointing at the notch grows it into the AI activity card — see AgentNotchCard.
+    var notchAgentCard: Bool { didSet { save() } }
+    /// The notch says when an AI usage limit resets — see LimitResetNotice.
+    var notchLimitResetNotice: Bool { didSet { save() } }
+    /// The notch says when an AI session finishes — see AgentDoneNotice.
+    var notchAgentDoneNotice: Bool { didSet { save() } }
+    /// Briefly show power connection and disconnection events.
+    var notchChargerNotice: Bool { didSet { save() } }
+    var notchAmphetamineNotice: Bool { didSet { save() } }
+    var notchDisplayNotice: Bool { didSet { save() } }
+    var notchWARPNotice: Bool { didSet { save() } }
+    var notchAppNotifications: Bool { didSet { save() } }
+    var notchNotificationApps: [NotchNotificationApp] { didSet { save() } }
+    /// A ding as one of those notices appears in the notch.
+    var notchNoticeSound: Bool { didSet { save() } }
+    /// Files dragged to the notch can be kept in a tray or sent by AirDrop — see NotchDropZone.
+    var notchDropTray: Bool { didSet { save() } }
+    var notchDisabledPanes: [String] { didSet { save() } }
     var menuBarSpacing: Int        { didSet { save() } }
     var menuBarSpacingPadding: Int { didSet { save() } }
     var showDeveloper: Bool        { didSet { save() } }
@@ -469,6 +689,8 @@ final class AppSettings {
     var hardwareStatsPowerSamples: Int     { didSet { save(); HardwareMonitor.shared.trimPowerHistory(); onChange?(.structural) } }
     /// "bar" | "number" | "icon" (native-style battery glyph)
     var hardwareStatsBatteryStyle: String  { didSet { save(); onChange?(.structural) } }
+    /// Whether to show decimals in battery percentage while charging
+    var hardwareStatsBatteryChargingDecimals: Bool { didSet { save(); onChange?(.structural) } }
     /// Canonical module ids in their default order.
     static let hardwareModuleIDs = HardwareCardLayout.modules
     /// Module ids that render as grid cards inside popover columns.
@@ -513,6 +735,88 @@ final class AppSettings {
     /// bar covers.
     var systemHUDInTilingBar: Bool { didSet { save() } }
 
+    // Edge Keys (function row shown on the built-in display's bottom edge)
+    var edgeKeysMode: EdgeKeysMode { didSet { save(); onChange?(.structural) } }
+    var edgeKeysStripMatchMenuBar: Bool { didSet { save(); onChange?(.structural) } }
+    var edgeKeysStripHeight: Double { didSet { save(); onChange?(.structural) } }
+    var edgeKeysRoundedCorners: Bool { didSet { save(); onChange?(.structural) } }
+    var edgeKeysHideInFullscreen: Bool { didSet { save(); onChange?(.structural) } }
+    var edgeKeysKeyPlacement: EdgeKeysKeyPlacement { didSet { save(); onChange?(.structural) } }
+    /// The media keys stay merged into the player instead of only after a press.
+    var edgeKeysPinnedPlayer: Bool { didSet { save(); onChange?(.structural) } }
+    /// The media keys turn into the player; off, they stay plain keys.
+    var edgeKeysMediaPlayer: Bool { didSet { save(); onChange?(.structural) } }
+    /// The player shows SP8CE's video while SP8CE's window is out of sight.
+    var edgeKeysSP8CEVideo: Bool { didSet { save(); onChange?(.structural) } }
+    /// The strip draws a cap for esc / the Touch ID key; off, that end is bare.
+    var edgeKeysShowEsc: Bool { didSet { save(); onChange?(.structural) } }
+    /// With the esc key off, the player lives in its spot, always up.
+    var edgeKeysPlayerInEsc: Bool { didSet { save(); onChange?(.structural) } }
+    /// The next event or reminder, with a countdown, in the menu bar.
+    var calendarStatusItem: Bool { didSet { save(); onChange?(.structural) } }
+    /// Maximum character length for next event or reminder title in menu bar. 0 = no limit (full text).
+    var calendarMaxTitleLength: Int { didSet { save(); onChange?(.structural) } }
+    /// When the player in the esc spot is idle (no media), show weather cast.
+    var edgeKeysWeatherInEsc: Bool { didSet { save(); onChange?(.structural) } }
+    /// The next event or reminder, with the menu bar's countdown, in the esc spot.
+    var edgeKeysCalendarInEsc: Bool { didSet { save(); onChange?(.structural) } }
+    /// Claude, Codex, Antigravity and DeepSeek usage from TokenBar in the esc spot.
+    var edgeKeysUsageInEsc: Bool { didSet { save(); onChange?(.structural) } }
+    /// The usage widget's style: bars, one provider a page (true), or rings, two a page.
+    var edgeKeysUsageBars: Bool { didSet { save(); onChange?(.structural) } }
+    /// With the Touch ID key off, the menu bar's hardware stats move to its spot.
+    var edgeKeysStatsInTouchID: Bool { didSet { save(); onChange?(.structural) } }
+    /// App keys follow the app whose window is under the pointer, not the front app.
+    var edgeKeysAppKeysFollowPointer: Bool { didSet { save(); onChange?(.structural) } }
+    var edgeKeysShowTouchID: Bool { didSet { save(); onChange?(.structural) } }
+    /// F3–F9 follow the front app's shortcuts.
+    var edgeKeysAppKeys: Bool { didSet { save(); onChange?(.structural) } }
+    /// Count the ⌘/⌃ shortcuts used in each app to rank its keys.
+    var edgeKeysAppKeysLearn: Bool { didSet { save() } }
+    /// Seconds a play/pause press waits for a second one (which switches the
+    /// player's source). 0: no double press, the key acts at once.
+    var edgeKeysDoublePressWindow: Double { didSet { save() } }
+    /// With the "F key" trigger: which one (1…12).
+    var edgeKeysTriggerKey: Int { didSet { save(); onChange?(.structural) } }
+    /// A quick tap of the trigger F key still does its first-row action.
+    var edgeKeysTriggerTapActs: Bool { didSet { save(); onChange?(.structural) } }
+    var edgeKeysLayerModifier: EdgeKeysModifier { didSet { save(); onChange?(.structural) } }
+    /// With Right ⇧ as the trigger: it stops being Shift on the built-in keyboard.
+    var edgeKeysRightShiftExclusive: Bool { didSet { save(); onChange?(.structural) } }
+    /// Seconds the modifier is held before the second row shows (0…1).
+    var edgeKeysLayerHoldDelay: Double { didSet { save() } }
+    /// F-key number (1…12) → action, for the row shown while the modifier is held.
+    var edgeKeysSecondRow: [Int: EdgeKeyAction] { didSet { save(); onChange?(.structural) } }
+    /// F-key number → action for the row always shown; missing keys keep their own function.
+    var edgeKeysFirstRow: [Int: EdgeKeyAction] { didSet { save(); onChange?(.structural) } }
+    /// A function key used as the layer modifier cannot also hold a row action.
+    var edgeKeysReservedKey: Int? {
+        edgeKeysLayerModifier == .functionKey ? edgeKeysTriggerKey : nil
+    }
+
+    func edgeKeysCanReserve(_ key: Int) -> Bool {
+        guard (1...12).contains(key) else { return false }
+        let first = edgeKeysFirstRow[key] ?? .keyDefault
+        let second = edgeKeysSecondRow[key] ?? .none
+        return (first == .none || first == .keyDefault) && second == .none
+    }
+
+    func reserveEdgeKeysModifier() {
+        guard let key = edgeKeysReservedKey else { return }
+        if edgeKeysFirstRow[key] != EdgeKeyAction.none {
+            edgeKeysFirstRow[key] = EdgeKeyAction.none
+        }
+        if edgeKeysSecondRow[key] != EdgeKeyAction.none {
+            edgeKeysSecondRow[key] = EdgeKeyAction.none
+        }
+        if edgeKeysTriggerTapActs { edgeKeysTriggerTapActs = false }
+    }
+    /// The Touch ID key's fingerprint during a prompt: red like macOS's own, or white like the other keys.
+    var edgeKeysRedFingerprint: Bool { didSet { save() } }
+    /// During a Touch ID prompt the key's spot shows the lock screen's hint —
+    /// a bar on the edge and "Touch ID" — instead of a key with a fingerprint.
+    var edgeKeysTouchIDHint: Bool { didSet { save() } }
+
     // Keyboard language HUD (space indicator morphs into the input source name)
     var inputSourceHUDEnabled: Bool { didSet { save(); onChange?(.structural) } }
 
@@ -534,7 +838,6 @@ final class AppSettings {
             Key.topCornersUnderMenuBar: false,
             Key.topCornersFullscreenOnly: true,
             Key.cornerGrowEnabled:      true,
-            Key.lidOpeningGlassEnabled: true,
             Key.extCornerRadius:        CGFloat(10),
             Key.extCornerCurve:         CornerCurve.g1.rawValue,
             Key.extTopCornersEnabled:    true,
@@ -571,6 +874,8 @@ final class AppSettings {
             Key.notchPreviewThumbHeight: CGFloat(140),
             Key.notchPreviewShowOtherSpaces: true,
             Key.notchShowDock:             true,
+            Key.previewMinimizeButton:     true,
+            Key.previewFullscreenButton:   true,
             Key.appSwitcherLayout:         "grid",
             Key.appSwitcherShowDock:       false,
             Key.appSwitcherPreviewEnabled: true,
@@ -583,6 +888,8 @@ final class AppSettings {
             Key.tilingControlBarMode:      TilingControlBarMode.fullWidth.rawValue,
             Key.tilingControlBarScope:     TilingControlBarScope.currentSpace.rawValue,
             Key.tilingPillScope:           TilingPillScope.currentSpace.rawValue,
+            Key.tilingColumnTabPills:      true,
+            Key.tilingColumnPillPosition: TilingColumnPillPosition.screenEdge.rawValue,
             Key.tilingOneAppPerDeskspace:  true,
             Key.tilingAutoDeleteEmptySpaces: false,
             Key.tilingPadding:             CGFloat(4),
@@ -645,7 +952,6 @@ final class AppSettings {
         topCornersUnderMenuBar   = d.bool(forKey: Key.topCornersUnderMenuBar)
         topCornersFullscreenOnly = d.bool(forKey: Key.topCornersFullscreenOnly)
         cornerGrowEnabled        = d.bool(forKey: Key.cornerGrowEnabled)
-        lidOpeningGlassEnabled   = d.object(forKey: Key.lidOpeningGlassEnabled) as? Bool ?? true
         extCornerRadius          = CGFloat(d.float(forKey: Key.extCornerRadius))
         extCornerCurve           = CornerCurve(rawValue: d.string(forKey: Key.extCornerCurve) ?? "") ?? .g1
         extTopCornersEnabled     = d.bool(forKey: Key.extTopCornersEnabled)
@@ -682,6 +988,8 @@ final class AppSettings {
         notchPreviewThumbHeight = CGFloat(d.object(forKey: Key.notchPreviewThumbHeight) as? Double ?? 140)
         notchPreviewShowOtherSpaces = d.object(forKey: Key.notchPreviewShowOtherSpaces) as? Bool ?? true
         notchShowDock = d.object(forKey: Key.notchShowDock) as? Bool ?? true
+        previewMinimizeButton = d.object(forKey: Key.previewMinimizeButton) as? Bool ?? true
+        previewFullscreenButton = d.object(forKey: Key.previewFullscreenButton) as? Bool ?? true
         appSwitcherMode = d.string(forKey: "appSwitcherMode") ?? "replacement"
         let storedLayout = d.string(forKey: Key.appSwitcherLayout) ?? d.string(forKey: "appSwitcherLayout") ?? "grid"
         let validLayouts = ["grid", "singleRow", "spacePerRow"]
@@ -699,6 +1007,9 @@ final class AppSettings {
         tilingControlBarMode = TilingControlBarMode(rawValue: d.string(forKey: Key.tilingControlBarMode) ?? "") ?? .fullWidth
         tilingControlBarScope = TilingControlBarScope(rawValue: d.string(forKey: Key.tilingControlBarScope) ?? "") ?? .currentSpace
         tilingPillScope = TilingPillScope(rawValue: d.string(forKey: Key.tilingPillScope) ?? "") ?? .currentSpace
+        tilingColumnTabPills = d.object(forKey: Key.tilingColumnTabPills) as? Bool ?? true
+        tilingColumnPillPosition = TilingColumnPillPosition(
+            rawValue: d.string(forKey: Key.tilingColumnPillPosition) ?? "") ?? .screenEdge
         tilingOneAppPerDeskspace = d.object(forKey: Key.tilingOneAppPerDeskspace) as? Bool ?? true
         tilingAutoDeleteEmptySpaces = d.object(forKey: Key.tilingAutoDeleteEmptySpaces) as? Bool ?? false
         tilingPadding = max(0, CGFloat(d.object(forKey: Key.tilingPadding) as? Double ?? 4))
@@ -714,6 +1025,23 @@ final class AppSettings {
         } else { displaplacerPresets = [] }
         displaplacerEnabled  = d.object(forKey: Key.displaplacerEnabled) as? Bool ?? true
         monitorInputAutoEject = d.object(forKey: Key.monitorInputAutoEject) as? Bool ?? false
+        displayResyncOnPlug = d.object(forKey: Key.displayResyncOnPlug) as? Bool ?? false
+        externalBrightnessSync = d.object(forKey: Key.externalBrightnessSync) as? Bool ?? true
+        lockScreenAgentActivity = d.object(forKey: Key.lockScreenAgentActivity) as? Bool ?? true
+        lockScreenAgentStay = LockScreenStay(rawValue: d.string(forKey: Key.lockScreenAgentStay) ?? "") ?? .always
+        notchAgentCard = d.object(forKey: Key.notchAgentCard) as? Bool ?? true
+        notchLimitResetNotice = d.object(forKey: Key.notchLimitResetNotice) as? Bool ?? true
+        notchAgentDoneNotice = d.object(forKey: Key.notchAgentDoneNotice) as? Bool ?? true
+        notchChargerNotice = d.object(forKey: Key.notchChargerNotice) as? Bool ?? true
+        notchAmphetamineNotice = d.object(forKey: Key.notchAmphetamineNotice) as? Bool ?? true
+        notchDisplayNotice = d.object(forKey: Key.notchDisplayNotice) as? Bool ?? true
+        notchWARPNotice = d.object(forKey: Key.notchWARPNotice) as? Bool ?? true
+        notchAppNotifications = d.object(forKey: Key.notchAppNotifications) as? Bool ?? false
+        notchNotificationApps = d.data(forKey: Key.notchNotificationApps)
+            .flatMap { try? JSONDecoder().decode([NotchNotificationApp].self, from: $0) } ?? []
+        notchNoticeSound = d.object(forKey: Key.notchNoticeSound) as? Bool ?? true
+        notchDropTray = d.object(forKey: Key.notchDropTray) as? Bool ?? true
+        notchDisabledPanes = d.stringArray(forKey: Key.notchDisabledPanes) ?? []
         menuBarSpacing        = d.object(forKey: Key.menuBarSpacing) as? Int ?? MenuBarSpacingManager.systemDefault
         menuBarSpacingPadding = d.object(forKey: Key.menuBarSpacingPadding) as? Int ?? MenuBarSpacingManager.systemDefault
         showDeveloper         = d.object(forKey: Key.showDeveloper) as? Bool ?? false
@@ -743,6 +1071,7 @@ final class AppSettings {
         hardwareStatsPowerRaw     = d.object(forKey: Key.hardwareStatsPowerRaw) as? Bool ?? false
         hardwareStatsPowerSamples = d.object(forKey: Key.hardwareStatsPowerSamples) as? Int ?? 120
         hardwareStatsBatteryStyle = d.string(forKey: Key.hardwareStatsBatteryStyle) ?? "bar"
+        hardwareStatsBatteryChargingDecimals = d.object(forKey: Key.hardwareStatsBatteryChargingDecimals) as? Bool ?? false
         // If power was enabled in menu bar and battery wasn't, migrate to battery with watts style
         if (d.object(forKey: Key.hardwareStatsShowPower) as? Bool ?? false) &&
            !(d.object(forKey: Key.hardwareStatsShowBattery) as? Bool ?? false) {
@@ -798,8 +1127,104 @@ final class AppSettings {
         systemHUDPresentationMode = SystemHUDPresentationMode(rawValue: d.string(forKey: Key.systemHUDPresentationMode) ?? "") ?? .dynamic
         systemHUDDeviceIcons = d.object(forKey: Key.systemHUDDeviceIcons) as? Bool ?? true
         systemHUDInTilingBar = d.object(forKey: Key.systemHUDInTilingBar) as? Bool ?? false
+        if let raw = d.string(forKey: Key.edgeKeysMode), let mode = EdgeKeysMode(rawValue: raw) {
+            edgeKeysMode = mode
+        } else {
+            // Before the setting existed the pop-ups had their own switches.
+            let keys = d.object(forKey: "keyEdgeHUD") as? Bool ?? true
+            let music = d.object(forKey: "musicEdgeHUD") as? Bool ?? true
+            edgeKeysMode = keys || music ? .popup : .off
+        }
+        edgeKeysStripMatchMenuBar = d.object(forKey: Key.edgeKeysStripMatchMenuBar) as? Bool ?? true
+        edgeKeysStripHeight = d.object(forKey: Key.edgeKeysStripHeight) as? Double ?? 37
+        edgeKeysRoundedCorners = d.object(forKey: Key.edgeKeysRoundedCorners) as? Bool ?? true
+        edgeKeysHideInFullscreen = d.object(forKey: Key.edgeKeysHideInFullscreen) as? Bool ?? true
+        edgeKeysPinnedPlayer = d.object(forKey: Key.edgeKeysPinnedPlayer) as? Bool ?? false
+        edgeKeysMediaPlayer = d.object(forKey: Key.edgeKeysMediaPlayer) as? Bool ?? true
+        edgeKeysSP8CEVideo = d.object(forKey: Key.edgeKeysSP8CEVideo) as? Bool ?? false
+        edgeKeysShowEsc = d.object(forKey: Key.edgeKeysShowEsc) as? Bool ?? true
+        edgeKeysPlayerInEsc = d.object(forKey: Key.edgeKeysPlayerInEsc) as? Bool ?? false
+        calendarStatusItem = d.object(forKey: Key.calendarStatusItem) as? Bool ?? true
+        calendarMaxTitleLength = d.object(forKey: Key.calendarMaxTitleLength) as? Int ?? 0
+        edgeKeysWeatherInEsc = d.object(forKey: Key.edgeKeysWeatherInEsc) as? Bool ?? true
+        edgeKeysCalendarInEsc = d.object(forKey: Key.edgeKeysCalendarInEsc) as? Bool ?? true
+        edgeKeysUsageInEsc = d.object(forKey: Key.edgeKeysUsageInEsc) as? Bool ?? true
+        edgeKeysUsageBars = d.object(forKey: Key.edgeKeysUsageBars) as? Bool ?? true
+        edgeKeysStatsInTouchID = d.object(forKey: Key.edgeKeysStatsInTouchID) as? Bool ?? false
+        edgeKeysAppKeysFollowPointer = d.object(forKey: Key.edgeKeysAppKeysFollowPointer) as? Bool ?? true
+        edgeKeysShowTouchID = d.object(forKey: Key.edgeKeysShowTouchID) as? Bool ?? true
+        edgeKeysAppKeys = d.object(forKey: Key.edgeKeysAppKeys) as? Bool ?? true
+        edgeKeysAppKeysLearn = d.object(forKey: Key.edgeKeysAppKeysLearn) as? Bool ?? true
+        edgeKeysDoublePressWindow = d.object(forKey: Key.edgeKeysDoublePressWindow) as? Double ?? 0.15
+        edgeKeysTriggerKey = d.object(forKey: Key.edgeKeysTriggerKey) as? Int ?? 12
+        edgeKeysTriggerTapActs = d.object(forKey: Key.edgeKeysTriggerTapActs) as? Bool ?? true
+        if let placement = EdgeKeysKeyPlacement(rawValue: d.string(forKey: Key.edgeKeysKeyPlacement) ?? "") {
+            edgeKeysKeyPlacement = placement
+        } else {
+            // It was a switch for the "from edge" look first.
+            edgeKeysKeyPlacement = d.bool(forKey: Key.edgeKeysStripFlush) ? .rising : .floating
+        }
+        edgeKeysLayerModifier = EdgeKeysModifier(rawValue: d.string(forKey: Key.edgeKeysLayerModifier) ?? "") ?? .command
+        edgeKeysLayerHoldDelay = d.object(forKey: Key.edgeKeysLayerHoldDelay) as? Double ?? 0.3
+        var secondRow = (d.data(forKey: Key.edgeKeysSecondRow)
+            .flatMap { try? JSONDecoder().decode([Int: EdgeKeyAction].self, from: $0) })
+            ?? EdgeKeyAction.defaultSecondRow
+        if !d.bool(forKey: Key.edgeKeysAmphetamineF4Assigned) {
+            secondRow[4] = .amphetamineToggle
+            if let data = try? JSONEncoder().encode(secondRow) {
+                d.set(data, forKey: Key.edgeKeysSecondRow)
+                d.set(true, forKey: Key.edgeKeysAmphetamineF4Assigned)
+            }
+        }
+        if !d.bool(forKey: Key.edgeKeysSettingsF12Assigned) {
+            secondRow[12] = .settings(nil)
+            if let data = try? JSONEncoder().encode(secondRow) {
+                d.set(data, forKey: Key.edgeKeysSecondRow)
+                d.set(true, forKey: Key.edgeKeysSettingsF12Assigned)
+            }
+        }
+        if !d.bool(forKey: Key.edgeKeysWARPF6Assigned) {
+            secondRow[6] = .cloudflareWARPToggle
+            if let data = try? JSONEncoder().encode(secondRow) {
+                d.set(data, forKey: Key.edgeKeysSecondRow)
+                d.set(true, forKey: Key.edgeKeysWARPF6Assigned)
+            }
+        }
+        edgeKeysSecondRow = secondRow
+        edgeKeysRedFingerprint = d.object(forKey: Key.edgeKeysRedFingerprint) as? Bool ?? true
+        edgeKeysTouchIDHint = d.object(forKey: Key.edgeKeysTouchIDHint) as? Bool ?? false
+        edgeKeysRightShiftExclusive = d.object(forKey: Key.edgeKeysRightShiftExclusive) as? Bool ?? true
+        if let data = d.data(forKey: Key.edgeKeysFirstRow),
+           let decoded = try? JSONDecoder().decode([Int: EdgeKeyAction].self, from: data) {
+            edgeKeysFirstRow = decoded
+        } else {
+            edgeKeysFirstRow = EdgeKeyAction.defaultFirstRow
+        }
         inputSourceHUDEnabled = d.object(forKey: Key.inputSourceHUDEnabled) as? Bool ?? true
         mediaKeyPriorityMusic = d.object(forKey: Key.mediaKeyPriorityMusic) as? Bool ?? false
+        // Existing F12 modifier + microphone setups predate reserved keys.
+        // F11 is the requested destination, but never overwrite an assigned F11.
+        if edgeKeysReservedKey == 12, edgeKeysFirstRow[12] == .microphoneToggle,
+           edgeKeysFirstRow[11] == EdgeKeyAction.none {
+            edgeKeysFirstRow[11] = .microphoneToggle
+            edgeKeysFirstRow[12] = EdgeKeyAction.none
+            if let data = try? JSONEncoder().encode(edgeKeysFirstRow) {
+                d.set(data, forKey: Key.edgeKeysFirstRow)
+            }
+        }
+        // F12's old second-row Settings action is redundant when F11 already
+        // has the same action; it must not remain under the modifier.
+        if edgeKeysReservedKey == 12, edgeKeysSecondRow[12] == .settings(nil),
+           edgeKeysSecondRow[11] == .settings(nil) {
+            edgeKeysSecondRow[12] = EdgeKeyAction.none
+            if let data = try? JSONEncoder().encode(edgeKeysSecondRow) {
+                d.set(data, forKey: Key.edgeKeysSecondRow)
+            }
+        }
+        if edgeKeysReservedKey != nil, edgeKeysTriggerTapActs {
+            edgeKeysTriggerTapActs = false
+            d.set(false, forKey: Key.edgeKeysTriggerTapActs)
+        }
     }
 
     private func save() {
@@ -812,7 +1237,6 @@ final class AppSettings {
         d.set(topCornersUnderMenuBar,       forKey: Key.topCornersUnderMenuBar)
         d.set(topCornersFullscreenOnly,     forKey: Key.topCornersFullscreenOnly)
         d.set(cornerGrowEnabled,            forKey: Key.cornerGrowEnabled)
-        d.set(lidOpeningGlassEnabled,       forKey: Key.lidOpeningGlassEnabled)
         d.set(Float(extCornerRadius),       forKey: Key.extCornerRadius)
         d.set(extCornerCurve.rawValue,      forKey: Key.extCornerCurve)
         d.set(extTopCornersEnabled,         forKey: Key.extTopCornersEnabled)
@@ -848,6 +1272,8 @@ final class AppSettings {
         d.set(Double(notchPreviewThumbHeight), forKey: Key.notchPreviewThumbHeight)
         d.set(notchPreviewShowOtherSpaces,   forKey: Key.notchPreviewShowOtherSpaces)
         d.set(notchShowDock,                 forKey: Key.notchShowDock)
+        d.set(previewMinimizeButton,         forKey: Key.previewMinimizeButton)
+        d.set(previewFullscreenButton,       forKey: Key.previewFullscreenButton)
         d.set(appSwitcherMode, forKey: "appSwitcherMode")
         d.set(appSwitcherLayout, forKey: Key.appSwitcherLayout)
         d.set(appSwitcherShowDock, forKey: Key.appSwitcherShowDock)
@@ -863,6 +1289,8 @@ final class AppSettings {
         d.set(tilingControlBarMode.rawValue,   forKey: Key.tilingControlBarMode)
         d.set(tilingControlBarScope.rawValue,  forKey: Key.tilingControlBarScope)
         d.set(tilingPillScope.rawValue,         forKey: Key.tilingPillScope)
+        d.set(tilingColumnTabPills,             forKey: Key.tilingColumnTabPills)
+        d.set(tilingColumnPillPosition.rawValue, forKey: Key.tilingColumnPillPosition)
         d.set(tilingOneAppPerDeskspace,         forKey: Key.tilingOneAppPerDeskspace)
         d.set(tilingAutoDeleteEmptySpaces,      forKey: Key.tilingAutoDeleteEmptySpaces)
         d.set(Double(tilingPadding),          forKey: Key.tilingPadding)
@@ -874,6 +1302,22 @@ final class AppSettings {
         d.set(tilingControlBarDuoBatteryWifi,  forKey: Key.tilingControlBarDuoBatteryWifi)
         d.set(displaplacerEnabled,          forKey: Key.displaplacerEnabled)
         d.set(monitorInputAutoEject,        forKey: Key.monitorInputAutoEject)
+        d.set(displayResyncOnPlug,          forKey: Key.displayResyncOnPlug)
+        d.set(externalBrightnessSync,       forKey: Key.externalBrightnessSync)
+        d.set(lockScreenAgentActivity,      forKey: Key.lockScreenAgentActivity)
+        d.set(lockScreenAgentStay.rawValue, forKey: Key.lockScreenAgentStay)
+        d.set(notchAgentCard,               forKey: Key.notchAgentCard)
+        d.set(notchLimitResetNotice,        forKey: Key.notchLimitResetNotice)
+        d.set(notchAgentDoneNotice,         forKey: Key.notchAgentDoneNotice)
+        d.set(notchChargerNotice,           forKey: Key.notchChargerNotice)
+        d.set(notchAmphetamineNotice,       forKey: Key.notchAmphetamineNotice)
+        d.set(notchDisplayNotice,           forKey: Key.notchDisplayNotice)
+        d.set(notchWARPNotice,              forKey: Key.notchWARPNotice)
+        d.set(notchAppNotifications,        forKey: Key.notchAppNotifications)
+        if let data = try? JSONEncoder().encode(notchNotificationApps) { d.set(data, forKey: Key.notchNotificationApps) }
+        d.set(notchNoticeSound,             forKey: Key.notchNoticeSound)
+        d.set(notchDropTray,                forKey: Key.notchDropTray)
+        d.set(notchDisabledPanes,           forKey: Key.notchDisabledPanes)
         d.set(menuBarSpacing,               forKey: Key.menuBarSpacing)
         d.set(menuBarSpacingPadding,        forKey: Key.menuBarSpacingPadding)
         d.set(showDeveloper,                forKey: Key.showDeveloper)
@@ -921,6 +1365,38 @@ final class AppSettings {
         d.set(systemHUDPresentationMode.rawValue, forKey: Key.systemHUDPresentationMode)
         d.set(systemHUDDeviceIcons, forKey: Key.systemHUDDeviceIcons)
         d.set(systemHUDInTilingBar, forKey: Key.systemHUDInTilingBar)
+        d.set(edgeKeysMode.rawValue, forKey: Key.edgeKeysMode)
+        d.set(edgeKeysStripMatchMenuBar, forKey: Key.edgeKeysStripMatchMenuBar)
+        d.set(edgeKeysStripHeight, forKey: Key.edgeKeysStripHeight)
+        d.set(edgeKeysRoundedCorners, forKey: Key.edgeKeysRoundedCorners)
+        d.set(edgeKeysHideInFullscreen, forKey: Key.edgeKeysHideInFullscreen)
+        d.set(edgeKeysKeyPlacement.rawValue, forKey: Key.edgeKeysKeyPlacement)
+        d.set(edgeKeysPinnedPlayer, forKey: Key.edgeKeysPinnedPlayer)
+        d.set(edgeKeysMediaPlayer, forKey: Key.edgeKeysMediaPlayer)
+        d.set(edgeKeysSP8CEVideo, forKey: Key.edgeKeysSP8CEVideo)
+        d.set(edgeKeysShowEsc, forKey: Key.edgeKeysShowEsc)
+        d.set(edgeKeysPlayerInEsc, forKey: Key.edgeKeysPlayerInEsc)
+        d.set(calendarStatusItem, forKey: Key.calendarStatusItem)
+        d.set(calendarMaxTitleLength, forKey: Key.calendarMaxTitleLength)
+        d.set(edgeKeysWeatherInEsc, forKey: Key.edgeKeysWeatherInEsc)
+        d.set(edgeKeysCalendarInEsc, forKey: Key.edgeKeysCalendarInEsc)
+        d.set(edgeKeysUsageInEsc, forKey: Key.edgeKeysUsageInEsc)
+        d.set(edgeKeysUsageBars, forKey: Key.edgeKeysUsageBars)
+        d.set(edgeKeysStatsInTouchID, forKey: Key.edgeKeysStatsInTouchID)
+        d.set(edgeKeysAppKeysFollowPointer, forKey: Key.edgeKeysAppKeysFollowPointer)
+        d.set(edgeKeysShowTouchID, forKey: Key.edgeKeysShowTouchID)
+        d.set(edgeKeysAppKeys, forKey: Key.edgeKeysAppKeys)
+        d.set(edgeKeysAppKeysLearn, forKey: Key.edgeKeysAppKeysLearn)
+        d.set(edgeKeysDoublePressWindow, forKey: Key.edgeKeysDoublePressWindow)
+        d.set(edgeKeysTriggerKey, forKey: Key.edgeKeysTriggerKey)
+        d.set(edgeKeysTriggerTapActs, forKey: Key.edgeKeysTriggerTapActs)
+        d.set(edgeKeysLayerModifier.rawValue, forKey: Key.edgeKeysLayerModifier)
+        d.set(edgeKeysLayerHoldDelay, forKey: Key.edgeKeysLayerHoldDelay)
+        if let data = try? JSONEncoder().encode(edgeKeysSecondRow) { d.set(data, forKey: Key.edgeKeysSecondRow) }
+        if let data = try? JSONEncoder().encode(edgeKeysFirstRow) { d.set(data, forKey: Key.edgeKeysFirstRow) }
+        d.set(edgeKeysRedFingerprint, forKey: Key.edgeKeysRedFingerprint)
+        d.set(edgeKeysTouchIDHint, forKey: Key.edgeKeysTouchIDHint)
+        d.set(edgeKeysRightShiftExclusive, forKey: Key.edgeKeysRightShiftExclusive)
         d.set(inputSourceHUDEnabled, forKey: Key.inputSourceHUDEnabled)
         d.set(mediaKeyPriorityMusic, forKey: Key.mediaKeyPriorityMusic)
     }

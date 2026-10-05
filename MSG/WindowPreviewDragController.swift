@@ -874,7 +874,7 @@ final class WindowPreviewDragController {
     /// ordinary windows. Leave fullscreen first, and unminimise, so the same
     /// concrete window moves instead of another one being created or selected.
     /// False only when the task was cancelled mid-wait.
-    private static func prepareForSpaceMove(_ axWin: AXUIElement) async -> Bool {
+    static func prepareForSpaceMove(_ axWin: AXUIElement) async -> Bool {
         let fullScreenAttribute = "AXFullScreen" as CFString
         var fullScreenRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axWin, fullScreenAttribute, &fullScreenRef) == .success,

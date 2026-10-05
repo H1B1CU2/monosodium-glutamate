@@ -296,6 +296,9 @@ struct SystemHUDPreviewScene: View {
             VStack(spacing: 0) {
                 PreviewTimeline { now in
                     let anim = hudAnim(at: now)
+                    if presentationMode == .notch {
+                        notchHUD(anim)
+                    } else {
                     HStack(spacing: 12) {
                         Spacer()
                         if presentationMode == .separate {
@@ -335,10 +338,65 @@ struct SystemHUDPreviewScene: View {
                     .padding(.horizontal, trailingPad)
                     .frame(height: menuBarHeight)
                     .background(Color.white.opacity(0.65))
+                    }
                 }
                 Spacer()
             }
         }
+    }
+
+    /// Notch: a black notch in the middle of the menu bar grows into the HUD
+    /// card (the TokenBar card's shape) and folds back.
+    private func notchHUD(_ anim: HUDAnim) -> some View {
+        let open = CGFloat(anim.hudVisible ? anim.hudOpacity : 0)
+        let notchWidth: CGFloat = 110
+        let width = notchWidth + 2 * 64 * open
+        let height = menuBarHeight + 46 * open
+        let top = 12 * open, bottom = 8 + 6 * open
+        return ZStack(alignment: .top) {
+            HStack {
+                Spacer()
+                Text("10:00")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.black.opacity(0.85))
+            }
+            .padding(.horizontal, trailingPad)
+            .frame(height: menuBarHeight)
+            .background(Color.white.opacity(0.65))
+            UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: bottom,
+                                   bottomTrailingRadius: bottom, topTrailingRadius: top)
+                .fill(Color.black)
+                .frame(width: width, height: height)
+                .overlay(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: hudSymbolName(kind: anim.kind, value: anim.value))
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                            Text("\(Int((anim.value * 100).rounded()))%")
+                                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        }
+                        .frame(height: menuBarHeight)
+                        Text(anim.kind == .volume ? "MacBook Pro Speakers" : "Brightness")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .opacity(0.55)
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.18))
+                                Rectangle().fill(Color.white)
+                                    .frame(width: geo.size.width * max(0, min(1, anim.value)))
+                            }
+                            .clipShape(Capsule())
+                        }
+                        .frame(height: 4)
+                    }
+                    .padding(.horizontal, 14)
+                    .foregroundColor(.white)
+                    .opacity(Double(open))
+                }
+                .clipped()
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     // Geometry mirrors IndicatorRenderer.makeSystemHUDFrame: fixed-width icon

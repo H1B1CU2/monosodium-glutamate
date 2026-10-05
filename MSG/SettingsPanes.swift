@@ -81,11 +81,9 @@ struct HUDReplacerPane: View {
             }
 
             Section {
-                Picker("Show HUD As", selection: Binding(get: { vm.systemHUDPresentationMode }, set: { vm.systemHUDPresentationMode = $0 })) {
-                    ForEach(SystemHUDPresentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                if vm.systemHUDPresentationMode == .dynamic {
+                SettingsSegmentedPicker(title: "Show HUD As", selection: Binding(get: { vm.systemHUDPresentationMode }, set: { vm.systemHUDPresentationMode = $0 }),
+                    options: SystemHUDPresentationMode.allCases.map { SettingsSegment($0.rawValue, $0) })
+                if vm.systemHUDPresentationMode != .separate {
                     SettingsToggleRow("Use tiling bar Space Indicator",
                         detail: "While the tiling control bar is showing, its Space Indicator changes into the HUD and back, instead of the menu bar's.",
                         isOn: Binding(get: { vm.systemHUDInTilingBar }, set: { vm.systemHUDInTilingBar = $0 }))
@@ -93,9 +91,11 @@ struct HUDReplacerPane: View {
             } header: {
                 Text("Presentation")
             } footer: {
-                Text("Dynamic uses the Space Indicator. Separate Menu Bar uses its own icon.")
+                Text("Dynamic uses the Space Indicator. Separate Menu Bar uses its own icon. Notch grows out of the notch like the TokenBar card: drag the bar, click the speaker to mute, rest the pointer on it to switch sound output, or pick a language. Without a notch (lid closed) it falls back to Dynamic.")
                     .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help("Dynamic uses the Space Indicator. Separate Menu Bar uses its own icon. In Notch mode, drag to adjust, click the speaker to mute, hover to choose an output, or pick a language. Screens without a notch use Dynamic.")
             }
 
             Section("Volume & brightness") {
@@ -110,7 +110,7 @@ struct HUDReplacerPane: View {
             }
 
             Section("Keyboard") {
-                SettingsToggleRow("Show input language", detail: "Briefly show TH or ENG in the Space Indicator when switching languages. Works independently of the HUD switch.",
+                SettingsToggleRow("Show input language", detail: "Briefly show TH or ENG in the Space Indicator (or the notch, with Notch presentation) when switching languages. Works independently of the HUD switch.",
                     isOn: Binding(get: { vm.inputSourceHUDEnabled }, set: { vm.inputSourceHUDEnabled = $0 }))
             }
 
@@ -179,12 +179,9 @@ struct CornermizerPane: View {
                 Toggle("Top Corners",
                        isOn: bind({ vm.topCornersEnabled }, { vm.topCornersEnabled = $0 }))
                 if vm.topCornersEnabled {
-                    Picker("Position", selection: bind({ vm.topCornersUnderMenuBar },
-                                                       { vm.topCornersUnderMenuBar = $0 })) {
-                        Text("At Screen Edge").tag(false)
-                        Text("Below Menu Bar").tag(true)
-                    }
-                    .pickerStyle(.segmented)
+                    SettingsSegmentedPicker(title: "Position", selection: bind({ vm.topCornersUnderMenuBar },
+                                                                           { vm.topCornersUnderMenuBar = $0 }),
+                        options: [SettingsSegment("At Screen Edge", false), SettingsSegment("Below Menu Bar", true)])
                     SettingsToggleRow("Only in full screen", detail: "Show top corners only while an app is full screen.",
                            isOn: bind({ vm.topCornersFullscreenOnly }, { vm.topCornersFullscreenOnly = $0 }))
                 }
@@ -193,12 +190,9 @@ struct CornermizerPane: View {
                 if radiusVisible {
                     radiusSlider(value: bind({ Double(vm.cornerRadius) },
                                              { vm.cornerRadius = CGFloat($0) }))
-                    Picker("Curve", selection: bind({ vm.cornerCurve },
-                                                    { vm.cornerCurve = $0 })) {
-                        Text("G1 (Circular)").tag(CornerCurve.g1)
-                        Text("G2 (Continuous)").tag(CornerCurve.g2)
-                    }
-                    .pickerStyle(.segmented)
+                    SettingsSegmentedPicker(title: "Curve", selection: bind({ vm.cornerCurve },
+                                                                        { vm.cornerCurve = $0 }),
+                        options: [SettingsSegment("G1 (Circular)", CornerCurve.g1), SettingsSegment("G2 (Continuous)", CornerCurve.g2)])
                 }
             }
 
@@ -363,14 +357,11 @@ struct CornermizerPane: View {
             { AppSettings.shared.setExtTopCornersEnabled($0, for: uuid); vm.objectWillChange.send() }
         ))
         if AppSettings.shared.extTopCornersEnabled(for: uuid) {
-            Picker("Position", selection: bind(
-                { AppSettings.shared.extTopCornersUnderMenuBar(for: uuid) },
-                { AppSettings.shared.setExtTopCornersUnderMenuBar($0, for: uuid); vm.objectWillChange.send() }
-            )) {
-                Text("At Screen Edge").tag(false)
-                Text("Below Menu Bar").tag(true)
-            }
-            .pickerStyle(.segmented)
+            SettingsSegmentedPicker(title: "Position", selection: bind(
+                            { AppSettings.shared.extTopCornersUnderMenuBar(for: uuid) },
+                            { AppSettings.shared.setExtTopCornersUnderMenuBar($0, for: uuid); vm.objectWillChange.send() }
+                        ),
+                options: [SettingsSegment("At Screen Edge", false), SettingsSegment("Below Menu Bar", true)])
             SettingsToggleRow("Only in full screen", detail: "Show top corners only while an app is full screen.", isOn: bind(
                 { AppSettings.shared.extTopCornersFullscreenOnly(for: uuid) },
                 { AppSettings.shared.setExtTopCornersFullscreenOnly($0, for: uuid); vm.objectWillChange.send() }
@@ -385,14 +376,11 @@ struct CornermizerPane: View {
                 { Double(AppSettings.shared.extCornerRadius(for: uuid)) },
                 { AppSettings.shared.setExtCornerRadius(CGFloat($0), for: uuid); vm.objectWillChange.send() }
             ))
-            Picker("Curve", selection: bind(
-                { AppSettings.shared.extCornerCurve(for: uuid) },
-                { AppSettings.shared.setExtCornerCurve($0, for: uuid); vm.objectWillChange.send() }
-            )) {
-                Text("G1 (Circular)").tag(CornerCurve.g1)
-                Text("G2 (Continuous)").tag(CornerCurve.g2)
-            }
-            .pickerStyle(.segmented)
+            SettingsSegmentedPicker(title: "Curve", selection: bind(
+                            { AppSettings.shared.extCornerCurve(for: uuid) },
+                            { AppSettings.shared.setExtCornerCurve($0, for: uuid); vm.objectWillChange.send() }
+                        ),
+                options: [SettingsSegment("G1 (Circular)", CornerCurve.g1), SettingsSegment("G2 (Continuous)", CornerCurve.g2)])
         }
     }
 
@@ -412,49 +400,6 @@ struct CornermizerPane: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 44, alignment: .trailing)
-        }
-    }
-}
-
-// MARK: - Lid Glass pane
-
-@available(macOS 14.0, *)
-struct LidGlassPane: View {
-    @ObservedObject var vm: SettingsViewModel
-
-    var body: some View {
-        PaneContainer(
-            section: .lidGlass,
-            headerToggle: Binding(
-                get: { vm.lidOpeningGlassEnabled },
-                set: { vm.lidOpeningGlassEnabled = $0 }
-            )
-        ) {
-            Section("Preview") {
-                Button {
-                    NotificationCenter.default.post(name: .previewLidOpeningGlass,
-                                                    object: nil)
-                } label: {
-                    Label("Play Full-Screen Preview", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .disabled(!vm.lidOpeningGlassEnabled)
-            }
-
-            Section("Opening Effect") {
-                LabeledContent("Style", value: "iPhone Duo Glass")
-                Text("The glass starts when a closed MacBook wakes, then its blur and moving reflection follow the physical lid angle until the display is open.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Section {
-                Text("The effect appears over your desktop after macOS wakes. macOS does not allow MSG to draw over the login screen.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 }
@@ -784,6 +729,7 @@ struct ArrangeDisplaysView: View {
 @available(macOS 14.0, *)
 struct HardwarePane: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var selectedTab = 0
     @State private var stats = HardwareStats()
     @State private var timer: Timer?
     @State private var previewMode: String = "menubar"
@@ -793,168 +739,158 @@ struct HardwarePane: View {
     private let orderEndTarget = "__end__"
 
     var body: some View {
-        PaneContainer(section: .hardware,
-                      headerToggle: Binding(get: { vm.hardwareStatsEnabled },
-                                            set: { vm.hardwareStatsEnabled = $0 })) {
-            Section {
-                if previewMode == "menubar" {
-                    previewCard
-                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                        .listRowBackground(Color.clear)
-                } else {
-                    popoverPreviewCard
-                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                        .listRowBackground(Color.clear)
-                }
-            } header: {
-                HStack {
-                    Text("Preview")
-                    Spacer()
-                    Picker("Preview Mode", selection: $previewMode) {
-                        Text("Menu Bar").tag("menubar")
-                        Text("Popover").tag("popover")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 170)
-                }
-            }
-
-            if vm.hardwareStatsEnabled {
+        PaneContainer(section: .hardware, headerToggle: $vm.hardwareStatsEnabled,
+                      tabs: ["Layout", "Modules", "Appearance", "Fans"], tabSelection: $selectedTab) {
+            if selectedTab == 0 {
                 Section {
-                    orderColumnHeader
-                    ForEach(vm.hardwareStatsModuleOrder, id: \.self) { id in
-                        orderRow(id)
-                    }
-                    orderEndZone
-                } header: {
-                    Text("Modules")
-                } footer: {
-                    Text("Drag ≡ or use ▲▼ to reorder. Menu controls the menu bar; Card controls the popover. Both share the same order.")
-                }
-
-                Section("Module settings") {
-                    ForEach(AppSettings.hardwareModuleIDs, id: \.self) { id in
-                        DisclosureGroup(moduleTitle(id)) {
-                            moduleGroup(for: id)
-                        }
-                    }
-                }
-
-                Section("Appearance") {
-                    Picker("Bar style", selection: $vm.hardwareStatsBarStyle) {
-                        Text("Vertical").tag("vertical")
-                        Text("Horizontal").tag("horizontal")
-                        Text("Circular").tag("circular")
-                        Text("Dot").tag("dot")
-                    }
-                    .pickerStyle(.segmented)
-                    Picker("Label position", selection: $vm.hardwareStatsLabelPos) {
-                        Text("Vertical").tag("vertical")
-                        Text("Horizontal").tag("horizontal")
-                    }
-                    .pickerStyle(.segmented)
-                    Picker("Dot color", selection: $vm.hardwareStatsColorScale) {
-                        Text("White").tag("white")
-                        Text("Green").tag("green")
-                    }
-                    .pickerStyle(.segmented)
-
-                }
-
-                Section {
-                    HStack {
-                        Text("Update every")
-                        Slider(value: $vm.hardwareStatsInterval, in: 1...10, step: 1)
-                        Text("\(Int(vm.hardwareStatsInterval))s")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, alignment: .trailing)
-                    }
-                } header: {
-                    Text("Refresh")
-                } footer: {
-                    Text("Longer intervals reduce background work.")
-                }
-
-                Section("Fans") {
-                    if stats.fans.isEmpty {
-                        Text("No fan data available")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if previewMode == "menubar" {
+                        previewCard
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                            .listRowBackground(Color.clear)
                     } else {
-                        ForEach(stats.fans) { fan in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(fan.name)
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text("\(fan.current) RPM")
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                // Bar showing fan speed relative to max
-                                GeometryReader { geo in
-                                    ZStack(alignment: .leading) {
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(Color.white.opacity(0.1))
-                                            .frame(height: 4)
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(fanColor(fan))
-                                            .frame(width: geo.size.width * CGFloat(fan.current) / CGFloat(max(1, fan.max)), height: 4)
-                                    }
-                                }
-                                .frame(height: 4)
-                                Text("Min: \(fan.min)  Max: \(fan.max)")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.tertiary)
-                                    .monospacedDigit()
+                        popoverPreviewCard
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                            .listRowBackground(Color.clear)
+                    }
+                } header: {
+                    HStack {
+                        Text("Preview")
+                        Spacer()
+                        SettingsSegmentedPicker(title: "Preview Mode", selection: $previewMode,
+                            options: [SettingsSegment("Menu Bar", "menubar"), SettingsSegment("Popover", "popover")], navigation: true, showsLabel: false)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 170)
+                    }
+                }
+                if vm.hardwareStatsEnabled {
+                    Section {
+                        orderColumnHeader
+                        ForEach(vm.hardwareStatsModuleOrder, id: \.self) { id in
+                            orderRow(id)
+                        }
+                        orderEndZone
+                    } header: {
+                        Text("Modules")
+                    } footer: {
+                        Text("Drag ≡ or use ▲▼ to reorder. Menu controls the menu bar; Card controls the popover. Both share the same order.")
+                    }
+                }
+            } else if vm.hardwareStatsEnabled {
+                switch selectedTab {
+                case 1:
+                    Section("Module settings") {
+                        ForEach(AppSettings.hardwareModuleIDs, id: \.self) { id in
+                            DisclosureGroup(moduleTitle(id)) {
+                                moduleGroup(for: id)
                             }
-                            .padding(.vertical, 2)
                         }
+                    }
+                case 2:
+                    Section("Appearance") {
+                        SettingsSegmentedPicker(title: "Bar style", selection: $vm.hardwareStatsBarStyle,
+                            options: [SettingsSegment("Vertical", "vertical"), SettingsSegment("Horizontal", "horizontal"), SettingsSegment("Circular", "circular"), SettingsSegment("Dot", "dot")])
+                        SettingsSegmentedPicker(title: "Label position", selection: $vm.hardwareStatsLabelPos,
+                            options: [SettingsSegment("Vertical", "vertical"), SettingsSegment("Horizontal", "horizontal")])
+                        SettingsSegmentedPicker(title: "Dot color", selection: $vm.hardwareStatsColorScale,
+                            options: [SettingsSegment("White", "white"), SettingsSegment("Green", "green")])
 
-                        Picker("Fan Preset", selection: $vm.hardwareStatsFanPreset) {
-                            Text("Silent").tag("silent")
-                            Text("Default").tag("default")
-                            Text("Performance").tag("performance")
+                    }
+                    Section {
+                        HStack {
+                            Text("Update every")
+                            Slider(value: $vm.hardwareStatsInterval, in: 1...10, step: 1)
+                            Text("\(Int(vm.hardwareStatsInterval))s")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, alignment: .trailing)
                         }
-                        .pickerStyle(.menu)
-                        .onChange(of: vm.hardwareStatsFanPreset) { _, newVal in
-                            HardwareMonitor.shared.applySelectedFanPresetFromUser()
-                        }
-
-                        if vm.hardwareStatsFanPreset != "default",
-                           vm.hardwareStatsFanCurves[vm.hardwareStatsFanPreset] != nil {
-                            let presetName = vm.hardwareStatsFanPreset.capitalized
-                            let curveBinding = vm.fanCurveBinding(for: vm.hardwareStatsFanPreset)
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("\(presetName) Curve")
-                                    .font(.system(size: 11, weight: .semibold))
-                                ForEach(0..<min(curveBinding.wrappedValue.count, 8), id: \.self) { i in
-                                    HStack(spacing: 8) {
-                                        Text("\(Int(curveBinding.wrappedValue[i][0]))°C")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .frame(width: 32, alignment: .trailing)
-                                        Slider(value: Binding(
-                                            get: { curveBinding.wrappedValue[i][1] },
-                                            set: { newVal in
-                                                var updated = curveBinding.wrappedValue
-                                                updated[i][1] = newVal
-                                                curveBinding.wrappedValue = updated
-                                            }
-                                        ), in: 0...100, step: 5)
-                                        Text("\(Int(curveBinding.wrappedValue[i][1]))%")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .frame(width: 28, alignment: .trailing)
+                    } header: {
+                        Text("Refresh")
+                    } footer: {
+                        Text("Longer intervals reduce background work.")
+                    }
+                default:
+                    Section("Fans") {
+                        if stats.fans.isEmpty {
+                            Text("No fan data available")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(stats.fans) { fan in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(fan.name)
+                                            .font(.system(size: 12, weight: .medium))
+                                        Spacer()
+                                        Text("\(fan.current) RPM")
+                                            .font(.system(size: 11, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                     }
+                                    // Bar showing fan speed relative to max
+                                    GeometryReader { geo in
+                                        ZStack(alignment: .leading) {
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .fill(Color.white.opacity(0.1))
+                                                .frame(height: 4)
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .fill(fanColor(fan))
+                                                .frame(width: geo.size.width * CGFloat(fan.current) / CGFloat(max(1, fan.max)), height: 4)
+                                        }
+                                    }
+                                    .frame(height: 4)
+                                    Text("Min: \(fan.min)  Max: \(fan.max)")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.tertiary)
+                                        .monospacedDigit()
                                 }
+                                .padding(.vertical, 2)
                             }
-                            .padding(.top, 4)
+
+                            Picker("Fan Preset", selection: $vm.hardwareStatsFanPreset) {
+                                Text("Silent").tag("silent")
+                                Text("Default").tag("default")
+                                Text("Performance").tag("performance")
+                            }
+                            .pickerStyle(.menu)
+                            .onChange(of: vm.hardwareStatsFanPreset) { _, newVal in
+                                HardwareMonitor.shared.applySelectedFanPresetFromUser()
+                            }
+
+                            if vm.hardwareStatsFanPreset != "default",
+                               vm.hardwareStatsFanCurves[vm.hardwareStatsFanPreset] != nil {
+                                let presetName = vm.hardwareStatsFanPreset.capitalized
+                                let curveBinding = vm.fanCurveBinding(for: vm.hardwareStatsFanPreset)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("\(presetName) Curve")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    ForEach(0..<min(curveBinding.wrappedValue.count, 8), id: \.self) { i in
+                                        HStack(spacing: 8) {
+                                            Text("\(Int(curveBinding.wrappedValue[i][0]))°C")
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .frame(width: 32, alignment: .trailing)
+                                            Slider(value: Binding(
+                                                get: { curveBinding.wrappedValue[i][1] },
+                                                set: { newVal in
+                                                    var updated = curveBinding.wrappedValue
+                                                    updated[i][1] = newVal
+                                                    curveBinding.wrappedValue = updated
+                                                }
+                                            ), in: 0...100, step: 5)
+                                            Text("\(Int(curveBinding.wrappedValue[i][1]))%")
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .frame(width: 28, alignment: .trailing)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 4)
+                            }
                         }
                     }
                 }
+            } else {
+                Section { Text("Turn on Hardware to customize its modules, appearance and fans.").foregroundStyle(.secondary) }
             }
         }
         .onAppear {
@@ -999,21 +935,14 @@ struct HardwarePane: View {
             }
             Spacer()
             if let style, isOn.wrappedValue {
-                Picker("", selection: style) {
-                    Text("Bar").tag("bar")
-                    Text("Number").tag("number")
-                    Text("Icon").tag("icon")
-                }
-                .pickerStyle(.segmented)
+                SettingsSegmentedPicker(title: "Display style", selection: style,
+                    options: [SettingsSegment("Bar", "bar"), SettingsSegment("Number", "number"), SettingsSegment("Icon", "icon")], showsLabel: false)
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize()
             } else if let raw, isOn.wrappedValue {
-                Picker("", selection: raw) {
-                    Text("Bar").tag(false)
-                    Text("Number").tag(true)
-                }
-                .pickerStyle(.segmented)
+                SettingsSegmentedPicker(title: "Display style", selection: raw,
+                    options: [SettingsSegment("Bar", false), SettingsSegment("Number", true)], showsLabel: false)
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize()
@@ -1154,13 +1083,8 @@ struct HardwarePane: View {
                       isOn: $vm.hardwareStatsShowBattery, raw: nil,
                       style: $vm.hardwareStatsBatteryStyle)
             if vm.hardwareStatsShowBattery {
-                Picker("Menu Bar Display", selection: $vm.hardwareStatsBatteryStyle) {
-                    Text("Bar").tag("bar")
-                    Text("Percent").tag("number")
-                    Text("Icon").tag("icon")
-                    Text("Watts").tag("watts")
-                }
-                .pickerStyle(.segmented)
+                SettingsSegmentedPicker(title: "Menu Bar Display", selection: $vm.hardwareStatsBatteryStyle,
+                    options: [SettingsSegment("Bar", "bar"), SettingsSegment("Percent", "number"), SettingsSegment("Icon", "icon"), SettingsSegment("Watts", "watts")])
 
 
                 HStack {
@@ -1174,10 +1098,12 @@ struct HardwarePane: View {
 
                 Toggle("Separate menu bar item", isOn: $vm.hardwareStatsBatterySeparate)
                 if vm.hardwareStatsBatterySeparate {
-                    Text("Shows a larger battery icon in its own menu bar item with a dedicated popover.")
+                    Text("Shows battery status in its own menu bar item, with input watts in a ring while plugged in.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Toggle("Show decimals while charging", isOn: $vm.hardwareStatsBatteryChargingDecimals)
             }
         case "fps":
             moduleRow("FPS", live: "\(stats.fps) fps",
@@ -1770,6 +1696,22 @@ struct MenuBarPane: View {
                     .foregroundStyle(.tertiary)
             }
 
+            Section("Calendar") {
+                SettingsToggleRow("Next event or reminder", detail: "Show what's coming up next from Calendar or Reminders, with the time until it starts, like \"Meeting - 2 hr 14 min\".",
+                                  isOn: Binding(get: { vm.calendarStatusItem }, set: { vm.calendarStatusItem = $0 }))
+                if vm.calendarStatusItem {
+                    Picker("Maximum title length", selection: Binding(get: { vm.calendarMaxTitleLength }, set: { vm.calendarMaxTitleLength = $0 })) {
+                        Text("No limit (full text)").tag(0)
+                        Text("20 characters").tag(20)
+                        Text("28 characters").tag(28)
+                        Text("40 characters").tag(40)
+                        Text("60 characters").tag(60)
+                        Text("80 characters").tag(80)
+                        Text("100 characters").tag(100)
+                    }
+                }
+            }
+
             Section("Apply changes") {
                 HStack {
                 Button("Apply spacing") {
@@ -1995,6 +1937,7 @@ struct GeneralPane: View {
 @available(macOS 14.0, *)
 struct DisplaplacerPane: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var selectedTab = 0
     @State private var externalDisplays: [DisplaplacerEngine.DisplayInfo] = []
     @State private var inputMonitors: [DisplayInputEngine.Monitor] = []
     @State private var scanningInputs = false
@@ -2003,90 +1946,154 @@ struct DisplaplacerPane: View {
     @State private var editingInputName = ""
 
     var body: some View {
-        PaneContainer(section: .displaplacer,
-                      headerToggle: Binding(get: { vm.displaplacerEnabled }, set: { vm.displaplacerEnabled = $0 })) {
-            Section {
-                if externalDisplays.isEmpty {
-                    Text("No external displays connected.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(externalDisplays, id: \.uuid) { info in
-                        displayRow(info)
-                    }
-                }
-            } header: {
-                Text("External Displays")
-            } footer: {
-                Text("Eject removes the display from your workspace. Reconnect restores it.")
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                monitorInputContent
-            } header: {
-                HStack {
-                    Text("Monitor Input")
-                    Spacer()
-                    if scanningInputs {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button("Rescan") { refreshInputs() }
-                            .font(.caption)
-                    }
-                }
-            } footer: {
-                Text("Choose which device the monitor displays. Switching away hands the screen to that device.")
-                    .foregroundStyle(.secondary)
-            }
-
-            if !inputMonitors.isEmpty {
+        PaneContainer(section: .displaplacer, headerToggle: $vm.displaplacerEnabled,
+                      tabs: ["Displays", "Notch & AI", "Presets"], tabSelection: $selectedTab) {
+            switch selectedTab {
+            case 0:
                 Section {
-                    SettingsToggleRow("Move windows back to this Mac", detail: "Disconnect the display when you switch its input to another device.",
-                           isOn: Binding(get: { vm.monitorInputAutoEject },
-                                         set: { vm.monitorInputAutoEject = $0 }))
-                    .disabled(!hasMacInputMarked)
+                    if externalDisplays.isEmpty {
+                        Text("No external displays connected.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(externalDisplays, id: \.uuid) { info in
+                            displayRow(info)
+                        }
+                    }
+                } header: {
+                    Text("External Displays")
                 } footer: {
-                    Text(hasMacInputMarked
-                         ? "Windows move back to this Mac. Use the monitor's input button to return; MSG reconnects it automatically."
-                         : "First mark which monitor input is connected to this Mac.")
+                    Text("Eject removes the display from your workspace. Reconnect restores it.")
                         .foregroundStyle(.secondary)
                 }
-            }
+                Section {
+                    monitorInputContent
+                } header: {
+                    HStack {
+                        Text("Monitor Input")
+                        Spacer()
+                        if scanningInputs {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Rescan") { refreshInputs(probe: true) }
+                                .font(.caption)
+                        }
+                    }
+                } footer: {
+                    Text("Choose which device the monitor displays. Switching away hands the screen to that device.")
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    SettingsToggleRow("Wake up a newly plugged display", detail: "Some monitors stay dark the first time they're plugged in until they're disconnected and reconnected. MSG does that once for you, a moment after you plug one in.",
+                           isOn: Binding(get: { vm.displayResyncOnPlug },
+                                         set: { vm.displayResyncOnPlug = $0 }))
+                }
 
-            Section {
-                ForEach($vm.displaplacerPresets) { $preset in
-                    HStack(spacing: 10) {
-                        TextField("Preset name", text: $preset.name)
-                        Button("Apply") {
-                            DisplaplacerEngine.apply(preset)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshDisplays() }
-                        }
-                        .buttonStyle(.bordered)
-                        Button(role: .destructive) {
-                            vm.displaplacerPresets.removeAll { $0.id == preset.id }
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.red)
+                if !inputMonitors.isEmpty {
+                    Section {
+                        SettingsToggleRow("Match the MacBook's brightness", detail: "External monitors follow the built-in display's brightness, auto-brightness included, so the brightness keys set every screen at once.",
+                               isOn: Binding(get: { vm.externalBrightnessSync },
+                                             set: { vm.externalBrightnessSync = $0 }))
+                    }
+
+                    Section {
+                        SettingsToggleRow("Move windows back to this Mac", detail: "Disconnect the display when you switch its input to another device.",
+                               isOn: Binding(get: { vm.monitorInputAutoEject },
+                                             set: { vm.monitorInputAutoEject = $0 }))
+                        .disabled(!hasMacInputMarked)
+                    } footer: {
+                        Text(hasMacInputMarked
+                             ? "Windows move back to this Mac. Use the monitor's input button to return; MSG reconnects it automatically."
+                             : "First mark which monitor input is connected to this Mac.")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                if vm.displaplacerPresets.isEmpty {
-                    Text("Save your current layout to restore it later.")
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                HStack {
-                    Text("Presets")
-                    Spacer()
-                    Button("Save Current Layout") {
-                        let preset = DisplaplacerPreset(
-                            name: "New Preset",
-                            layouts: DisplaplacerEngine.captureCurrentLayout()
-                        )
-                        vm.displaplacerPresets.append(preset)
+            case 1:
+                Section {
+                    SettingsToggleRow("Show AI activity on the lock screen", detail: "While Claude, Codex or Antigravity is working and the Mac is locked, the MacBook's display stays on with a card saying what they're doing, and other displays go black. When they finish, the card says so for as long as you choose, then the displays can sleep. Uses TokenBar.",
+                           isOn: Binding(get: { vm.lockScreenAgentActivity },
+                                         set: { vm.lockScreenAgentActivity = $0 }))
+                    SettingsToggleRow("Show the notch dashboard", detail: "Point at the notch to see AI usage and tasks, Music, Calendar, Clipboard, Tray and Audio. Off while Notch previews is on, since both answer the same pointer.",
+                           isOn: Binding(get: { vm.notchAgentCard },
+                                         set: { vm.notchAgentCard = $0 }))
+                    if vm.notchAgentCard {
+                        DisclosureGroup("Dashboard panes") {
+                            ForEach(AgentNotchDashboardView.Page.allCases, id: \.rawValue) { page in
+                                SettingsToggleRow(page.title, detail: page.detail,
+                                                  isOn: Binding(get: { vm.notchPaneEnabled(page) },
+                                                                set: { vm.setNotchPane(page, enabled: $0) }))
+                            }
+                        }
                     }
-                    .font(.caption)
+                    SettingsToggleRow("Drop files on the notch", detail: "Drag a file, picture or video to the notch and it opens into Tray and AirDrop. Tray keeps it in the notch card's Tray page to drag out later; AirDrop sends it.",
+                           isOn: Binding(get: { vm.notchDropTray },
+                                         set: { vm.notchDropTray = $0 }))
+                    SettingsToggleRow("Say in the notch when an AI finishes", detail: "When a Claude, Codex or Antigravity session that worked for 15 seconds or more stops, the notch shows its name and how long it ran. Uses TokenBar.",
+                           isOn: Binding(get: { vm.notchAgentDoneNotice },
+                                         set: { vm.notchAgentDoneNotice = $0 }))
+                    SettingsToggleRow("Show power connection changes", detail: "Shows adapter wattage when you plug in power and battery percentage when you unplug it.",
+                           isOn: Binding(get: { vm.notchChargerNotice },
+                                         set: { vm.notchChargerNotice = $0 }))
+                    SettingsToggleRow("Show Amphetamine session changes", detail: "Shows when an Amphetamine keep-awake session starts or ends.",
+                           isOn: Binding(get: { vm.notchAmphetamineNotice },
+                                         set: { vm.notchAmphetamineNotice = $0 }))
+                    SettingsToggleRow("Show display connection changes", detail: "Shows the external display's name when it connects or disconnects.",
+                           isOn: Binding(get: { vm.notchDisplayNotice },
+                                         set: { vm.notchDisplayNotice = $0 }))
+                    SettingsToggleRow("Show Cloudflare WARP changes", detail: "Shows when Cloudflare WARP (1.1.1.1) connects or disconnects.",
+                           isOn: Binding(get: { vm.notchWARPNotice },
+                                         set: { vm.notchWARPNotice = $0 }))
+                    NotchNotificationSettings(vm: vm)
+                    SettingsToggleRow("Say in the notch when an AI limit resets", detail: "When a Claude, ChatGPT or Antigravity usage window you've used comes round (5-hour or weekly), the notch says so for a few seconds. Missed while the Mac was locked, it shows when you're back within the hour. Uses TokenBar.",
+                           isOn: Binding(get: { vm.notchLimitResetNotice },
+                                         set: { vm.notchLimitResetNotice = $0 }))
+                    if vm.notchAgentDoneNotice || vm.notchLimitResetNotice {
+                        SettingsToggleRow("Ding with them", detail: "Plays the sound Codex in the ChatGPT app plays when a task is done (macOS's Glass without it) as either one appears, at your alert volume.",
+                               isOn: Binding(get: { vm.notchNoticeSound },
+                                             set: { vm.notchNoticeSound = $0 }))
+                    }
+                    if vm.lockScreenAgentActivity {
+                        Picker("After they finish, keep the display on", selection: Binding(get: { vm.lockScreenAgentStay },
+                                                                                            set: { vm.lockScreenAgentStay = $0 })) {
+                            ForEach(LockScreenStay.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                    }
+                }
+            default:
+                Section {
+                    ForEach($vm.displaplacerPresets) { $preset in
+                        HStack(spacing: 10) {
+                            TextField("Preset name", text: $preset.name)
+                            Button("Apply") {
+                                DisplaplacerEngine.apply(preset)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshDisplays() }
+                            }
+                            .buttonStyle(.bordered)
+                            Button(role: .destructive) {
+                                vm.displaplacerPresets.removeAll { $0.id == preset.id }
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                    if vm.displaplacerPresets.isEmpty {
+                        Text("Save your current layout to restore it later.")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    HStack {
+                        Text("Presets")
+                        Spacer()
+                        Button("Save Current Layout") {
+                            let preset = DisplaplacerPreset(
+                                name: "New Preset",
+                                layouts: DisplaplacerEngine.captureCurrentLayout()
+                            )
+                            vm.displaplacerPresets.append(preset)
+                        }
+                        .font(.caption)
+                    }
                 }
             }
         }
@@ -2105,9 +2112,13 @@ struct DisplaplacerPane: View {
             // The delayed second pass catches any late settling (resolution/arrangement).
             refreshDisplays()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { refreshDisplays() }
-            // AppDelegate rescans DDC on the same notification; pick up its result
-            // once that has had time to land rather than scanning a second time.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            // AppDelegate relists monitors on the same notification (and probes a
+            // new one once the link settles); pick up its result rather than
+            // starting a second pass.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                inputMonitors = DisplayInputEngine.monitors
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
                 inputMonitors = DisplayInputEngine.monitors
             }
         }
@@ -2245,12 +2256,16 @@ struct DisplaplacerPane: View {
         editingInputName = ""
     }
 
-    private func refreshInputs() {
+    /// `probe` re-reads the monitors over DDC; without it this only relists
+    /// them. Probing is left to the Rescan button because on some links the
+    /// probing itself can wedge DDC until the adapter is replugged.
+    private func refreshInputs(probe: Bool = false) {
         scanningInputs = true
-        DisplayInputEngine.refresh {
+        let done = {
             inputMonitors = DisplayInputEngine.monitors
             scanningInputs = false
         }
+        if probe { DisplayInputEngine.rescan(completion: done) } else { DisplayInputEngine.refresh(completion: done) }
     }
 
     private func displayRow(_ info: DisplaplacerEngine.DisplayInfo) -> some View {

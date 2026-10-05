@@ -89,6 +89,9 @@ struct TilingBarWindow {
     var floatingIsAutomatic = false
     var spaceNumber: Int = 1
     var spaceName: String = ""
+    /// The app's other windows on the same Space, folded into this one icon;
+    /// its preview shows them all.
+    var siblingIDs: [CGWindowID] = []
 
     init(windowID: CGWindowID, pid: pid_t, bundleID: String, name: String,
          appName: String = "", title: String = "",
@@ -142,6 +145,9 @@ struct TilingBarSnapshot {
     let mode: TilingLayoutMode
     let paused: Bool
     let windows: [TilingBarWindow]
+    /// Unfolded windows for gestures. All Spaces folds the bar to one icon
+    /// per app; its sibling IDs must not replace the individual column tabs.
+    let tabWindows: [TilingBarWindow]?
     let focusedStatus: TilingWindowStatus
     var focusedIsFloating: Bool = false
     var scope: TilingControlBarScope = .currentSpace
@@ -151,13 +157,15 @@ struct TilingBarSnapshot {
          mode: TilingLayoutMode, paused: Bool, windows: [TilingBarWindow],
          focusedStatus: TilingWindowStatus, focusedIsFloating: Bool = false,
          scope: TilingControlBarScope = .currentSpace,
-         pillScope: TilingPillScope = .currentSpace) {
+         pillScope: TilingPillScope = .currentSpace,
+         tabWindows: [TilingBarWindow]? = nil) {
         self.displayUUID = displayUUID
         self.spaceNumber = spaceNumber
         self.spaceCount = spaceCount
         self.mode = mode
         self.paused = paused
         self.windows = windows
+        self.tabWindows = tabWindows
         self.focusedStatus = focusedStatus
         self.focusedIsFloating = focusedIsFloating
         self.scope = scope
@@ -262,6 +270,12 @@ final class TilingController {
     private let resizeOverlay = TilingResizeOverlayController()
     private var handleDragSession: ActiveHandleDragSession?
     private var states: [TilingSpaceKey: TilingWorkspaceState] = [:]
+    private struct PendingTabSelection {
+        let target: CGWindowID
+        let previousFocus: CGWindowID?
+        let started: CFTimeInterval
+    }
+    private var pendingTabSelections: [TilingSpaceKey: PendingTabSelection] = [:]
     private var shownWindowIDsBySpace: [TilingSpaceKey: Set<CGWindowID>] = [:]
     private var allBarWindowCache: [CGWindowID: CachedAllBarWindow] = [:]
     private var orderedWindowIDsBySpace: [String: [CGWindowID]] = [:]
@@ -294,6 +308,7 @@ final class TilingController {
     private var reorderTask: Task<Void, Never>?
     private var pendingReorders = 0
     private var lastWindowSignature = ""
+    private var fixedDockCache: (stamp: CFTimeInterval, orientation: String, frames: [CGRect])?
     private var pendingForcedLayout = false
     /// Set when a refresh was dropped for a transient reason (a display or
     /// frame animation, Mission Control, a held mouse button). The poll only
@@ -342,6 +357,10 @@ final class TilingController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 self?.layoutSpaceAfterDrop(Int(spaceID))
             }
+        }
+        controlBar.onMoveWindowToDesktop = { [weak self] windowID, pid, displayUUID, number in
+            self?.moveWindowFromMenu(windowID, pid: pid, displayUUID: displayUUID,
+                                     destinationNumber: number)
         }
         let swipes = TrackpadSwipeMonitor.shared
         swipes.onVerticalSwipeBegan = { [weak self] in self?.tabSwipeBegan() }
@@ -421,6 +440,20 @@ final class TilingController {
         PresentationState.shared.addObserver { [weak self] in
             self?.applyRunningState()
         }
+        observations.append(NotificationCenter.default.addObserver(
+            forName: SystemState.pageFullscreenChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            // Page fullscreen stays on a normal Desktop, so AXFullScreen remains false.
+            // Stop pending writers before the browser expands and retain the Space's layout.
+            if SystemState.pageFullscreenDisplay != nil {
+                self.cancelFrameAnimations()
+                self.resizeStart = nil
+                self.handleDragSession = nil
+            }
+            self.lastWindowSignature = ""
+            self.scheduleRefresh(after: 0)
+        })
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved]) { [weak self] event in
             guard let self, self.started, self.settings.tilingEnabled else { return }
             if event.type == .mouseMoved {
@@ -478,6 +511,7 @@ final class TilingController {
         allBarWindowCache.removeAll()
         orderedWindowIDsBySpace.removeAll()
         visibleWindowLastSeenAt.removeAll()
+        pendingTabSelections.removeAll()
         emptySpaceSince.removeAll()
         isRemovingEmptySpace = false
         appIsolationWorkByPID.values.forEach { $0.cancel() }
@@ -526,6 +560,9 @@ final class TilingController {
         created.activate = { [weak self] window, displayUUID in
             self?.controlBar.activateTab(window, displayUUID: displayUUID)
         }
+        created.onSwitchAnimationStart = { [weak self] windowID, displayUUID in
+            self?.resizeOverlay.selectColumnTab(windowID, displayUUID: displayUUID)
+        }
         created.isMissionControlActive = { MissionControlDetector.isActive() }
         tabSwitcherStorage = created
         return created
@@ -535,12 +572,22 @@ final class TilingController {
     /// where the user is looking — are the ones it flips through.
     private func tabSwipeBegan() {
         guard #available(macOS 14.0, *) else { return }
+        NSLog("[MSG Tab Swipe] route started=%d enabled=%d tabs=%d missionControl=%d",
+              started ? 1 : 0, settings.tilingEnabled ? 1 : 0,
+              settings.tilingSwipeCyclesTabs ? 1 : 0, MissionControlDetector.isActive() ? 1 : 0)
         guard started, settings.tilingEnabled, settings.tilingSwipeCyclesTabs,
               !MissionControlDetector.isActive() else { return }
         let pointer = NSEvent.mouseLocation
         let displayUUID = NSScreen.screens.first { $0.frame.insetBy(dx: 0, dy: -1).contains(pointer) }?.uuid
             ?? focusedDisplayUUID()
-        guard let displayUUID, let group = controlBar.tabGroup(displayUUID: displayUUID, pointer: pointer) else { return }
+        guard let displayUUID else { return }
+        guard let group = controlBar.tabGroup(displayUUID: displayUUID, pointer: pointer) else {
+            let snapshot = controlBar.snapshot(for: displayUUID)
+            NSLog("[MSG Tab Swipe] no group barWindows=%d tabWindows=%d pointer=(%.0f,%.0f)",
+                  snapshot?.windows.count ?? 0, snapshot?.tabWindows?.count ?? 0,
+                  Double(pointer.x), Double(pointer.y))
+            return
+        }
         tabSwitcher.begin(group)
     }
 
@@ -734,7 +781,8 @@ final class TilingController {
                 focusedStatus: previous?.focusedStatus ?? .split,
                 focusedIsFloating: previous?.focusedIsFloating ?? false,
                 scope: settings.tilingControlBarScope,
-                pillScope: settings.tilingPillScope
+                pillScope: settings.tilingPillScope,
+                tabWindows: previous?.tabWindows
             ))
         }
         if !updatedSnapshots.isEmpty {
@@ -1076,6 +1124,55 @@ final class TilingController {
         addSpace(displayUUID: displayUUID) { _ in }
     }
 
+    /// The bar's window menu uses the same confirmed Space move as dragging a
+    /// preview card. A new Desktop is resolved by its actual id, never by a
+    /// number guessed before Mission Control finishes adding it.
+    private func moveWindowFromMenu(_ windowID: CGWindowID, pid: pid_t,
+                                    displayUUID: String, destinationNumber: Int?) {
+        guard #available(macOS 14.0, *), started,
+              let screen = NSScreen.screens.first(where: {
+                  $0.uuid?.caseInsensitiveCompare(displayUUID) == .orderedSame
+              }) else { return }
+
+        let move: (UInt64, Bool) -> Void = { [weak self] targetID, newlyCreated in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if newlyCreated {
+                    // The add button returns before Mission Control's closing
+                    // transition releases ownership of the Spaces.
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+                let axWindow = await Task.detached(priority: .userInitiated) {
+                    WindowPreviewCapture.axWindow(pid: pid, windowID: windowID)
+                }.value
+                if let axWindow {
+                    guard await WindowPreviewDragController.prepareForSpaceMove(axWindow) else { return }
+                }
+                guard await WindowPreviewCapture.moveWindow(windowID, toManagedSpace: targetID) else {
+                    NSLog("MSG Tiling: menu could not move window %u to Desktop %llu", windowID, targetID)
+                    return
+                }
+                self.lastWindowSignature = ""
+                self.scheduleRefresh(after: 0.1)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    self?.layoutSpaceAfterDrop(Int(targetID))
+                }
+            }
+        }
+        if let destinationNumber {
+            let spaces = WindowPreviewCapture.managedSpaces(for: screen)
+            guard spaces.indices.contains(destinationNumber - 1),
+                  !spaces[destinationNumber - 1].isFullscreen else { return }
+            move(spaces[destinationNumber - 1].id, false)
+        } else {
+            addSpace(displayUUID: displayUUID) { targetID in
+                guard let targetID else { return }
+                move(targetID, true)
+            }
+        }
+    }
+
     private func addSpace(displayUUID: String,
                           completion: @escaping (UInt64?) -> Void) {
         guard started, !isRemovingEmptySpace,
@@ -1276,6 +1373,9 @@ final class TilingController {
 
     /// Switches the display to a Desktop and waits (briefly) for it to land.
     @available(macOS 14.0, *)
+    // On the main actor: a plain async method runs off it, and these order
+    // windows — AppKit traps ("Must only be used from the main thread").
+    @MainActor
     private func switchAndLand(displayUUID: String, spaceNumber: Int) async {
         guard let screen = NSScreen.screens.first(where: {
                   $0.uuid?.caseInsensitiveCompare(displayUUID) == .orderedSame
@@ -1291,6 +1391,9 @@ final class TilingController {
     }
 
     @available(macOS 14.0, *)
+    // On the main actor: a plain async method runs off it, and these order
+    // windows — AppKit traps ("Must only be used from the main thread").
+    @MainActor
     private func performReorder(displayUUID: String, from: Int, to: Int) async {
         guard let screen = NSScreen.screens.first(where: {
             $0.uuid?.caseInsensitiveCompare(displayUUID) == .orderedSame
@@ -1533,7 +1636,7 @@ final class TilingController {
         var snapshots: [TilingBarSnapshot] = []
 
         for space in spaces {
-            guard !space.isFullscreen else { continue }
+            guard !space.isFullscreen, !pageFullscreenCovers(space.key.displayUUID) else { continue }
             let onDisplay = windows.filter { window in
                 guard window.displayUUID.caseInsensitiveCompare(space.key.displayUUID) == .orderedSame else { return false }
                 if !window.spaceIDs.isEmpty {
@@ -1661,7 +1764,8 @@ final class TilingController {
                     state.floatingIDs.contains($0) || automaticFloatingIDs.contains($0)
                 } ?? false,
                 scope: settings.tilingControlBarScope,
-                pillScope: settings.tilingPillScope
+                pillScope: settings.tilingPillScope,
+                tabWindows: sortedBarWindows
             ))
         }
         controlBar.update(snapshots)
@@ -1691,9 +1795,21 @@ final class TilingController {
         })
         state.tree = state.tree?.removing(ids: genuinelyRemovedIDs)
         state.mainTabIDs.subtract(genuinelyRemovedIDs)
-        for window in tiled where !(state.tree?.windowIDs.contains(window.id) ?? false) {
+        // A Space met for the first time — MSG just launched — keeps the layout
+        // already on screen: windows go in left to right, not front to back,
+        // which put whichever was frontmost on the left and swapped the
+        // columns on every relaunch.
+        let fresh = state.tree == nil
+        let arrivals = fresh
+            ? tiled.enumerated().sorted { a, b in
+                abs(a.element.frame.minX - b.element.frame.minX) > 24
+                    ? a.element.frame.minX < b.element.frame.minX : a.offset < b.offset
+            }.map(\.element)
+            : tiled
+        for window in arrivals where !(state.tree?.windowIDs.contains(window.id) ?? false) {
             if let tree = state.tree {
-                let targetID = focusedID.flatMap { tree.windowIDs.contains($0) ? $0 : nil }
+                let targetID = fresh ? tree.windowIDs.last
+                    : focusedID.flatMap { tree.windowIDs.contains($0) ? $0 : nil }
                     ?? state.lastFocusedID.flatMap { tree.windowIDs.contains($0) ? $0 : nil }
                     ?? tree.windowIDs.last
                 let targetFrame = tiled.first(where: { $0.id == targetID })?.frame
@@ -1709,14 +1825,35 @@ final class TilingController {
         if treeIDs.isEmpty {
             state.columnsInitialized = false
         } else if !state.columnsInitialized, let first = treeIDs.first {
-            state.mainTabIDs.insert(first)
+            // Tabs already stacked in the left column stay there together,
+            // when there is a right column to tell them apart from.
+            let leftX = arrivals.first?.frame.minX ?? 0
+            let leftColumn = fresh
+                ? arrivals.filter { abs($0.frame.minX - leftX) <= 24 }.map(\.id)
+                : []
+            if !leftColumn.isEmpty, leftColumn.count < treeIDs.count {
+                state.mainTabIDs.formUnion(leftColumn)
+            } else {
+                state.mainTabIDs.insert(first)
+            }
             state.columnsInitialized = true
         }
         if state.masterID == nil || !state.mainTabIDs.contains(state.masterID!) {
             state.masterID = treeIDs.first(where: { state.mainTabIDs.contains($0) })
         }
         let stackIDs = treeIDs.filter { !state.mainTabIDs.contains($0) }
-        if let focusedID, stackIDs.contains(focusedID) { state.stackID = focusedID }
+        let keepExplicitSelection: Bool
+        if let pending = pendingTabSelections[key] {
+            keepExplicitSelection = TilingLayout.keepsPendingTabSelection(
+                target: pending.target, previousFocus: pending.previousFocus,
+                observedFocus: focusedID, age: CACurrentMediaTime() - pending.started)
+            if !keepExplicitSelection { pendingTabSelections.removeValue(forKey: key) }
+        } else {
+            keepExplicitSelection = false
+        }
+        if !keepExplicitSelection, let focusedID, stackIDs.contains(focusedID) {
+            state.stackID = focusedID
+        }
         if state.stackID == nil || !stackIDs.contains(state.stackID!) { state.stackID = stackIDs.first }
         return tiled
     }
@@ -1810,7 +1947,7 @@ final class TilingController {
                              excluding draggedID: CGWindowID? = nil, animated: Bool = true) {
         guard !windows.isEmpty else { return }
         let gap = max(0, settings.tilingPadding)
-        guard let work = workArea(on: screen) else { return }
+        guard let work = workArea(on: screen, state: state) else { return }
 
         let frames: [CGWindowID: CGRect]
         switch state.mode {
@@ -1852,18 +1989,99 @@ final class TilingController {
         if !animated { stopFrameAnimationTimerIfIdle() }
     }
 
-    private func workArea(on screen: NSScreen) -> CGRect? {
+    private func workArea(on screen: NSScreen, state: TilingWorkspaceState? = nil) -> CGRect? {
+        workGeometry(on: screen, state: state)?.work
+    }
+
+    private func workGeometry(on screen: NSScreen,
+                              state: TilingWorkspaceState? = nil) -> TilingColumnRailGeometry? {
         let gap = max(0, settings.tilingPadding)
         let barHeight = settings.tilingShowControlBar ? TilingControlBarController.barHeight(for: screen) : 0
         var work = screen.visibleFrame
+        let dock = fixedDock()
+        let dockFrame = dock.frames.first { $0.intersects(screen.frame) }
+        work = TilingLayout.excludingFixedDock(work, screen: screen.frame,
+                                               dock: dockFrame, orientation: dock.orientation)
         let reservedTop = screen.frame.maxY - barHeight
         if work.maxY > reservedTop { work.size.height -= work.maxY - reservedTop }
-        work = work.insetBy(dx: gap, dy: gap)
-        return work.width > 80 && work.height > 80 ? work : nil
+        // The Edge Keys strip along the built-in display's bottom edge.
+        let reservedBottom = screen.frame.minY + EdgeKeyStrip.shared.reservedHeight(on: screen)
+        if work.minY < reservedBottom {
+            work.size.height -= reservedBottom - work.minY
+            work.origin.y = reservedBottom
+        }
+        var sides = (left: false, right: false)
+        if let state, state.mode == .masterStack, !state.paused {
+            sides = TilingLayout.columnPillSides(
+                windowIDs: state.tree?.windowIDs ?? [], mainTabIDs: state.mainTabIDs,
+                masterID: state.masterID, enabled: settings.tilingColumnTabPills)
+        }
+        let geometry = TilingLayout.columnPillGeometry(
+            in: work, gap: gap, left: sides.left, right: sides.right,
+            edgeAttached: settings.tilingColumnPillPosition == .screenEdge)
+        return geometry.work.width > 80 && geometry.work.height > 80 ? geometry : nil
+    }
+
+    /// A fixed Dock should be excluded even when AppKit's visible frame has
+    /// not caught up with a change to Dock auto-hide. Its layer-20 window gives
+    /// the actual occupied edge; an auto-hidden Dock reserves no space.
+    private func fixedDock() -> (orientation: String, frames: [CGRect]) {
+        let now = CACurrentMediaTime()
+        if let cached = fixedDockCache, now - cached.stamp < 0.25 {
+            return (cached.orientation, cached.frames)
+        }
+        CFPreferencesAppSynchronize("com.apple.dock" as CFString)
+        let defaults = UserDefaults(suiteName: "com.apple.dock")
+        let orientation = defaults?.string(forKey: "orientation") ?? "bottom"
+        var frames: [CGRect] = []
+        if defaults?.bool(forKey: "autohide") != true,
+           let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+                .first?.processIdentifier {
+            let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                  kCGNullWindowID) as? [[String: Any]] ?? []
+            frames = list.compactMap { info in
+                guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                      (info[kCGWindowLayer as String] as? Int) == 20,
+                      let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                      let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
+                return axToAppKit(rect)
+            }
+            // Recent macOS versions can draw a visible Dock without exposing
+            // its layer-20 window in CGWindowList. Its AXList still publishes
+            // the actual Dock rectangle, including which display owns it.
+            if frames.isEmpty {
+                let app = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(app, 0.15)
+                var children: CFTypeRef?
+                if AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString,
+                                                 &children) == .success {
+                    for child in children as? [AXUIElement] ?? [] {
+                        AXUIElementSetMessagingTimeout(child, 0.15)
+                        var role: CFTypeRef?
+                        guard AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString,
+                                                            &role) == .success,
+                              role as? String == "AXList" else { continue }
+                        var value: CFTypeRef?
+                        guard AXUIElementCopyAttributeValue(child, "AXFrame" as CFString,
+                                                            &value) == .success,
+                              let value, CFGetTypeID(value) == AXValueGetTypeID(),
+                              AXValueGetType(value as! AXValue) == .cgRect else { continue }
+                        var rect = CGRect.zero
+                        if AXValueGetValue(value as! AXValue, .cgRect, &rect) {
+                            frames.append(axToAppKit(rect))
+                        }
+                    }
+                }
+            }
+        }
+        fixedDockCache = (now, orientation, frames)
+        return (orientation, frames)
     }
 
     private func beginMouseResize() {
         guard handleDragSession == nil else { return }
+        if let uuid = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.uuid,
+           pageFullscreenCovers(uuid) { return }
         cancelFrameAnimations()
         resizeOverlay.showDropPreview(frame: nil)
         resizeOverlay.hideResizePreviews()
@@ -1885,7 +2103,7 @@ final class TilingController {
               // drop tile, no neighbour resizing, nothing tiling to show.
               !state.floatingIDs.contains(window.id), !window.automaticallyFloating,
               state.tree?.windowIDs.contains(window.id) == true,
-              let work = workArea(on: space.screen) else { return }
+              let work = workArea(on: space.screen, state: state) else { return }
         let neighbors = windows.filter {
             $0.displayUUID == space.key.displayUUID &&
                 !state.floatingIDs.contains($0.id) && !$0.automaticallyFloating && $0.id != window.id
@@ -1914,7 +2132,7 @@ final class TilingController {
               var state = states[start.key], !state.paused,
               state.mode == .masterStack,
               state.tree?.windowIDs == tree.windowIDs,
-              workArea(on: start.space.screen) == start.work else { return false }
+              workArea(on: start.space.screen, state: state) == start.work else { return false }
 
         let slots = TilingLayout.masterStackFrames(
             windowIDs: tree.windowIDs, masterID: state.masterID,
@@ -2068,7 +2286,7 @@ final class TilingController {
     private func updateMouseResize(windows: [ManagedTilingWindow], spaces: [TilingVisibleSpace], live: Bool) {
         guard let start = resizeStart,
               let space = spaces.first(where: { $0.key == start.key && !$0.isFullscreen }),
-              workArea(on: space.screen) == start.work,
+              workArea(on: space.screen, state: start.state) == start.work,
               let window = windows.first(where: { $0.id == start.id && $0.displayUUID == start.key.displayUUID }),
               let tree = start.state.tree,
               states[start.key]?.mode == start.state.mode,
@@ -2161,14 +2379,15 @@ final class TilingController {
         let point = NSEvent.mouseLocation
         let spaces = visibleSpaces()
         let matchingSpace = spaces.first(where: { space in
-            guard !space.isFullscreen, let work = workArea(on: space.screen) else { return false }
+            guard !space.isFullscreen, let state = states[space.key],
+                  let work = workArea(on: space.screen, state: state) else { return false }
             return work.intersects(divider.parentRect)
         }) ?? spaces.first(where: { space in
             !space.isFullscreen && space.screen.frame.contains(point)
         })
         guard let space = matchingSpace,
-              let work = workArea(on: space.screen),
-              let state = states[space.key], !state.paused else { return }
+              let state = states[space.key], !state.paused,
+              let work = workArea(on: space.screen, state: state) else { return }
 
         let windows = visibleWindows().filter {
             $0.displayUUID == space.key.displayUUID && !state.floatingIDs.contains($0.id) && !$0.automaticallyFloating
@@ -2302,15 +2521,42 @@ final class TilingController {
         let gap = max(0, settings.tilingPadding)
         var divsByDisplay: [String: [TilingDivider]] = [:]
         var tiledIDs: Set<CGWindowID> = []
+        var columnTabs: [TilingColumnPill] = []
         for space in spaces {
-            guard !space.isFullscreen, let state = states[space.key], !state.paused,
-                  let work = workArea(on: space.screen) else { continue }
+            guard !space.isFullscreen, !pageFullscreenCovers(space.key.displayUUID),
+                  let state = states[space.key], !state.paused,
+                  let geometry = workGeometry(on: space.screen, state: state) else { continue }
+            let work = geometry.work
             // The tree keeps floating, hidden and minimized windows; only the
             // ones actually drawn in the layout have an edge to drag. A single
             // tile fills the work area, so its "divider" is nothing but a
             // handle floating over whatever sits on top of it.
             let shown = shownWindowIDsBySpace[space.key] ?? []
             tiledIDs.formUnion(shown)
+            if settings.tilingColumnTabPills, state.mode == .masterStack,
+               let tree = state.tree {
+                let ids = tree.windowIDs
+                let barOrder = (controlBar.snapshot(for: space.key.displayUUID)?.windows ?? [])
+                    .filter { $0.spaceNumber == space.number }.map(\.windowID)
+                let left = TilingLayout.orderedColumnTabs(
+                    ids.filter { state.mainTabIDs.contains($0) || $0 == state.masterID },
+                    barOrder: barOrder)
+                let right = TilingLayout.orderedColumnTabs(
+                    ids.filter { !state.mainTabIDs.contains($0) && $0 != state.masterID },
+                    barOrder: barOrder)
+                for (side, tabs) in [("left", left), ("right", right)] where tabs.count > 1 {
+                    let activeID = side == "left" ? state.masterID : state.stackID
+                    let selectedID = activeID.flatMap { tabs.contains($0) ? $0 : nil }
+                        ?? tabs.first(where: { shown.contains($0) }) ?? tabs[0]
+                    guard let rail = side == "left" ? geometry.leftRail : geometry.rightRail else { continue }
+                    columnTabs.append(TilingColumnPill(
+                        id: "\(space.key.displayUUID)-\(side)", railFrame: rail,
+                        tabCount: tabs.count, tabIDs: tabs,
+                        selectedIndex: tabs.firstIndex(of: selectedID) ?? 0,
+                        edgeAttached: settings.tilingColumnPillPosition == .screenEdge,
+                        isLeft: side == "left"))
+                }
+            }
             guard shown.count >= 2 else { continue }
             let divs = TilingLayout.dividers(mode: state.mode, tree: state.tree,
                                              masterID: state.masterID, mainTabIDs: state.mainTabIDs,
@@ -2319,7 +2565,8 @@ final class TilingController {
                                              minWidths: minWidths(for: state.tree?.windowIDs ?? []))
             divsByDisplay[space.key.displayUUID] = divs
         }
-        resizeOverlay.update(dividers: divsByDisplay, tiledWindowIDs: tiledIDs)
+        resizeOverlay.update(dividers: divsByDisplay, tiledWindowIDs: tiledIDs,
+                             columnTabs: columnTabs)
     }
 
     private func registeredWindowIDs() -> Set<CGWindowID> {
@@ -2387,6 +2634,7 @@ final class TilingController {
     }
 
     private func enqueueFrame(_ appKitFrame: CGRect, id: CGWindowID, element: AXUIElement) {
+        if let uuid = screen(containing: appKitFrame)?.uuid, pageFullscreenCovers(uuid) { return }
         let bounds = handleDragSession?.work ?? resizeStart?.work ??
             NSScreen.screens.first(where: { $0.frame.intersects(appKitFrame) }).flatMap { workArea(on: $0) }
         var target = appKitFrame
@@ -2508,6 +2756,10 @@ final class TilingController {
         frameAnimations.removeAll()
         frameAnimationClocks.values.forEach { $0.invalidate() }
         frameAnimationClocks.removeAll()
+    }
+
+    private func pageFullscreenCovers(_ displayUUID: String) -> Bool {
+        SystemState.pageFullscreenDisplay?.caseInsensitiveCompare(displayUUID) == .orderedSame
     }
 
     private func approximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
@@ -2641,6 +2893,7 @@ final class TilingController {
         let myPID = ProcessInfo.processInfo.processIdentifier
         var candidates: [TilingBarWindow] = []
         var seenPerSpace = Set<String>()
+        var keptIndex: [String: Int] = [:]
 
         let runningApps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isHidden && $0.processIdentifier != myPID
@@ -2698,9 +2951,15 @@ final class TilingController {
                 }
                 guard let sNum = targetSpaceNum else { continue }
 
+                // One icon per app per Space; its other windows ride along
+                // for the preview.
                 let dedupeKey = "\(bundle)_\(sNum)"
-                if seenPerSpace.contains(dedupeKey) { continue }
+                if let kept = keptIndex[dedupeKey] {
+                    candidates[kept].siblingIDs.append(win.id)
+                    continue
+                }
                 seenPerSpace.insert(dedupeKey)
+                keptIndex[dedupeKey] = candidates.count
 
                 let cat = tilingCategory(for: win.id, spaceID: spaceIndexMap.first(where: { $0.value == sNum })?.key)
                 let status: TilingWindowStatus
@@ -2866,7 +3125,11 @@ final class TilingController {
                 where candidate.id != 0 && visibleSet.contains(candidate.id) {
                 let element = WindowPreviewCapture.axWindow(pid: pid, windowID: candidate.id)
                 let manageable = element.map(manageability) ?? nil
-                guard let element, manageable == true,
+                // A native full-screen window is never tiled, but it's still one
+                // of the app's windows: listed (floating) so the bar and its
+                // preview show it too.
+                let fullScreenWindow = manageable == false && element.map(Self.isFullScreen) == true
+                guard let element, manageable == true || fullScreenWindow,
                       let axFrame = WindowPreviewCapture.axFrame(of: element) else {
                     // Unknown (timed out), not refused: keep the known window,
                     // at the frame WindowServer reports now.
@@ -2880,8 +3143,20 @@ final class TilingController {
                     }
                     continue
                 }
-                let automaticallyFloating = automaticallyFloats(element, bundleID: bundleID)
-                let frame = axToAppKit(axFrame)
+                let firstSeen = popupDecisions[candidate.id] == nil
+                let automaticallyFloating = fullScreenWindow
+                    || automaticallyFloats(element, bundleID: bundleID, id: candidate.id)
+                var frame = axToAppKit(axFrame)
+                // A pop-up placed off the display — centred on a narrow parent
+                // and wider than it — is brought onto it once, centred.
+                if automaticallyFloating, !fullScreenWindow, firstSeen, hiddenSpace == nil,
+                   let screen = screen(containing: frame), let work = workArea(on: screen),
+                   !work.contains(frame) {
+                    let size = CGSize(width: min(frame.width, work.width), height: min(frame.height, work.height))
+                    frame = CGRect(x: (work.midX - size.width / 2).rounded(), y: (work.midY - size.height / 2).rounded(),
+                                   width: size.width, height: size.height)
+                    enqueueFrame(frame, id: candidate.id, element: element)
+                }
                 guard frame.width >= 160, frame.height >= 100,
                       let uuid = hiddenSpace?.displayUUID ?? screen(containing: frame)?.uuid else { continue }
                 let spaces = (TilingCGSCopySpacesForWindows(cid, 7, [candidate.id] as CFArray) as? [Int]) ?? []
@@ -2894,6 +3169,12 @@ final class TilingController {
             }
         }
         return orderedIDs.compactMap { byID[$0] }
+    }
+
+    private static func isFullScreen(_ window: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &value) == .success
+            && (value as? NSNumber)?.boolValue == true
     }
 
     /// Whether tiling may manage the window: nil when the app didn't answer in
@@ -2923,6 +3204,35 @@ final class TilingController {
     /// One extra AX read per window on the refresh path — the identifier, which
     /// is the only thing that marks an in-process Open/Save dialog. Finder's own
     /// auxiliary windows need two more, and only Finder pays for those.
+    /// Each window's pop-up verdict, read once: modal and button state don't
+    /// change over a window's life, and the refresh runs several times a second.
+    private var popupDecisions: [CGWindowID: Bool] = [:]
+
+    private func automaticallyFloats(_ window: AXUIElement, bundleID: String, id: CGWindowID) -> Bool {
+        if let known = popupDecisions[id] { return known }
+        if popupDecisions.count > 512 { popupDecisions.removeAll() }
+        let floats = automaticallyFloats(window, bundleID: bundleID) || isPopup(window)
+        popupDecisions[id] = floats
+        return floats
+    }
+
+    /// Dialogs and panels that present as standard windows: modal ones (Open
+    /// and Save, alerts, pickers), and ones whose minimize button is there but
+    /// switched off, like Settings and inspector windows. A window with no
+    /// buttons at all is left alone — that's how custom-chrome apps look too.
+    private func isPopup(_ window: AXUIElement) -> Bool {
+        var modal: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, "AXModal" as CFString, &modal) == .success,
+           (modal as? NSNumber)?.boolValue == true { return true }
+        var minimize: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXMinimizeButtonAttribute as CFString, &minimize) == .success,
+              let button = minimize, CFGetTypeID(button) == AXUIElementGetTypeID() else { return false }
+        var enabled: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(button as! AXUIElement, kAXEnabledAttribute as CFString, &enabled) == .success
+        else { return false }
+        return (enabled as? NSNumber)?.boolValue == false
+    }
+
     private func automaticallyFloats(_ window: AXUIElement, bundleID: String) -> Bool {
         var identifierValue: CFTypeRef?
         AXUIElementCopyAttributeValue(window, "AXIdentifier" as CFString, &identifierValue)
@@ -3063,11 +3373,14 @@ final class TilingController {
 
     private func activateWindow(windowID: CGWindowID, pid: pid_t, frame: CGRect) {
         NSLog("[MSG Window Preview] Activate window %u pid %d", windowID, pid)
+        let previousFocus = focusedWindowID()
         let matchingKeys = states.compactMap { key, state in
             state.tree?.windowIDs.contains(windowID) == true ? key : nil
         }
         for key in matchingKeys {
             guard var state = states[key] else { continue }
+            pendingTabSelections[key] = PendingTabSelection(
+                target: windowID, previousFocus: previousFocus, started: CACurrentMediaTime())
             if state.mainTabIDs.contains(windowID) {
                 state.masterID = windowID
             } else if !state.floatingIDs.contains(windowID) {
@@ -3076,7 +3389,20 @@ final class TilingController {
             state.lastFocusedID = windowID
             states[key] = state
         }
+        // Commit the tab selection independently of the slower AX/native
+        // focus request below. That request can stall or be cancelled by an
+        // unrelated activation; the tiling state must still advance.
+        scheduleRefresh(after: 0)
+        // On another Desktop: go there first, the way the Space Indicator does.
+        // Activation alone left some apps (Music) on this Desktop with their
+        // window out of sight — only the Dock's reopen brought them over.
+        var landing: UInt64 = 0
+        if let location = spaceLocation(of: windowID), !location.isCurrent {
+            switchToSpace(displayUUID: location.displayUUID, spaceNumber: location.number, viaWindow: false)
+            landing = 350_000_000
+        }
         Task { @MainActor [weak self] in
+            if landing > 0 { try? await Task.sleep(nanoseconds: landing) }
             if #available(macOS 14.0, *) {
                 await WindowPreviewCapture.raiseWindow(pid: pid, windowID: windowID, fallbackBounds: frame)
             } else {
@@ -3124,7 +3450,15 @@ final class TilingController {
         return target
     }
 
-    private func switchToSpace(displayUUID: String, spaceNumber: Int) {
+    /// Desktop `number` (1-based) on the display in use, for the Edge Keys.
+    func switchToSpaceOnFocusedDisplay(_ number: Int) {
+        guard let uuid = focusedDisplayUUID() else { return }
+        switchToSpace(displayUUID: uuid, spaceNumber: number)
+    }
+
+    /// `viaWindow` false: never by activating a window there — for the window
+    /// activation itself, which would otherwise call back into this forever.
+    private func switchToSpace(displayUUID: String, spaceNumber: Int, viaWindow: Bool = true) {
         guard let display = managedDisplay(displayUUID),
               let spaces = display["Spaces"] as? [[String: Any]],
               spaceNumber >= 1, spaceNumber <= spaces.count,
@@ -3158,7 +3492,7 @@ final class TilingController {
 
         // Retain app activation only as a fallback when the user has no direct
         // Desktop shortcut configured for this Space.
-        if let targetWindow = representativeWindow(
+        if viaWindow, let targetWindow = representativeWindow(
             displayUUID: displayUUID,
             spaceNumber: spaceNumber
         ) {
@@ -3193,6 +3527,28 @@ final class TilingController {
         return windows.first(where: \.isShownInLayout) ??
             windows.first(where: { $0.status == .leftTabbed }) ??
             windows.first
+    }
+
+    /// The Desktop a window is on: its display, its 1-based number there, and
+    /// whether that Desktop is the one showing.
+    private func spaceLocation(of windowID: CGWindowID) -> (displayUUID: String, number: Int, isCurrent: Bool)? {
+        let cid = TilingCGSMainConnectionID()
+        let memberships = (TilingCGSCopySpacesForWindows(cid, 7, [windowID] as CFArray) as? [Int]) ?? []
+        guard !memberships.isEmpty,
+              let displays = TilingCGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return nil }
+        let primaryUUID = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == CGMainDisplayID()
+        })?.uuid
+        for display in displays {
+            guard let spaces = display["Spaces"] as? [[String: Any]] else { continue }
+            for (index, space) in spaces.enumerated() where memberships.contains(managedSpaceID(space)) {
+                var identifier = display["Display Identifier"] as? String ?? ""
+                if identifier == "Main" { identifier = primaryUUID ?? "" }
+                let currentID = (display["Current Space"] as? [String: Any]).map(managedSpaceID)
+                return (identifier, index + 1, currentID == managedSpaceID(space))
+            }
+        }
+        return nil
     }
 
     private func managedDisplay(_ displayUUID: String) -> [String: Any]? {
@@ -3431,7 +3787,14 @@ final class TilingController {
             return "\(id):\(bounds["X"] ?? 0):\(bounds["Y"] ?? 0):\(bounds["Width"] ?? 0):\(bounds["Height"] ?? 0)"
         }
         if isMC { return "mission_control" }
-        let spaces = visibleSpaces().map { "\($0.key.displayUUID):\($0.key.spaceID):\($0.screen.visibleFrame)" }.joined(separator: ",")
+        let dock = fixedDock()
+        let spaces = visibleSpaces().map { space -> String in
+            let dockFrame = dock.frames.first { $0.intersects(space.screen.frame) }
+            let work = TilingLayout.excludingFixedDock(space.screen.visibleFrame,
+                                                       screen: space.screen.frame,
+                                                       dock: dockFrame, orientation: dock.orientation)
+            return "\(space.key.displayUUID):\(space.key.spaceID):\(work)"
+        }.joined(separator: ",")
         return "\(settings.tilingControlBarScope.rawValue)|" + spaces + "|" + ids.joined(separator: ",")
     }
 

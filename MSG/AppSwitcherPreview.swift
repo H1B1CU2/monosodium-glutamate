@@ -1839,6 +1839,10 @@ private final class MSGWindowSwitcher: ObservableObject {
             await WindowPreviewCapture.closeWindow(pid: item.pid, windowID: item.window.id)
         }
     }
+    func minimize(_ item: MSGSwitcherWindow) {
+        dismiss()
+        Task { await WindowPreviewCapture.minimizeWindow(pid: item.pid, windowID: item.window.id) }
+    }
     func toggleFullscreen(_ item: MSGSwitcherWindow) {
         dismiss()
         Task {
@@ -2801,6 +2805,8 @@ private struct MSGSwitcherView: View {
                        maxWidth: model.thumbHeight * MSGWindowSwitcher.maxCardAspect,
                        action: { model.select(item, commitNow: true) },
                        onClose: { model.close(item, quitLastPreview: true) },
+                       onMinimize: { model.minimize(item) },
+                       onFullscreen: { model.toggleFullscreen(item) },
                        closeQuitsApp: model.items.filter { $0.pid == item.pid }.count == 1,
                        selected: isSelected,
                        reservesCaption: true,

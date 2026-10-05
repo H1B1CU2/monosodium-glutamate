@@ -89,13 +89,13 @@ final class DisplayInputEngine {
         /// The input the panel says it is showing, when it answers truthfully.
         /// Many panels (the MSI MP341CQ among them) reply 0xFF here forever, so
         /// this is nil far more often than you would expect — never build UI
-        /// that *requires* it.
-        let currentCode: UInt16?
-        /// False when this entry is remembered rather than freshly measured: the
-        /// panel is still physically linked but its DDC channel is not answering.
-        /// That is what a monitor showing *another machine* looks like — the whole
-        /// bus goes quiet — so the entry has to survive, or the UI that switches
-        /// back would disappear exactly when it is needed.
+        /// that *requires* it. Updated by MSG's own switches, never polled.
+        var currentCode: UInt16?
+        /// False while MSG has handed this panel to another machine (a handover
+        /// eject is pending). Its DDC bus is silent then, so switching back has to
+        /// happen on the monitor — but the entry must survive, or the UI offering
+        /// Reconnect would disappear exactly when it is needed. Derived from
+        /// MSG's own state rather than probed: probing is what wedges fragile links.
         var reachable: Bool = true
 
         var id: String { key }
@@ -103,17 +103,16 @@ final class DisplayInputEngine {
 
     // MARK: Cache
 
-    /// Main-thread snapshot. Empty until the first `refresh()` completes.
+    /// Main-thread snapshot of the attached panels. Empty until the first
+    /// `refresh()` completes.
     private(set) static var monitors: [Monitor] = []
     /// True once a refresh has finished, so UI can tell "none found" from "not looked yet".
     private(set) static var hasScanned = false
 
+    /// Every DDC transaction in the process runs here, one at a time.
     private static let queue = DispatchQueue(label: "H1D3S1GN.MSG.displayinput")
     /// IOAVService handles, keyed like `Monitor.key`. Touched only on `queue`.
     private static var services: [String: IOAVServiceRef] = [:]
-    private static var refreshInFlight = false
-    private static var refreshAgain = false
-    private static var refreshCompletions: [() -> Void] = []
 
     // MARK: Custom names / "This Mac" marking
 
@@ -134,11 +133,7 @@ final class DisplayInputEngine {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed, !trimmed.isEmpty { names[key] = trimmed } else { names.removeValue(forKey: key) }
         UserDefaults.standard.set(names, forKey: namesKey)
-
-        // Patch the cache in place so the UI updates without a 2 s rescan.
-        guard let m = monitors.firstIndex(where: { $0.key == monitorKey }),
-              let i = monitors[m].inputs.firstIndex(where: { $0.code == code }) else { return }
-        monitors[m].inputs[i].customName = (trimmed?.isEmpty == false) ? trimmed : nil
+        rebuildMonitors()
     }
 
     private static func loadMacInputs() -> [String: Int] {
@@ -155,22 +150,23 @@ final class DisplayInputEngine {
         var stored = loadMacInputs()
         if let code { stored[monitorKey] = Int(code) } else { stored.removeValue(forKey: monitorKey) }
         UserDefaults.standard.set(stored, forKey: macInputKey)
-
-        guard let m = monitors.firstIndex(where: { $0.key == monitorKey }) else { return }
-        for i in monitors[m].inputs.indices {
-            monitors[m].inputs[i].isMac = (monitors[m].inputs[i].code == code)
-        }
+        rebuildMonitors()
     }
 
     // MARK: Persistence
 
-    /// The in-memory cache is not enough. DDC can only be read while the panel is
-    /// showing this Mac, so a relaunch that happens while the monitor is away
-    /// starts empty at exactly the moment it can never refill — and the UI then
-    /// claims no monitor supports input switching at all, hiding the Reconnect
-    /// action that is the user's way out. Remember the last good scan on disk.
+    /// Every panel MSG has ever probed, remembered on disk. DDC can only be read
+    /// while the panel is showing this Mac, so a relaunch while the monitor is
+    /// away would otherwise start empty at exactly the moment it can never
+    /// refill. It also means a known panel never needs probing again — every
+    /// probe is a burst of I2C, and on fragile links the probing itself is what
+    /// broke DDC (see Discovery).
     private static let lastKnownKey = "displayInput.lastKnown"
     private static var didLoadPersisted = false
+    /// Keyed like `Monitor.key`, without custom names or the "This Mac" mark —
+    /// those have their own keys and are applied in `rebuildMonitors()`, so
+    /// renaming never depends on this cache being intact. Main thread.
+    private static var catalog: [String: Monitor] = [:]
 
     private struct PersistedInput: Codable {
         let code: UInt16
@@ -184,39 +180,26 @@ final class DisplayInputEngine {
         let inputs: [PersistedInput]
     }
 
-    /// Custom names and the "This Mac" mark are deliberately not stored here —
-    /// they have their own keys and are re-applied on load, so renaming a monitor
-    /// never depends on the scan cache being intact.
     private static func loadPersistedIfNeeded() {
         guard !didLoadPersisted else { return }
         didLoadPersisted = true
-        guard monitors.isEmpty,
-              let data = UserDefaults.standard.data(forKey: lastKnownKey),
+        guard let data = UserDefaults.standard.data(forKey: lastKnownKey),
               let stored = try? JSONDecoder().decode([PersistedMonitor].self, from: data)
         else { return }
-
-        let names = loadCustomNames()
-        let macInputs = loadMacInputs()
-        monitors = stored.map { m in
-            let macCode = macInputs[m.key].map { UInt16($0) }
-            return Monitor(
+        for m in stored where catalog[m.key] == nil {
+            catalog[m.key] = Monitor(
                 key: m.key,
                 name: m.name,
-                inputs: m.inputs.map { i in
-                    Input(code: i.code,
-                          standardName: i.standardName,
-                          customName: names[nameStorageKey(m.key, i.code)],
-                          advertised: i.advertised,
-                          isMac: i.code == macCode)
+                inputs: m.inputs.map {
+                    Input(code: $0.code, standardName: $0.standardName, customName: nil,
+                          advertised: $0.advertised, isMac: false)
                 },
-                currentCode: nil,
-                reachable: false      // remembered, not measured
-            )
+                currentCode: nil)
         }
     }
 
-    private static func persist(_ list: [Monitor]) {
-        let stored = list.map { m in
+    private static func persistCatalog() {
+        let stored = catalog.values.sorted { $0.key < $1.key }.map { m in
             PersistedMonitor(key: m.key, name: m.name,
                              inputs: m.inputs.map {
                                  PersistedInput(code: $0.code,
@@ -229,113 +212,98 @@ final class DisplayInputEngine {
     }
 
     // MARK: Discovery
+    //
+    // On a fragile link, scanning is what breaks DDC. The MP341CQ behind a
+    // USB-C→HDMI adapter wedged (an I2C call that never returns, with every later
+    // one queued behind it, until the adapter is replugged) under MSG's old
+    // automatic rescans. Each was dozens of transactions, most of them the
+    // capability string, and they fired 2.5 s after every display change while
+    // the link was still renegotiating. With MSG quit, the same panel took reads
+    // and writes on the first try. So discovery is split:
+    //
+    // - `refresh()` runs on launch and display changes. It lists the attached
+    //   panels from the IORegistry with their EDID (served from the link cache,
+    //   no I2C) and takes their inputs from `catalog`. No DDC at all, except a
+    //   one-time probe of a panel never seen before.
+    // - `rescan()` re-probes every attached panel over DDC. Only on explicit
+    //   request (the settings pane's Rescan button).
 
-    /// Rescans every external panel. Cheap to over-call — concurrent requests
-    /// collapse into the one in flight.
+    private struct Panel {
+        let key: String
+        let name: String
+        let service: IOAVServiceRef
+    }
+
+    /// Attached panels' keys from the last refresh. Main thread.
+    private static var attachedKeys: [String] = []
+    /// Panels probed this launch, answered or not, so one without DDC isn't
+    /// probed again on every display change. Main thread.
+    private static var probedThisLaunch: Set<String> = []
+    /// EDID reads happen here rather than on `queue`, so a wedged DDC call can't
+    /// stop the menu from listing monitors.
+    private static let discoveryQueue = DispatchQueue(label: "H1D3S1GN.MSG.displayinput.discovery")
+
+    /// Lists attached panels without DDC. Cheap to over-call.
     static func refresh(completion: (() -> Void)? = nil) {
-        if let completion { refreshCompletions.append(completion) }
-        guard avReadI2C != nil, avWriteI2C != nil else {
-            hasScanned = true
-            let callbacks = refreshCompletions
-            refreshCompletions.removeAll()
-            callbacks.forEach { $0() }
-            return
-        }
-        // A return from another input often produces several display-change
-        // notifications while the link is still negotiating. Do not pretend a
-        // refresh requested during the scan has completed: run one final scan
-        // against the settled IORegistry and complete every waiter after that.
-        guard !refreshInFlight else {
-            refreshAgain = true
-            return
-        }
-        refreshInFlight = true
+        discover(probeAll: false, completion: completion)
+    }
 
-        // Seed from disk first, so the merge below has something to preserve even
-        // on the first scan after a relaunch.
+    /// Re-reads every attached panel's inputs over DDC. User-initiated only.
+    static func rescan(completion: (() -> Void)? = nil) {
+        discover(probeAll: true, completion: completion)
+    }
+
+    private static func discover(probeAll: Bool, completion: (() -> Void)?) {
         loadPersistedIfNeeded()
-
-        // Read on main, where the cache lives, before handing off to the scan queue.
-        let previous = monitors
-
-        queue.async {
-            let (found, attachedPanels) = scanDisplays(knownMonitors: previous)
-            // UserDefaults is thread-safe; reading it here avoids a sync hop to
-            // main from a queue main could later be waiting on.
-            let names = loadCustomNames()
-            let macInputs = loadMacInputs()
-            var labelled = found.map { monitor -> Monitor in
-                var m = monitor
-                let macCode = macInputs[m.key].map { UInt16($0) }
-                m.inputs = m.inputs.map { input in
-                    var i = input
-                    i.customName = names[nameStorageKey(m.key, i.code)]
-                    i.isMac = (i.code == macCode)
-                    return i
-                }
-                return m
-            }
-
-            // A scan that answered for nobody while a panel is still physically
-            // linked is a temporary DDC outage, not a disconnection — that is
-            // exactly the state a monitor is in while it displays another machine.
-            // Keep what we knew, flagged unreachable, so the way back survives.
-            // Any successful read means the scan is trustworthy and replaces the
-            // cache outright (otherwise swapping monitors would leave a phantom).
-            let keptFromCache = labelled.isEmpty && attachedPanels > 0 && !previous.isEmpty
-            if keptFromCache {
-                labelled = previous.map { var m = $0; m.reachable = false; return m }
-            } else {
-                services = servicesFromLastScan
-            }
-
+        guard avCreateWithService != nil, avReadI2C != nil, avWriteI2C != nil else {
+            hasScanned = true
+            completion?()
+            return
+        }
+        discoveryQueue.async {
+            let panels = attachedPanels()
             DispatchQueue.main.async {
-                monitors = labelled
-                hasScanned = true
-                // Only record measured results. Writing back the remembered set
-                // would be a no-op at best; more importantly, a genuine unplug
-                // (nothing attached, nothing found) must clear the store so a
-                // monitor that is really gone stops being offered.
-                if !keptFromCache { persist(labelled) }
+                // While a handover eject is pending the panel may drop out of the
+                // registry entirely; keep it listed (unreachable) so Reconnect
+                // stays on offer.
+                if !panels.isEmpty || handoverEjected.isEmpty {
+                    attachedKeys = panels.map(\.key)
+                }
+                let handles = panels.map { ($0.key, $0.service) }
+                queue.async {
+                    for (key, service) in handles { services[key] = service }
+                }
+                rebuildMonitors()
 
-                if refreshAgain {
-                    refreshAgain = false
-                    refreshInFlight = false
-                    refresh()
-                } else {
-                    refreshInFlight = false
-                    let callbacks = refreshCompletions
-                    refreshCompletions.removeAll()
-                    callbacks.forEach { $0() }
+                let toProbe = probeAll
+                    ? panels
+                    : panels.filter { catalog[$0.key] == nil && !probedThisLaunch.contains($0.key) }
+                guard !toProbe.isEmpty, !isStalled else {
+                    hasScanned = true
+                    completion?()
+                    return
+                }
+                probe(toProbe) {
+                    hasScanned = true
+                    completion?()
                 }
             }
         }
     }
 
-    /// Set by `scanDisplays()`; consumed by `refresh()` so a scan that found
-    /// nothing does not throw away still-valid handles. Touched only on `queue`.
-    private static var servicesFromLastScan: [String: IOAVServiceRef] = [:]
-
-    /// Walks the IORegistry for external panels and interrogates each one.
-    /// Runs on `queue`.
-    ///
-    /// Returns the monitors that answered, plus how many external panels were
-    /// *present* whether they answered or not — the two differ precisely when a
-    /// panel is linked but showing another machine, which is the case the cache
-    /// merge in `refresh()` has to recognise.
-    private static func scanDisplays(knownMonitors: [Monitor]) -> (monitors: [Monitor], attachedPanels: Int) {
-        guard let create = avCreateWithService else { return ([], 0) }
+    /// External panels in the IORegistry, identified by EDID. Runs on
+    /// `discoveryQueue`. A panel whose EDID can't be read yet is still
+    /// negotiating and is left for the next display change.
+    private static func attachedPanels() -> [Panel] {
+        guard let create = avCreateWithService else { return [] }
 
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault,
                                            IOServiceMatching("DCPAVServiceProxy"),
-                                           &iterator) == KERN_SUCCESS else { return ([], 0) }
+                                           &iterator) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
 
-        var results: [Monitor] = []
-        var discovered: [String: IOAVServiceRef] = [:]
-        var attached = 0
-
+        var panels: [Panel] = []
         while case let entry = IOIteratorNext(iterator), entry != 0 {
             defer { IOObjectRelease(entry) }
             // The built-in panel publishes a node too (Location = "Embedded")
@@ -343,40 +311,70 @@ final class DisplayInputEngine {
             let location = IORegistryEntryCreateCFProperty(entry, "Location" as CFString,
                                                            kCFAllocatorDefault, 0)?
                 .takeRetainedValue() as? String
-            guard location == "External" else { continue }
-            attached += 1
-            guard let service = create(kCFAllocatorDefault, entry)?.takeRetainedValue() else { continue }
-
-            let edid = readEDID(service)
-            let name = edid?.name ?? "External display"
-            let key = [name, edid?.serial ?? ""].joined(separator: "|")
-
-            // Brightness is the most universally implemented code; if it does not
-            // answer, this link carries no usable DDC and there is nothing to offer.
-            guard getVCP(service, code: 0x10) != nil else { continue }
-            usleep(ddcDelay)
-
-            let reading = getVCP(service, code: 0x60)
-            usleep(ddcDelay)
-            let knownInputs = knownMonitors.first(where: { $0.key == key })?.inputs
-            let inputs = discoverInputs(service,
-                                        inputVCPResponds: reading != nil,
-                                        knownInputs: knownInputs)
-            guard !inputs.isEmpty else { continue }
-
-            // A panel that reports a code outside its own advertised list is
-            // reporting garbage (0xFF is the common one) — treat it as unknown
-            // rather than surfacing a phantom "current input".
-            let current = reading.map(\.current).flatMap { value in
-                inputs.contains(where: { $0.code == value }) ? value : nil
-            }
-
-            discovered[key] = service
-            results.append(Monitor(key: key, name: name, inputs: inputs, currentCode: current))
+            guard location == "External",
+                  let service = create(kCFAllocatorDefault, entry)?.takeRetainedValue(),
+                  let edid = readEDID(service)
+            else { continue }
+            let name = edid.name ?? "External display"
+            panels.append(Panel(key: [name, edid.serial ?? ""].joined(separator: "|"),
+                                name: name, service: service))
         }
+        return panels
+    }
 
-        servicesFromLastScan = discovered
-        return (results, attached)
+    /// Reads which inputs `panels` offer and files them in `catalog`. Main thread.
+    private static func probe(_ panels: [Panel], completion: @escaping () -> Void) {
+        probedThisLaunch.formUnion(panels.map(\.key))
+        let known = catalog
+        runDDC({ () -> [Monitor] in
+            var found: [Monitor] = []
+            for panel in panels {
+                let service = panel.service
+                // Brightness is the most universally implemented code; if it does
+                // not answer, this link carries no usable DDC.
+                guard getVCP(service, code: 0x10) != nil else { continue }
+                usleep(ddcDelay)
+                let reading = getVCP(service, code: 0x60)
+                usleep(ddcDelay)
+                let inputs = discoverInputs(service,
+                                            inputVCPResponds: reading != nil,
+                                            knownInputs: known[panel.key]?.inputs)
+                guard !inputs.isEmpty else { continue }
+                // A panel that reports a code outside its own advertised list is
+                // reporting garbage (0xFF is the common one) — treat it as unknown
+                // rather than surfacing a phantom "current input".
+                let current = reading.map(\.current).flatMap { value in
+                    inputs.contains(where: { $0.code == value }) ? value : nil
+                }
+                found.append(Monitor(key: panel.key, name: panel.name, inputs: inputs, currentCode: current))
+            }
+            return found
+        }, done: { found in
+            DisplayLog.write("ddc: probed \(panels.count) panel(s), \(found.count) answered")
+            for monitor in found { catalog[monitor.key] = monitor }
+            if !found.isEmpty { persistCatalog() }
+            rebuildMonitors()
+            completion()
+        })
+    }
+
+    /// `monitors` = the attached panels' catalog entries, with custom names, the
+    /// "This Mac" mark and handover state applied. Main thread.
+    private static func rebuildMonitors() {
+        let names = loadCustomNames()
+        let macInputs = loadMacInputs()
+        monitors = attachedKeys.compactMap { key in
+            guard var m = catalog[key] else { return nil }
+            let macCode = macInputs[key].map { UInt16($0) }
+            m.inputs = m.inputs.map { input in
+                var i = input
+                i.customName = names[nameStorageKey(key, i.code)]
+                i.isMac = (i.code == macCode)
+                return i
+            }
+            m.reachable = !isHandoverEjected(monitorKey: key)
+            return m
+        }
     }
 
     /// Recreates the IOAVService wrapper for a known monitor without requiring a
@@ -437,6 +435,66 @@ final class DisplayInputEngine {
               knownInputs.allSatisfy(\.advertised)
         else { return [] }
         return knownInputs
+    }
+
+    // MARK: Link health
+
+    /// DDC waits this long after any display change. A plug, wake, mode change
+    /// or one of MSG's own enable/disable transactions renegotiates the link, and
+    /// I2C sent into that window is the likeliest thing to wedge a fragile one.
+    private static let settleInterval: TimeInterval = 6
+    private static var quietUntil = Date.distantPast
+    /// DDC operations handed to `queue` and not finished yet, and when the one
+    /// now running started. Main thread.
+    private static var opsPending = 0
+    private static var runningSince: Date?
+
+    /// Call on every display reconfiguration, plug and wake. Main thread.
+    static func noteDisplayChange() {
+        quietUntil = Date().addingTimeInterval(settleInterval)
+    }
+
+    /// True while a DDC call has been stuck for seconds: the wedged-link state,
+    /// where the call only returns once the adapter is replugged. New work is
+    /// refused rather than piled up behind it. Main thread.
+    static var isStalled: Bool {
+        guard opsPending > 0, let since = runningSince else { return false }
+        return Date().timeIntervalSince(since) > 3
+    }
+
+    /// Runs `work` on `queue` once the link has settled, then `done` on main with
+    /// its result. Every DDC transaction goes through here. Main thread.
+    private static func runDDC<T>(_ work: @escaping () -> T, done: @escaping (T) -> Void) {
+        let wait = quietUntil.timeIntervalSinceNow
+        if wait > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { runDDC(work, done: done) }
+            return
+        }
+        if opsPending == 0 { runningSince = Date() }
+        opsPending += 1
+        queue.async {
+            let started = Date()
+            let result = work()
+            let took = Date().timeIntervalSince(started)
+            if took > 2 {
+                DisplayLog.write(String(format: "ddc: a transaction took %.1f s (link wedged, then released)", took))
+            }
+            DispatchQueue.main.async {
+                opsPending -= 1
+                // `queue` is serial, so the next pending operation starts now.
+                runningSince = opsPending == 0 ? nil : Date()
+                done(result)
+            }
+        }
+    }
+
+    /// Lets an in-flight transaction finish before the process exits: dying
+    /// mid-transaction is another way to leave a fragile link wedged. Bounded,
+    /// so a link that is already wedged can't hold up quitting.
+    static func drainBeforeExit() {
+        let drained = DispatchSemaphore(value: 0)
+        queue.async { drained.signal() }
+        _ = drained.wait(timeout: .now() + 1.5)
     }
 
     // MARK: Switching
@@ -533,12 +591,10 @@ final class DisplayInputEngine {
             // which is ours to fix.
             if !info.enabled { DisplaplacerEngine.setEnabled(uuid, enabled: true) }
             clearHandoverEject(uuid)
-            // Re-read on the off chance DDC came back with the panel. Measured on
-            // the MP341CQ it does not: after a handover the I2C writes stay refused
-            // (0xE0114101, the monitor NACKing at 0x37) through the panel's return,
-            // a monitor power cycle and an OSD DDC/CI check — only a reboot cleared
-            // it. So expect this to find nothing and the entry to stay unreachable;
-            // that is why the cache is persisted rather than rebuilt from here.
+            // Relist so the entry shows as reachable again. Note DDC itself may not
+            // be back: measured on the MP341CQ, after a handover the I2C writes were
+            // refused (0xE0114101, the monitor NACKing at 0x37) until the USB-C
+            // adapter was replugged — a monitor power cycle didn't clear it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { refresh() }
         }
     }
@@ -578,24 +634,23 @@ final class DisplayInputEngine {
     /// the feature, but it means the completion only reports that the I2C write
     /// was accepted, never that the panel acted on it.
     static func switchTo(monitorKey: String, code: UInt16, completion: ((Bool) -> Void)? = nil) {
-        queue.async {
+        guard !isStalled else { completion?(false); return }
+        runDDC({ () -> Bool in
             // Always prefer a newly-created wrapper. An input change tears down
             // and recreates the HDMI link on some Apple-silicon Macs, making the
             // handle captured by the discovery scan permanently stale.
             guard var service = freshService(forMonitorKey: monitorKey) ?? services[monitorKey] else {
-                DispatchQueue.main.async { completion?(false) }
-                return
+                return false
             }
             services[monitorKey] = service
 
             // Slow links can NACK the first command just after reappearing. Retry
             // with a newly resolved service each time instead of hammering the
             // same dead handle. A successful input-select write is never repeated.
-            var ok = false
             for attempt in 0..<4 {
                 if setVCP(service, code: 0x60, value: code) {
-                    ok = true
-                    break
+                    usleep(ddcDelay)
+                    return true
                 }
                 guard attempt < 3 else { break }
                 usleep(UInt32(100_000 * (attempt + 1)))
@@ -604,8 +659,98 @@ final class DisplayInputEngine {
                     services[monitorKey] = refreshed
                 }
             }
-            DispatchQueue.main.async { completion?(ok) }
-        }
+            return false
+        }, done: { ok in
+            if ok, catalog[monitorKey] != nil {
+                catalog[monitorKey]?.currentCode = code
+                rebuildMonitors()
+            }
+            completion?(ok)
+        })
+    }
+
+    // MARK: - Levels (brightness 0x10, speaker volume 0x62)
+    //
+    // The brightness and volume keys drive these when the target is an external
+    // panel: HDMI/DisplayPort audio has no CoreAudio volume, and macOS has no
+    // brightness control for third-party monitors. Like everything else here,
+    // they go through `runDDC`: one transaction at a time, never inside the
+    // settle window after a display change.
+
+    /// The continuous VCP controls the keys drive.
+    enum Level: UInt8 {
+        case brightness = 0x10
+        case volume = 0x62
+    }
+
+    /// Latest requested value (0…1) per monitor and control, waiting for its
+    /// write, and each panel's own maximum for that control from its last read
+    /// (100 on the MP341CQ, but MCCS lets a panel pick any). Keyed by
+    /// `levelKey`. Guarded by `levelLock`: the writes read them on `queue`.
+    private static var levelTargets: [String: Double] = [:]
+    private static var levelMaximum: [String: UInt16] = [:]
+    private static let levelLock = NSLock()
+
+    private static func levelKey(_ level: Level, _ monitorKey: String) -> String {
+        "\(monitorKey)#\(level.rawValue)"
+    }
+
+    /// The DDC monitor called `name` — an NSScreen's name, or a CoreAudio
+    /// output's, which macOS takes from the EDID product name just like
+    /// `Monitor.name`. A lone external monitor is used when names differ.
+    /// Main thread.
+    static func monitorKey(named name: String) -> String? {
+        loadPersistedIfNeeded()
+        if monitors.isEmpty && !hasScanned { refresh() }
+        let reachable = monitors.filter(\.reachable)
+        if let match = reachable.first(where: {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) { return match.key }
+        return reachable.count == 1 ? reachable[0].key : nil
+    }
+
+    /// Reads a control as a 0…1 fraction of the panel's own maximum.
+    /// Completion on main; nil when the panel does not answer.
+    static func readLevel(_ level: Level, monitorKey: String, completion: @escaping (Double?) -> Void) {
+        guard !isStalled else { completion(nil); return }
+        runDDC({ () -> Double? in
+            guard let service = services[monitorKey] ?? freshService(forMonitorKey: monitorKey) else { return nil }
+            services[monitorKey] = service
+            defer { usleep(ddcDelay) }
+            guard let reading = getVCP(service, code: level.rawValue), reading.maximum > 0 else { return nil }
+            levelLock.lock()
+            levelMaximum[levelKey(level, monitorKey)] = reading.maximum
+            levelLock.unlock()
+            return Double(reading.current) / Double(reading.maximum)
+        }, done: completion)
+    }
+
+    /// Sets a control to a 0…1 fraction of the panel's own maximum, the scale
+    /// `readLevel` reports. Held keys fire faster than DDC takes writes, so
+    /// requests collapse: the write sends whatever value is latest when it runs,
+    /// and presses arriving while one is queued just update that value.
+    /// Main thread.
+    static func setLevel(_ level: Level, monitorKey: String, to value: Double) {
+        guard !isStalled else { return }
+        let key = levelKey(level, monitorKey)
+        levelLock.lock()
+        let writeQueued = levelTargets[key] != nil
+        levelTargets[key] = max(0, min(1, value))
+        levelLock.unlock()
+        guard !writeQueued else { return }
+
+        runDDC({ () -> Void in
+            levelLock.lock()
+            let target = levelTargets.removeValue(forKey: key)
+            let maximum = levelMaximum[key] ?? 100
+            levelLock.unlock()
+            guard let target,
+                  let service = services[monitorKey] ?? freshService(forMonitorKey: monitorKey)
+            else { return }
+            services[monitorKey] = service
+            _ = setVCP(service, code: level.rawValue, value: UInt16((target * Double(maximum)).rounded()))
+            usleep(ddcDelay)
+        }, done: { _ in })
     }
 
     // MARK: - DDC primitives (all on `queue`)

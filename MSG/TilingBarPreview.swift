@@ -32,6 +32,8 @@ enum TilingBarPreviewLayout {
     static let identityGap: CGFloat = 8
 
     static let gapBelowBar: CGFloat = 6
+    /// Between window cards when an app shows several.
+    static let cardSpacing: CGFloat = 10
     static let tuck: CGFloat = 12
     static let screenInset: CGFloat = 8
 
@@ -105,6 +107,10 @@ struct PreviewIdentityRow: View {
 @available(macOS 14.0, *)
 private final class TilingBarPreviewModel: ObservableObject {
     @Published var window: CapturedWindow?
+    /// The app's other windows on the same Space, beside the main card.
+    @Published var extras: [CapturedWindow] = []
+    var onSelectExtra: (CapturedWindow) -> Void = { _ in }
+    var onCloseExtra: (CapturedWindow) -> Void = { _ in }
     @Published var appName = ""
     @Published var appIcon: NSImage?
     @Published var pid: pid_t = 0
@@ -115,6 +121,9 @@ private final class TilingBarPreviewModel: ObservableObject {
     var onSelect: () -> Void = {}
     var onClose: () -> Void = {}
     var onFullscreen: () -> Void = {}
+    var onMinimize: () -> Void = {}
+    var onMinimizeExtra: (CapturedWindow) -> Void = { _ in }
+    var onFullscreenExtra: (CapturedWindow) -> Void = { _ in }
     var onDismiss: () -> Void = {}
     var panelFrame: () -> CGRect = { .zero }
 }
@@ -131,16 +140,21 @@ private struct TilingBarPreviewView: View {
 
         VStack(alignment: .leading, spacing: layout.identityGap) {
             if let window = model.window {
-                let cardWidth = layout.thumbnailWidth(aspect: layout.aspect(of: window.image),
-                                                      height: model.thumbHeight) + layout.windowCardFrame * 2
+                let cardWidth = ([window] + model.extras).map {
+                    layout.thumbnailWidth(aspect: layout.aspect(of: $0.image), height: model.thumbHeight)
+                        + layout.windowCardFrame * 2
+                }.reduce(0, +) + CGFloat(model.extras.count) * TilingBarPreviewLayout.cardSpacing
                 PreviewIdentityRow(icon: model.appIcon, name: model.appName,
                                    active: isHovering, width: cardWidth)
+                HStack(alignment: .top, spacing: TilingBarPreviewLayout.cardSpacing) {
                 DockWindowCard(window: window,
                                appName: model.appName,
                                height: model.thumbHeight,
                                maxWidth: model.thumbHeight * layout.maxCardAspect,
                                action: model.onSelect,
                                onClose: model.onClose,
+                               onMinimize: model.onMinimize,
+                               onFullscreen: model.onFullscreen,
                                captionHeight: model.captionHeight > 0 ? model.captionHeight : nil,
                                onHoverChanged: { isHovering = $0 },
                                pid: model.pid,
@@ -150,6 +164,25 @@ private struct TilingBarPreviewView: View {
                                isHidden: PreviewHiddenStyle.isHidden(pid: model.pid, windowID: window.id))
                     .id(window.id)
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                ForEach(model.extras, id: \.id) { extra in
+                    DockWindowCard(window: extra,
+                                   appName: model.appName,
+                                   height: model.thumbHeight,
+                                   maxWidth: model.thumbHeight * layout.maxCardAspect,
+                                   action: { model.onSelectExtra(extra) },
+                                   onClose: { model.onCloseExtra(extra) },
+                                   onMinimize: { model.onMinimizeExtra(extra) },
+                                   onFullscreen: { model.onFullscreenExtra(extra) },
+                                   captionHeight: model.captionHeight > 0 ? model.captionHeight : nil,
+                                   onHoverChanged: { isHovering = $0 },
+                                   pid: model.pid,
+                                   appIcon: model.appIcon,
+                                   sourcePanelFrame: model.panelFrame,
+                                   onDismissPanel: model.onDismiss,
+                                   isHidden: PreviewHiddenStyle.isHidden(pid: model.pid, windowID: extra.id))
+                        .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                }
+                }
             }
         }
         .opacity(model.contentOpacity)
@@ -432,6 +465,19 @@ final class TilingBarPreviewController {
                 await WindowPreviewCapture.closeWindow(pid: pid, windowID: winID)
             }
         }
+        model.onMinimize = { [weak self] in
+            self?.dismiss()
+            Task { await WindowPreviewCapture.minimizeWindow(pid: target.window.pid, windowID: target.window.windowID) }
+        }
+        model.onMinimizeExtra = { [weak self] extra in
+            self?.dismiss()
+            Task { await WindowPreviewCapture.minimizeWindow(pid: target.window.pid, windowID: extra.id) }
+        }
+        model.onFullscreenExtra = { [weak self] extra in
+            self?.dismiss()
+            Task { await WindowPreviewCapture.toggleFullscreen(pid: target.window.pid, windowID: extra.id,
+                                                               bounds: extra.bounds) }
+        }
         model.onFullscreen = { [weak self] in
             self?.dismiss()
             let bounds = window.bounds
@@ -450,8 +496,22 @@ final class TilingBarPreviewController {
         let maxThumbHeight = max(90, (screen.frame.height - target.bar.height) * 0.38)
         let thumbHeight = min(AppSettings.shared.dockPreviewThumbHeight, maxThumbHeight)
 
+        let extras = target.window.siblingIDs.map { id -> CapturedWindow in
+            CapturedWindow(id: id, image: WindowPreviewCapture.lastThumbnail(for: id) ?? target.window.icon ?? NSImage(),
+                           title: nil, bounds: .zero)
+        }
+        model.onSelectExtra = { [weak self] extra in
+            self?.dismiss()
+            Task { await WindowPreviewCapture.raiseWindow(pid: target.window.pid, windowID: extra.id,
+                                                          fallbackBounds: extra.bounds) }
+        }
+        model.onCloseExtra = { [weak self] extra in
+            self?.dismiss()
+            Task { await WindowPreviewCapture.closeWindow(pid: target.window.pid, windowID: extra.id) }
+        }
         let apply = {
             self.model.window = window
+            self.model.extras = extras
             self.model.appName = target.window.name
             self.model.appIcon = target.window.icon
             self.model.pid = target.window.pid
@@ -467,6 +527,7 @@ final class TilingBarPreviewController {
             apply()
         }
 
+        captureExtras(for: target)
         let frame = computeFrame(for: window, target: target)
         if let morphFrom {
             animateMorph(from: morphFrom, to: frame, duration: 0.28)
@@ -476,6 +537,25 @@ final class TilingBarPreviewController {
             animateFrame(to: frame, duration: 0.24)
         } else {
             dropIn(to: frame)
+        }
+    }
+
+    /// Live images for the app's other windows, swapped in as they land.
+    private func captureExtras(for target: Target) {
+        let ids = target.window.siblingIDs
+        guard !ids.isEmpty else { return }
+        let token = generation
+        Task { @MainActor [weak self] in
+            for id in ids {
+                let captured = await WindowPreviewCapture.captureWindow(pid: target.window.pid, windowID: id)
+                guard let self, self.generation == token, self.shown?.window.windowID == target.window.windowID,
+                      let index = self.model.extras.firstIndex(where: { $0.id == id }) else { return }
+                withAnimation(.easeOut(duration: 0.16)) { self.model.extras[index] = captured }
+                if let window = self.model.window, let panel = self.panel, self.timeline == nil {
+                    let frame = self.computeFrame(for: window, target: target)
+                    if abs(frame.width - panel.frame.width) > 1 { self.animateFrame(to: frame, duration: 0.2) }
+                }
+            }
         }
     }
 
@@ -510,9 +590,13 @@ final class TilingBarPreviewController {
         let layout = TilingBarPreviewLayout.self
         let screen = NSScreen.screens.first { $0.frame.intersects(target.bar) }
             ?? NSScreen.main ?? NSScreen.screens[0]
-        let cardWidth = layout.thumbnailWidth(aspect: layout.aspect(of: window.image), height: model.thumbHeight)
-            + layout.windowCardFrame * 2
-        let capHeight = Self.captionHeight(for: window, appName: target.window.name, thumbHeight: model.thumbHeight)
+        let cardWidth = ([window] + model.extras).map {
+            layout.thumbnailWidth(aspect: layout.aspect(of: $0.image), height: model.thumbHeight)
+                + layout.windowCardFrame * 2
+        }.reduce(0, +) + CGFloat(model.extras.count) * layout.cardSpacing
+        let capHeight = ([window] + model.extras).map {
+            Self.captionHeight(for: $0, appName: target.window.name, thumbHeight: model.thumbHeight)
+        }.max() ?? 0
         let caption = capHeight > 0 ? layout.captionGap + capHeight : 0
         let size = NSSize(
             width: ceil(cardWidth + layout.padding * 2),

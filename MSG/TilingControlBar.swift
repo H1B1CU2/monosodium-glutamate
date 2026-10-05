@@ -28,6 +28,7 @@ final class TilingControlBarController {
     /// moved there: the layout it left needs retiling, and so does the
     /// Desktop (given by its Space id) it arrived on.
     var onWindowMovedToSpace: ((CGWindowID, UInt64) -> Void)?
+    var onMoveWindowToDesktop: ((CGWindowID, pid_t, String, Int?) -> Void)?
 
     var isEnabled: Bool = true {
         didSet {
@@ -216,6 +217,18 @@ final class TilingControlBarController {
         return 30
     }
 
+    /// On a native full-screen Space, macOS moves the menus right and shows the
+    /// window's traffic lights at the left end of the menu bar — in a window
+    /// below the backdrop, whose black strip painted over them. The backdrop
+    /// leaves this much of its left end clear there (the system's own menu bar
+    /// is black behind it, so nothing shows).
+    private static let fullscreenControlsWidth: CGFloat = 100
+
+    private static func isOnFullscreenSpace(_ screen: NSScreen) -> Bool {
+        guard let current = WindowPreviewCapture.currentManagedSpaceID(for: screen) else { return false }
+        return WindowPreviewCapture.managedSpaces(for: screen).contains { $0.id == current && $0.isFullscreen }
+    }
+
     static func barFrame(for screen: NSScreen, mode: TilingControlBarMode) -> CGRect {
         let height = barHeight(for: screen).rounded()
         let full = CGRect(x: screen.frame.minX, y: screen.frame.maxY - height,
@@ -365,7 +378,7 @@ final class TilingControlBarController {
         }) else { return nil }
         let snapshot = entry.value
 
-        let currentSpaceWindows = snapshot.windows.filter {
+        let currentSpaceWindows = (snapshot.tabWindows ?? snapshot.windows).filter {
             ($0.status == .leftTabbed || $0.status == .rightTabbed || $0.status == .split)
                 && $0.spaceNumber == snapshot.spaceNumber
         }
@@ -407,10 +420,10 @@ final class TilingControlBarController {
                 targetTabs = sameSide
             }
         } else {
-            let rightTabs = snapshot.windows.filter {
+            let rightTabs = currentSpaceWindows.filter {
                 $0.status == .rightTabbed && $0.spaceNumber == snapshot.spaceNumber
             }
-            let leftTabs = snapshot.windows.filter {
+            let leftTabs = currentSpaceWindows.filter {
                 $0.status == .leftTabbed && $0.spaceNumber == snapshot.spaceNumber
             }
             targetTabs = rightTabs.count > 1 ? rightTabs : (leftTabs.count > 1 ? leftTabs : currentSpaceWindows)
@@ -482,7 +495,10 @@ final class TilingControlBarController {
             panel.ignoresMouseEvents = false
             panel.orderFrontRegardless()
         }
-        for (_, bPanel) in backdropPanels {
+        for (uuid, bPanel) in backdropPanels {
+            if let screen = screens[uuid] {
+                backdropViews[uuid]?.leftHole = Self.isOnFullscreenSpace(screen) ? Self.fullscreenControlsWidth : 0
+            }
             bPanel.orderFrontRegardless()
         }
     }
@@ -663,7 +679,9 @@ final class TilingControlBarController {
             let wasConflicted = nativeConflictDisplayUUIDs.contains(uuid)
             let revealNativeLeft = shouldRevealNativeLeft(on: panel, displayUUID: uuid,
                                                           pointer: pointer)
-            let unavailable = !PresentationState.shared.canPresent
+            // SP8CE's page full screen is on this display's desktop Space, not one of its own
+            // (which the bar isn't on), so the bar steps aside for it itself.
+            let unavailable = !PresentationState.shared.canPresent || SystemState.pageFullscreenDisplay == uuid
             if unavailable {
                 bPanel?.orderOut(nil)
             } else if bPanel?.isVisible != true {
@@ -881,6 +899,7 @@ final class TilingControlBarController {
                 bView.cornerCurve = curve
                 bView.needsDisplay = true
             }
+            bView.leftHole = Self.isOnFullscreenSpace(screen) ? Self.fullscreenControlsWidth : 0
 
             let frame = Self.barFrame(for: screen, mode: mode)
             if abs(panel.frame.minX - frame.minX) > 1 ||
@@ -1026,6 +1045,9 @@ final class TilingControlBarController {
             view.onToggleScope = { [weak self] in self?.onToggleScope?() }
             view.onSwitchSpace = { [weak self] spaceNumber in
                 self?.onSwitchSpace?(uuid, spaceNumber)
+            }
+            view.onMoveWindowToDesktop = { [weak self] windowID, pid, destination in
+                self?.onMoveWindowToDesktop?(windowID, pid, uuid, destination)
             }
             view.onHoverWindow = { [weak self, weak view] window, icon, bar in
                 self?.handleHover(window, icon: icon, bar: bar, view: view)
@@ -1183,6 +1205,14 @@ final class TilingMenubarBackdropView: NSView {
         }
     }
 
+    /// Width left clear at the left end of the menu bar strip (see
+    /// `fullscreenControlsWidth`); 0 for none.
+    var leftHole: CGFloat = 0 {
+        didSet {
+            if leftHole != oldValue { needsDisplay = true }
+        }
+    }
+
     override var isFlipped: Bool {
         return false
     }
@@ -1273,6 +1303,13 @@ final class TilingMenubarBackdropView: NSView {
 
         NSColor.black.setFill()
         path.fill()
+
+        if leftHole > 0 {
+            // Only the strip itself: the corner fillet below it stays.
+            let strip = r > 0 ? NSRect(x: 0, y: reach, width: leftHole, height: h)
+                              : NSRect(x: 0, y: 0, width: leftHole, height: bounds.height)
+            NSGraphicsContext.current?.cgContext.clear(strip)
+        }
     }
 }
 
@@ -1364,6 +1401,7 @@ private final class TilingControlBarView: NSView {
     var onActivateWindow: ((CGWindowID, pid_t, CGRect) -> Void)?
     var onToggleScope: (() -> Void)?
     var onSwitchSpace: ((Int) -> Void)?
+    var onMoveWindowToDesktop: ((CGWindowID, pid_t, Int?) -> Void)?
     /// The icon under the pointer — its window, the icon's rect and the bar's
     /// frame, both on screen — or nil once the pointer is on no icon.
     var onHoverWindow: ((TilingBarWindow?, CGRect, CGRect) -> Void)?
@@ -1871,33 +1909,101 @@ private final class TilingControlBarView: NSView {
 
         let iconY = (bounds.height - 20) / 2
         let iconSize: CGFloat = 20
-        let iconSpacing: CGFloat = 5
-        let dividerSpacing: CGFloat = 7
+        let groupInsetX: CGFloat = 3.5
+        let intraGroupSpacing: CGFloat = 6
+        let interGroupGap: CGFloat = 9
+        let standaloneToGroupGap: CGFloat = 8
+        let standaloneSpacing: CGFloat = 7
+        let dividerMargin: CGFloat = 8
+        let dividerWidth: CGFloat = 2
         let isAllSpaces = snapshot?.scope == .allSpaces
         let maxCount = isAllSpaces ? 24 : 18
         let currentWindows = Array((snapshot?.windows ?? []).prefix(maxCount))
 
+        // Pre-compute group IDs for tabbed windows:
+        // Consecutive windows sharing the same column side and Desktop form a tab stack.
+        func tabSide(_ status: TilingWindowStatus) -> Int? {
+            switch status {
+            case .leftTabbed: return 0
+            case .rightTabbed: return 1
+            default: return nil
+            }
+        }
+        var groupForIndex: [Int: Int] = [:]
+        var currentGroupID = 0
+        var scan = 0
+        while scan < currentWindows.count {
+            guard let side = tabSide(currentWindows[scan].status) else {
+                scan += 1
+                continue
+            }
+            let spaceNumber = currentWindows[scan].spaceNumber
+            var end = scan + 1
+            while end < currentWindows.count,
+                  tabSide(currentWindows[end].status) == side,
+                  currentWindows[end].spaceNumber == spaceNumber {
+                end += 1
+            }
+            if end - scan >= 2 {
+                for i in scan..<end {
+                    groupForIndex[i] = currentGroupID
+                }
+                currentGroupID += 1
+            }
+            scan = end
+        }
+
         var placed: [PlacedItem] = []
         var curX = startX + 4
+        if groupForIndex[0] != nil {
+            curX += groupInsetX
+        }
 
         for (index, window) in currentWindows.enumerated() {
             var divX: CGFloat? = nil
-            let previous = index > 0 ? currentWindows[index - 1] : nil
-            let spaceChanged = isAllSpaces && previous.map { window.spaceNumber != $0.spaceNumber } == true
-            if spaceChanged {
-                if let prevRect = placed.last?.rect {
-                    divX = prevRect.maxX + dividerSpacing
-                    curX = divX! + 1.0 + dividerSpacing
+            if index > 0 {
+                let previous = currentWindows[index - 1]
+                let spaceChanged = isAllSpaces && window.spaceNumber != previous.spaceNumber
+                let prevGroup = groupForIndex[index - 1]
+                let currGroup = groupForIndex[index]
+
+                if spaceChanged {
+                    let leftPad = (prevGroup != nil ? groupInsetX : 0) + dividerMargin
+                    let rightPad = dividerMargin + (currGroup != nil ? groupInsetX : 0)
+                    if let prevRect = placed.last?.rect {
+                        divX = prevRect.maxX + leftPad
+                        curX = divX! + dividerWidth + rightPad
+                    } else {
+                        curX += dividerMargin
+                        divX = curX
+                        curX += dividerWidth + rightPad
+                    }
                 } else {
-                    curX += dividerSpacing
-                    divX = curX
-                    curX += 1.0 + dividerSpacing
+                    let spacing: CGFloat
+                    if prevGroup != nil && currGroup != nil && prevGroup == currGroup {
+                        // Same tab stack
+                        spacing = intraGroupSpacing
+                    } else if prevGroup != nil && currGroup != nil && prevGroup != currGroup {
+                        // Adjacent distinct tab stacks: ample space so capsules never overlap
+                        spacing = groupInsetX + interGroupGap + groupInsetX
+                    } else if prevGroup != nil && currGroup == nil {
+                        // Exiting tab stack to standalone window
+                        spacing = groupInsetX + standaloneToGroupGap
+                    } else if prevGroup == nil && currGroup != nil {
+                        // Entering tab stack from standalone window
+                        spacing = standaloneToGroupGap + groupInsetX
+                    } else {
+                        // Both standalone windows
+                        spacing = standaloneSpacing
+                    }
+                    curX += spacing
                 }
             }
+
             guard curX + iconSize + 2 <= maxX else { break }
             let rect = CGRect(x: curX, y: iconY, width: iconSize, height: iconSize)
             placed.append(PlacedItem(window: window, rect: rect, leadingDividerX: divX))
-            curX += iconSize + iconSpacing
+            curX += iconSize
         }
 
         // FLIP-style repositioning: surviving icons begin at their currently
@@ -1929,13 +2035,6 @@ private final class TilingControlBarView: NSView {
         // Tint only actual tab stacks (two or more windows in one column).
         // A lone window stays unframed even when the opposite column exists.
         // Keep groups scoped to a Desktop, separate from Space dividers.
-        func tabSide(_ status: TilingWindowStatus) -> Int? {
-            switch status {
-            case .leftTabbed: return 0
-            case .rightTabbed: return 1
-            default: return nil
-            }
-        }
         var groupStart = 0
         while groupStart < placed.count {
             guard let side = tabSide(placed[groupStart].window.status) else {
@@ -1953,7 +2052,7 @@ private final class TilingControlBarView: NSView {
                 let groupRect = placed[groupStart..<groupEnd]
                     .map(\.rect)
                     .reduce(CGRect.null) { $0.union($1) }
-                    .insetBy(dx: -3, dy: -3)
+                    .insetBy(dx: -groupInsetX, dy: -3)
                 NSColor.white.withAlphaComponent(0.10).setFill()
                 NSBezierPath(roundedRect: groupRect, xRadius: 7, yRadius: 7).fill()
             }
@@ -2001,11 +2100,12 @@ private final class TilingControlBarView: NSView {
         // Draw vertical category / space dividers
         for item in placed {
             if let divX = item.leadingDividerX {
-                let divH: CGFloat = 14
+                let divH: CGFloat = 10
+                let divW: CGFloat = 2
                 let divY = (bounds.height - divH) / 2
-                let divRect = CGRect(x: round(divX), y: divY, width: 1, height: divH)
+                let divRect = CGRect(x: round(divX), y: divY, width: divW, height: divH)
                 NSColor.white.withAlphaComponent(0.25).setFill()
-                NSBezierPath(roundedRect: divRect, xRadius: 0.5, yRadius: 0.5).fill()
+                NSBezierPath(roundedRect: divRect, xRadius: divW / 2, yRadius: divW / 2).fill()
             }
         }
 
@@ -2465,6 +2565,29 @@ private final class TilingControlBarView: NSView {
         floatingItem.state = window.status == .floating ? .on : .off
         menu.addItem(floatingItem)
 
+        if let screen = NSScreen.screens.first(where: {
+            $0.uuid?.caseInsensitiveCompare(displayUUID) == .orderedSame
+        }) {
+            let desktops = WindowPreviewCapture.managedSpaces(for: screen)
+            menu.addItem(NSMenuItem.separator())
+            let newDesktop = NSMenuItem(title: "Move to New Desktop",
+                                        action: #selector(moveWindowToDesktopAction(_:)), keyEquivalent: "")
+            newDesktop.target = self
+            newDesktop.representedObject = NSNumber(value: window.windowID)
+            newDesktop.isEnabled = true
+            menu.addItem(newDesktop)
+            for (index, desktop) in desktops.enumerated()
+                where !desktop.isFullscreen && index + 1 != window.spaceNumber {
+                let item = NSMenuItem(title: "Move to Desktop \(index + 1)",
+                                      action: #selector(moveWindowToDesktopAction(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = index + 1
+                item.representedObject = NSNumber(value: window.windowID)
+                item.isEnabled = true
+                menu.addItem(item)
+            }
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let retileItem = NSMenuItem(title: "Retile", action: #selector(retileAction(_:)), keyEquivalent: "")
@@ -2554,6 +2677,12 @@ private final class TilingControlBarView: NSView {
         let winID = sender.tag > 0 ? CGWindowID(sender.tag) : nil
         NSLog("MSG Tiling: setFloatingAction for winID=%u", winID ?? 0)
         onToggleFloating?(winID)
+    }
+
+    @objc func moveWindowToDesktopAction(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber,
+              let window = snapshot?.windows.first(where: { $0.windowID == number.uint32Value }) else { return }
+        onMoveWindowToDesktop?(window.windowID, window.pid, sender.tag > 0 ? sender.tag : nil)
     }
 
     @objc func retileAction(_ sender: NSMenuItem) {

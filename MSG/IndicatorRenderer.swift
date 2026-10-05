@@ -722,6 +722,13 @@ final class IndicatorRenderer {
     static func systemHUDIcon(kind: SystemHUDKind, value v: CGFloat, muted: Bool,
                               audioOutputKind: AudioOutputKind?, deviceIcons: Bool,
                               pointSize: CGFloat, color: NSColor) -> NSImage? {
+        if kind == .volume, deviceIcons, audioOutputKind == .displaySpeaker {
+            return pebbleIcon(pointSize: pointSize, color: color)
+        }
+        if kind == .volume, deviceIcons, audioOutputKind == .nothingHeadphone {
+            return nothingHeadphoneIcon(pointSize: pointSize, color: color)
+        }
+
         let symbolName: String
         switch kind {
         case .brightness:
@@ -731,8 +738,8 @@ final class IndicatorRenderer {
                 switch audioOutputKind {
                 case .airPodsPro: symbolName = "airpodspro"
                 case .airPods:    symbolName = "airpods"
-                case .headphones: symbolName = "headphones"
-                case .speaker:
+                case .headphones, .nothingHeadphone: symbolName = "headphones"
+                case .speaker, .displaySpeaker:
                     if muted          { symbolName = "speaker.slash.fill" }
                     else if v <= 0.001 { symbolName = "speaker.fill" }
                     else if v < 0.33   { symbolName = "speaker.wave.1.fill" }
@@ -759,6 +766,144 @@ final class IndicatorRenderer {
         case "airpods":    return symbol(symbolName) ?? symbol("headphones")
         default:           return symbol(symbolName)
         }
+    }
+
+    /// A Creative Pebble seen from the front: round body, the upward-tilted
+    /// driver face cut out, its cone, and the base ring. SF Symbols has no
+    /// desktop-speaker glyph, so it is drawn by hand. The canvas is two points
+    /// taller than `pointSize` so it fills the same 14 pt slot the speaker
+    /// symbols do at 12 pt.
+    static func pebbleIcon(pointSize: CGFloat, color: NSColor) -> NSImage {
+        let s = (pointSize + 2).rounded()
+        let image = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
+            func r(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
+                NSRect(x: x * s, y: y * s, width: w * s, height: h * s)
+            }
+            let path = NSBezierPath()
+            path.windingRule = .evenOdd
+            path.append(NSBezierPath(ovalIn: r(0.06, 0.10, 0.88, 0.86)))   // body
+            path.append(NSBezierPath(ovalIn: r(0.17, 0.40, 0.66, 0.46)))   // tilted face
+            path.append(NSBezierPath(ovalIn: r(0.36, 0.53, 0.28, 0.20)))   // cone
+            path.append(NSBezierPath(roundedRect: r(0.24, 0, 0.52, 0.08),
+                                     xRadius: 0.04 * s, yRadius: 0.04 * s)) // base
+            color.setFill()
+            path.fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    /// Nothing Headphone (a), front view, traced from Nothing's own product
+    /// render. Coordinates are that image's pixels (the art spans x 42…1240,
+    /// y 54…1336 around centre x 641, y down). The earcups use their own frame —
+    /// u down the cup's long axis, v across it toward the head — because they
+    /// lean 30° with the bottoms in, which is most of what makes the silhouette
+    /// read as this headphone rather than a generic one. Weights have floors in
+    /// points, so the glyph thickens a little at menu-bar sizes and converges
+    /// on the real proportions when drawn large.
+    static func nothingHeadphoneIcon(pointSize: CGFloat, color: NSColor) -> NSImage {
+        let h = (pointSize + 2).rounded()
+        let boxW: CGFloat = 1210, boxH: CGFloat = 1294, boxTop: CGFloat = 48, midX: CGFloat = 641
+        let k = h / boxH                      // points per source pixel
+        let w = (boxW * k).rounded(.up)
+        func px(_ pt: CGFloat) -> CGFloat { pt / k }
+
+        let bandOuter: CGFloat = 550
+        let bandW = max(58, px(0.85))
+        let gap = max(10, px(0.4))
+        let wireW = max(16, px(0.5))
+        // The head pad is a tighter arc than the band, tucked under its top.
+        // `padTop` is how much band shows above it; small sizes keep more so
+        // the band doesn't vanish into the gap.
+        let padTop = max(30, px(0.6)), padGap = max(4, px(0.4)), padW = max(54, px(0.75))
+        let padOuter: CGFloat = 472
+        let padCentreY = 606 - bandOuter + padTop + padGap + padOuter
+        let tilt: CGFloat = 30 * .pi / 180
+
+        let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current else { return false }
+            let t = NSAffineTransform()
+            t.translateX(by: w / 2, yBy: h + boxTop * k)
+            t.scaleX(by: k, yBy: -k)
+            t.translateX(by: -midX, yBy: 0)
+            t.concat()
+            color.set()
+
+            // Band: outer edge fixed, extra weight grows inward.
+            let band = NSBezierPath()
+            band.appendArc(withCenter: NSPoint(x: midX, y: 606), radius: bandOuter - bandW / 2,
+                           startAngle: 180 - 8.7, endAngle: 8.7, clockwise: false)
+            band.lineWidth = bandW
+            band.stroke()
+
+            // Head pad, split from the band by a gap cut along its top edge.
+            let padCentre = NSPoint(x: midX, y: padCentreY)
+            let pad = NSBezierPath()
+            pad.appendArc(withCenter: padCentre, radius: padOuter - padW / 2,
+                          startAngle: 230, endAngle: 310, clockwise: false)
+            pad.lineWidth = padW
+            pad.lineCapStyle = .round
+            pad.stroke()
+            ctx.compositingOperation = .clear
+            let padCut = NSBezierPath()
+            padCut.appendArc(withCenter: padCentre, radius: padOuter + padGap / 2,
+                             startAngle: 230, endAngle: 310, clockwise: false)
+            padCut.lineWidth = padGap
+            padCut.lineCapStyle = .round
+            padCut.stroke()
+            ctx.compositingOperation = .sourceOver
+            color.set()
+
+            // Cup frame (v, u) → source pixels, left side.
+            let toSource = AffineTransform(m11: cos(tilt), m12: -sin(tilt),
+                                           m21: sin(tilt), m22: cos(tilt), tX: 0, tY: 0)
+            func cupRect(v: ClosedRange<CGFloat>, u: ClosedRange<CGFloat>, radius: CGFloat) -> NSBezierPath {
+                let path = NSBezierPath(roundedRect: NSRect(x: v.lowerBound, y: u.lowerBound,
+                                                            width: v.upperBound - v.lowerBound,
+                                                            height: u.upperBound - u.lowerBound),
+                                        xRadius: radius, yRadius: radius)
+                path.transform(using: toSource)
+                return path
+            }
+
+            for mirrored in [false, true] {
+                NSGraphicsContext.saveGraphicsState()
+                if mirrored {
+                    let m = NSAffineTransform()
+                    m.translateX(by: 2 * midX, yBy: 0)
+                    m.scaleX(by: -1, yBy: 1)
+                    m.concat()
+                }
+                // Hinge block under the band end, then the wire yoke: it bows out
+                // past the band to an apex and comes back in to the cup's outer
+                // plate.
+                NSBezierPath(roundedRect: NSRect(x: 130, y: 628, width: 40, height: 56),
+                             xRadius: 20, yRadius: 20).fill()
+                let wire = NSBezierPath()
+                wire.move(to: NSPoint(x: 144, y: 682))
+                wire.curve(to: NSPoint(x: 55, y: 782),
+                           controlPoint1: NSPoint(x: 140, y: 730), controlPoint2: NSPoint(x: 60, y: 740))
+                wire.line(to: NSPoint(x: 96, y: 862))
+                wire.lineWidth = wireW
+                wire.lineJoinStyle = .round
+                wire.stroke()
+
+                // Shell: the cup's rim, plus its outer plate, which starts lower
+                // where the yoke pivots. The rim stops short of the cushion by
+                // `gap`, which is what separates the two.
+                let cushionV: ClosedRange<CGFloat> = -204 ... -96
+                cupRect(v: -315 ... (cushionV.lowerBound - gap), u: 712 ... 1368, radius: 18).fill()
+                cupRect(v: -385 ... -300, u: 790 ... 1296, radius: 34).fill()
+                // Ear cushion: a stadium on the inside of the cup.
+                cupRect(v: cushionV, u: 715 ... 1370,
+                        radius: (cushionV.upperBound - cushionV.lowerBound) / 2).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     /// Whether a HUD glyph is centered in its slot rather than bottom-anchored.

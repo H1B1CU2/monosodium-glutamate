@@ -94,7 +94,7 @@ final class AudioSpectrumTap {
         // Aggregate device: default output as clock source + our tap as input
         var aggDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MSG Visualizer Tap",
-            kAudioAggregateDeviceUIDKey: "com.msg.visualizer-tap",
+            kAudioAggregateDeviceUIDKey: AudioDeviceRouting.visualizerTapUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceTapListKey: [[

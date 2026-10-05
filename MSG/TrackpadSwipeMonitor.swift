@@ -147,6 +147,14 @@ final class TrackpadSwipeMonitor {
     /// count with the horizontal one. Guarded by `lock`.
     private var verticalEnabled = true
 
+    /// A partial lift ends the old swipe, but does not require every finger
+    /// to leave the pad before another deliberate swipe can begin.
+    static func canRearm(withDownCount down: Int, verticalCount: Int,
+                         horizontalCount: Int) -> Bool {
+        let counts = [verticalCount, horizontalCount].filter { $0 > 0 }
+        return down < (counts.min() ?? Int.max)
+    }
+
     func setVerticalEnabled(_ enabled: Bool) {
         lock.lock()
         verticalEnabled = enabled
@@ -189,6 +197,7 @@ final class TrackpadSwipeMonitor {
         guard running else { return }
         running = false
         GestureEventSuppressor.shared.uninstall()
+        PointerFreeze.set(false)
         rescanWork?.cancel()
         rescanWork = nil
         stopDevices()
@@ -310,6 +319,11 @@ final class TrackpadSwipeMonitor {
         // gesture events from these fingers.
         defer {
             GestureEventSuppressor.shared.setActive(trackers.values.contains { $0.swiping })
+            // The pointer holds still from the moment the fingers settle
+            // until they lift — three fingers also drag the pointer (with
+            // three-finger drag on), and it crept during every swipe. A
+            // contact that turns out not to be a swipe lets it go at once.
+            PointerFreeze.set(trackers.values.contains { $0.start != nil && !$0.done })
         }
         var tracker = trackers[key] ?? Tracker()
         guard down > 0 else {
@@ -324,18 +338,26 @@ final class TrackpadSwipeMonitor {
             return
         }
         defer { trackers[key] = tracker }
-        guard !tracker.done else { return }
-
         // 0 = the vertical swipe is off, so it never competes for a count.
         let verticalCount = verticalEnabled ? fingers : 0
         let horizontalCount = horizontalFingerCount
+        if tracker.done {
+            if Self.canRearm(withDownCount: down, verticalCount: verticalCount,
+                             horizontalCount: horizontalCount) {
+                tracker = Tracker()
+            }
+            return
+        }
 
         if tracker.swiping {
             guard down == tracker.fingers else {
                 // A finger lifting (or landing) mid-swipe is the swipe letting go.
                 let axis = tracker.axis
                 tracker.swiping = false
-                tracker.done = true
+                tracker.done = !Self.canRearm(withDownCount: down,
+                                               verticalCount: verticalCount,
+                                               horizontalCount: horizontalCount)
+                if !tracker.done { tracker = Tracker() }
                 post { monitor in
                     if axis == .vertical { monitor.onVerticalSwipeEnded?() }
                     else if axis == .horizontal { monitor.onHorizontalSwipeEnded?() }
@@ -396,6 +418,7 @@ final class TrackpadSwipeMonitor {
                 tracker.swiping = true
                 tracker.start = centroid
                 post {
+                    NSLog("[MSG Swipe Input] horizontal hold recognized")
                     $0.onHorizontalSwipeBegan?()
                     $0.onHorizontalSwipeChanged?(0, 0)
                 }
@@ -410,6 +433,7 @@ final class TrackpadSwipeMonitor {
             tracker.swiping = true
             let offset = CGFloat(centroid.y - start.y)
             post {
+                NSLog("[MSG Swipe Input] vertical recognized offset=%.4f", Double(offset))
                 $0.onVerticalSwipeBegan?()
                 $0.onVerticalSwipeChanged?(offset)
             }
@@ -427,6 +451,44 @@ final class TrackpadSwipeMonitor {
             guard let self else { return }
             body(self)
         }
+    }
+}
+
+/// Detaches the pointer from the trackpad while a swipe's fingers are down.
+/// Called from the contact callback's thread; the switch itself is one
+/// WindowServer call, so it takes effect before the next finger frame.
+fileprivate enum PointerFreeze {
+    private static let lock = NSLock()
+    private static var frozen = false
+    private static var lastFrame: CFTimeInterval = 0
+    private static var watchdog: DispatchSourceTimer?
+
+    static func set(_ freeze: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        lastFrame = CACurrentMediaTime()
+        guard freeze != frozen else { return }
+        frozen = freeze
+        CGAssociateMouseAndMouseCursorPosition(freeze ? 0 : 1)
+        watchdog?.cancel()
+        watchdog = nil
+        guard freeze else { return }
+        // Frames arrive continuously while fingers rest on the pad; if they
+        // stop (the trackpad slept, the device went away), never leave the
+        // pointer stuck.
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        timer.setEventHandler {
+            lock.lock()
+            defer { lock.unlock() }
+            guard frozen, CACurrentMediaTime() - lastFrame > 0.4 else { return }
+            frozen = false
+            CGAssociateMouseAndMouseCursorPosition(1)
+            watchdog?.cancel()
+            watchdog = nil
+        }
+        watchdog = timer
+        timer.resume()
     }
 }
 

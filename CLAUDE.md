@@ -39,6 +39,12 @@ must be added there by hand or it silently won't compile in.
 | `CornerWindow.swift` | Transparent overlay windows that paint black corner masks. One per managed screen. |
 | `SystemHUDMonitor.swift`, `SystemHUDStatusItem.swift` | Volume/brightness HUD capture and its status item. |
 | `InputSourceMonitor.swift` | Keyboard input source changes. |
+| `NotchHUD.swift` | "Notch" HUD presentation: volume (with output picker), brightness and language grow out of the notch in the TokenBar card's shape (`NotchShapeHostView` in AgentNotchCard.swift). Falls back to the other HUDs without a notch. |
+| `NotchPanes.swift` | The notch card's extra pages: page dots, Calendar (3 days, read-only), Clipboard history (in memory, 0.75 s change-count check while presentable), Audio (output/input levels and devices). |
+| `NotchDropZone.swift` | Files dragged to the notch open a drop card (Tray / AirDrop); `NotchTray` keeps them, `NotchTrayPane` is the card's Tray page. |
+| `CortexActivityPill.swift` | While Cortex's ⌥Space bar is closed with an answer coming, a menu-bar-high pill in the notch (Cortex's `com.pongsiri.cortex.activity` reports), then the answer as a card, then "Answer ready" for 30 s. Sits behind MSG's own notch cards. A two-finger swipe up closes it (`NotchSwipeUp`, copied in Cortex's WindowManager for its bar). |
+| `AgentDoneNotice.swift` | Diffs TokenBar's working sessions; a session gone for 8 s after a 15 s+ run shows "<provider> finished" with its thread name in the notch HUD; a click opens that session (`AgentSessionLink`: Claude desktop's `claude://code/continue?session=local_…`, `codex://threads/<id>`, or the terminal/editor that ran it). |
+| `LimitResetNotice.swift` | Times each AI usage window's reset from TokenBar's snapshot and shows "<provider> limit reset" as a notice card in the notch HUD. |
 
 ### Hardware stats
 
@@ -60,7 +66,8 @@ must be added there by hand or it silently won't compile in.
 | File | Responsibility |
 |------|---------------|
 | `Displaplacer.swift` | Private CGS display arrangement API. |
-| `DisplayInput.swift` | DDC/CI input switching via private IOAVService. |
+| `DisplayInput.swift` | DDC/CI via private IOAVService: input switching, monitor volume/brightness levels. Every transaction goes through `runDDC` — read `Docs/DDC.md` first. |
+| `BrightnessSync.swift` | External monitors follow the built-in panel's brightness over DDC. |
 | `WallpaperEngine.swift` | Wallpaper compositing for the corner masks. |
 
 ### Dock / switcher / tray

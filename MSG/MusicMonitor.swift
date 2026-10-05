@@ -43,9 +43,61 @@ enum MediaKeyAction {
     case previous
 }
 
+/// A list descriptor preserves titles containing separators and Thai text.
+struct AppleMusicSnapshot {
+    let isPlaying: Bool
+    let title: String?
+    let artist: String?
+    let volume: Int
+    let elapsed: Double?
+    let duration: Double?
+
+    init?(descriptor: NSAppleEventDescriptor) {
+        guard descriptor.numberOfItems == 6,
+              let state = descriptor.atIndex(1)?.stringValue,
+              ["playing", "paused", "stopped"].contains(state) else { return nil }
+        isPlaying = state == "playing"
+        let track = descriptor.atIndex(2)?.stringValue ?? ""
+        let performer = descriptor.atIndex(3)?.stringValue ?? ""
+        title = state == "stopped" || track.isEmpty ? nil : track
+        artist = title == nil || performer.isEmpty ? nil : performer
+        volume = max(0, min(100, Int(descriptor.atIndex(4)?.int32Value ?? 50)))
+        let position = descriptor.atIndex(5)?.doubleValue ?? 0
+        let length = descriptor.atIndex(6)?.doubleValue ?? 0
+        duration = title != nil && length.isFinite && length > 0 ? length : nil
+        elapsed = duration != nil && position.isFinite ? max(0, position) : nil
+    }
+
+    static let script = """
+    tell application "Music"
+        set v to sound volume
+        set playback to "stopped"
+        if player state is playing then
+            set playback to "playing"
+        else if player state is paused then
+            set playback to "paused"
+        end if
+        if playback is not "stopped" then
+            try
+                set t to name of current track
+                set a to artist of current track
+                set pos to player position
+                set dur to 0
+                try
+                    set dur to duration of current track
+                end try
+                return {playback, t, a, v, pos, dur}
+            end try
+        end if
+        return {"stopped", "", "", v, 0, 0}
+    end tell
+    """
+}
+
 // MARK: - MusicMonitor
 
 final class MusicMonitor {
+    static weak var shared: MusicMonitor?
 
     private let settings: AppSettings
 
@@ -74,6 +126,18 @@ final class MusicMonitor {
     private(set) var currentSource: String?
     private(set) var currentSourceBundleID: String?
     private(set) var albumArt: NSImage?
+    private(set) var currentDuration: Double?
+    private(set) var currentElapsed: Double?
+    private(set) var currentRate: Double?
+    private(set) var currentTimestamp: Double?
+
+    var progress: Double? {
+        guard let currentDuration, currentDuration > 0, let currentElapsed else { return nil }
+        let r = currentRate ?? (isPlaying ? 1.0 : 0.0)
+        let dt = currentTimestamp.map { max(0, Date().timeIntervalSince1970 - $0) } ?? 0
+        let current = currentElapsed + dt * r
+        return max(0.0, min(1.0, current / currentDuration))
+    }
 
     /// Multiple subsystems observe playback (the menu-bar Indicator and the Tray).
     /// A single `onChange` closure would let the last setter clobber the others,
@@ -92,6 +156,7 @@ final class MusicMonitor {
     init(settings: AppSettings) {
         self.settings = settings
         self.lastMusicSource = settings.musicSource
+        Self.shared = self
         MRRegister?(.main)
     }
 
@@ -152,6 +217,10 @@ final class MusicMonitor {
                         }
                     }
                 }
+                currentDuration = np.duration
+                currentElapsed = np.elapsed
+                currentRate = np.rate
+                currentTimestamp = np.timestamp
                 let changed = forceNotify
                     || wasPlaying != isPlaying
                     || oldTitle != currentTitle
@@ -178,6 +247,10 @@ final class MusicMonitor {
                 albumArt = nil
                 artFetchKey = nil
                 urlArtKey = nil
+                currentDuration = nil
+                currentElapsed = nil
+                currentRate = nil
+                currentTimestamp = nil
                 NSLog("[Music] Now Playing stopped")
                 notify()
                 if wasPlaying { restartPollTimer() }
@@ -541,6 +614,7 @@ final class MusicMonitor {
         if !musicRunning {
             if isPlaying || currentTitle != nil {
                 isPlaying = false; currentTitle = nil; currentArtist = nil; currentSource = nil; currentSourceBundleID = nil
+                albumArt = nil; currentDuration = nil; currentElapsed = nil; currentRate = nil; currentTimestamp = nil
                 notify()
             }
             restartPollTimer()
@@ -551,66 +625,40 @@ final class MusicMonitor {
         queryStartedAt = ProcessInfo.processInfo.systemUptime
         let wasPlaying = isPlaying
 
-        let script = """
-        tell application "Music"
-            set v to sound volume
-            if player state is playing then
-                set t to name of current track
-                set a to artist of current track
-                return "playing|" & t & "|" & a & "|" & (v as text)
-            else
-                return "stopped|" & (v as text)
-            end if
-        end tell
-        """
-
+        let script = AppleMusicSnapshot.script
         MusicMonitor.scriptQueue.async { [weak self] in
-            let appleScript = NSAppleScript(source: script)
             var error: NSDictionary?
-            let result = appleScript?.executeAndReturnError(&error).stringValue ?? ""
-
+            let descriptor = NSAppleScript(source: script)?.executeAndReturnError(&error)
+            let snapshot = descriptor.flatMap(AppleMusicSnapshot.init(descriptor:))
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isQuerying = false
-
-                if error != nil {
-                    if self.isPlaying || self.currentTitle != nil {
-                        self.isPlaying = false
-                        self.currentTitle = nil
-                        self.currentArtist = nil
-                        self.currentSource = nil
-                        self.currentSourceBundleID = nil
-                        self.notify()
-                        self.restartPollTimer()
-                    }
-                    return
-                }
-
+                guard self.settings.musicSource == .appleMusic, error == nil, let snapshot else { return }
+                let oldTitle = self.currentTitle
+                let oldArtist = self.currentArtist
+                let oldVolume = self.volume
+                let oldSource = self.currentSourceBundleID
                 self.currentSource = "Apple Music"
                 self.currentSourceBundleID = "com.apple.Music"
-                let stateChanged: Bool
-                if result.hasPrefix("playing|") {
-                    let parts = String(result.dropFirst(8)).components(separatedBy: "|")
-                    stateChanged = !self.isPlaying
-                    self.isPlaying = true
-                    self.currentTitle = parts.first
-                    self.currentArtist = parts.count > 1 ? parts[1] : nil
-                    if parts.count > 2, let v = Int(parts[2]) { self.volume = v }
-                } else if result.hasPrefix("stopped|") {
-                    let parts = result.components(separatedBy: "|")
-                    stateChanged = self.isPlaying
-                    self.isPlaying = false
-                    if parts.count > 1, let v = Int(parts[1]) { self.volume = v }
-                } else {
-                    stateChanged = self.isPlaying
-                    self.isPlaying = false
+                self.isPlaying = snapshot.isPlaying
+                self.currentTitle = snapshot.title
+                self.currentArtist = snapshot.artist
+                self.volume = snapshot.volume
+                self.currentDuration = snapshot.duration
+                self.currentElapsed = snapshot.elapsed
+                self.currentRate = snapshot.isPlaying ? 1 : 0
+                self.currentTimestamp = Date().timeIntervalSince1970
+                if oldTitle != snapshot.title || oldSource != "com.apple.Music" || snapshot.title == nil {
+                    self.albumArt = nil
+                    self.artFetchKey = nil
+                    self.urlArtKey = nil
                 }
-
-                self.fetchAlbumArt()
-                if wasPlaying != self.isPlaying || self.isPlaying {
+                if snapshot.title != nil { self.fetchAlbumArt() }
+                if wasPlaying != self.isPlaying || oldTitle != self.currentTitle
+                    || oldArtist != self.currentArtist || oldVolume != self.volume || oldSource != self.currentSourceBundleID || self.isPlaying {
                     self.notify()
                 }
-                if stateChanged { self.restartPollTimer() }
+                if wasPlaying != self.isPlaying { self.restartPollTimer() }
             }
         }
     }
@@ -624,10 +672,13 @@ final class MusicMonitor {
                 guard let self else { return }
                 if self.settings.musicSource == .appleMusic
                     && self.currentSourceBundleID != "com.apple.Music" { return }
-                if let art = np?.art {
+                let musicOwnsSnapshot = np.map {
+                    NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier == "com.apple.Music"
+                } ?? false
+                if musicOwnsSnapshot, let art = np?.art {
                     self.albumArt = art
                     self.notify()
-                } else if let url = np?.artURL {
+                } else if musicOwnsSnapshot, let url = np?.artURL {
                     self.fetchURLArtwork(url)
                 } else if let bid = self.currentSourceBundleID {
                     self.fetchScriptArtwork(bid: bid)
@@ -717,6 +768,32 @@ final class MusicMonitor {
                 self.currentArtist = (parts.count > 1 && !parts[1].isEmpty) ? parts[1] : nil
                 self.notify()
             }
+        }
+    }
+
+    /// The current track's cover straight from Music or Spotify by script,
+    /// for when Now Playing carries none. Completion on the main thread.
+    static func scriptArtwork(bundle: String, completion: @escaping (NSImage?) -> Void) {
+        let script: String
+        switch bundle {
+        case "com.apple.Music": script = "tell application \"Music\" to get data of artwork 1 of current track"
+        case "com.spotify.client": script = "tell application \"Spotify\" to get artwork url of current track"
+        default: DispatchQueue.main.async { completion(nil) }; return
+        }
+        scriptQueue.async {
+            var error: NSDictionary?
+            let desc = NSAppleScript(source: script)?.executeAndReturnError(&error)
+            guard error == nil, let desc else { DispatchQueue.main.async { completion(nil) }; return }
+            if bundle == "com.apple.Music" {
+                let img = NSImage(data: desc.data)
+                DispatchQueue.main.async { completion(img) }
+                return
+            }
+            guard let url = desc.stringValue.flatMap(URL.init(string:)) else { DispatchQueue.main.async { completion(nil) }; return }
+            URLSession.shared.dataTask(with: url) { data, _, _ in
+                let img = data.flatMap(NSImage.init(data:))
+                DispatchQueue.main.async { completion(img) }
+            }.resume()
         }
     }
 

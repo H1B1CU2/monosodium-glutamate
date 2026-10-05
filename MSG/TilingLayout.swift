@@ -294,7 +294,97 @@ struct TilingColumnDropPlacement: Equatable {
     let previewFrame: CGRect
 }
 
+struct TilingColumnRailGeometry: Equatable {
+    let work: CGRect
+    let leftRail: CGRect?
+    let rightRail: CGRect?
+}
+
 enum TilingLayout {
+    /// A focus snapshot can still name the outgoing tab while an explicit
+    /// selection is in flight. Only a genuinely new focus or timeout may
+    /// supersede that selection.
+    static func keepsPendingTabSelection(target: CGWindowID, previousFocus: CGWindowID?,
+                                          observedFocus: CGWindowID?, age: CFTimeInterval) -> Bool {
+        guard age < 1.5, observedFocus != target else { return false }
+        return observedFocus == nil || observedFocus == previousFocus
+    }
+    static let columnPillThickness: CGFloat = 3
+    static let columnPillEdgeOffset: CGFloat = 1.5
+    static let columnPillWindowGap: CGFloat = 4
+
+    static func columnPillRailWidth(edgeAttached: Bool) -> CGFloat {
+        if edgeAttached {
+            return ceil(columnPillEdgeOffset + columnPillThickness + columnPillWindowGap)
+        }
+        return 2 * (columnPillWindowGap + columnPillThickness / 2)
+    }
+
+    static func columnPillSides(windowIDs: [CGWindowID], mainTabIDs: Set<CGWindowID>,
+                                masterID: CGWindowID?, enabled: Bool) -> (left: Bool, right: Bool) {
+        guard enabled else { return (false, false) }
+        let leftCount = windowIDs.filter { mainTabIDs.contains($0) || $0 == masterID }.count
+        return (leftCount > 1, windowIDs.count - leftCount > 1)
+    }
+
+    /// Match the tab switcher's bar order, retaining any tree member omitted
+    /// from a transient bar snapshot so the rail never loses a dot mid-swipe.
+    static func orderedColumnTabs(_ ids: [CGWindowID], barOrder: [CGWindowID]) -> [CGWindowID] {
+        let members = Set(ids)
+        let ordered = barOrder.filter { members.contains($0) }
+        let seen = Set(ordered)
+        return ordered + ids.filter { !seen.contains($0) }
+    }
+
+    static func verticalPillIndex(tabIndex: Int, count: Int) -> Int {
+        max(1, min(count, count - tabIndex))
+    }
+
+    /// Reserve only the width between the painted pill and its neighbour,
+    /// rather than a fixed-size rail that leaves an unexplained empty strip.
+    /// The user's outer gap remains a minimum when it is larger.
+    static func columnPillGeometry(in baseWork: CGRect, gap: CGFloat,
+                                   left: Bool, right: Bool,
+                                   edgeAttached: Bool) -> TilingColumnRailGeometry {
+        let inset = baseWork.insetBy(dx: gap, dy: gap)
+        let railW = columnPillRailWidth(edgeAttached: edgeAttached)
+        let leftX = edgeAttached ? baseWork.minX : inset.minX
+        let rightX = edgeAttached ? baseWork.maxX - railW : inset.maxX - railW
+        let minX = left ? max(inset.minX, leftX + railW) : inset.minX
+        let maxX = right ? min(inset.maxX, rightX) : inset.maxX
+        let work = CGRect(x: minX, y: inset.minY,
+                          width: max(0, maxX - minX), height: inset.height)
+        return TilingColumnRailGeometry(
+            work: work,
+            leftRail: left ? CGRect(x: leftX, y: work.minY, width: railW, height: work.height) : nil,
+            rightRail: right ? CGRect(x: rightX, y: work.minY, width: railW, height: work.height) : nil)
+    }
+
+    /// `NSScreen.visibleFrame` can temporarily include a fixed Dock after its
+    /// auto-hide setting changes. Reserve the Dock window's actual edge too.
+    static func excludingFixedDock(_ work: CGRect, screen: CGRect, dock: CGRect?,
+                                   orientation: String) -> CGRect {
+        guard let dock, !dock.isNull, !dock.isEmpty,
+              dock.intersects(screen) else { return work }
+        let edgeTolerance: CGFloat = 16
+        var result = work
+        switch orientation {
+        case "left" where dock.minX <= screen.minX + edgeTolerance && dock.midX < screen.midX:
+            let minX = max(work.minX, dock.maxX)
+            result.origin.x = minX
+            result.size.width = max(0, work.maxX - minX)
+        case "right" where dock.maxX >= screen.maxX - edgeTolerance && dock.midX > screen.midX:
+            result.size.width = max(0, min(work.maxX, dock.minX) - work.minX)
+        case "bottom" where dock.minY <= screen.minY + edgeTolerance && dock.midY < screen.midY:
+            let minY = max(work.minY, dock.maxY)
+            result.origin.y = minY
+            result.size.height = max(0, work.maxY - minY)
+        default:
+            break
+        }
+        return result
+    }
+
     /// A critically damped frame spring. Each edge moves independently so a
     /// resize keeps anchored edges steady, and velocity can carry through when
     /// a running re-tile is redirected to a new layout.

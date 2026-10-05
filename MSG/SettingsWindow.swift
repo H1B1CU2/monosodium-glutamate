@@ -170,6 +170,78 @@ final class SettingsViewModel: ObservableObject {
     var displayOrderMode: DisplayOrderMode { get { s.displayOrderMode }     set { s.displayOrderMode = newValue;     objectWillChange.send() } }
     var displayOrder: [Int]                { get { s.displayOrder }         set { s.displayOrder = newValue;         objectWillChange.send() } }
     var monitorInputAutoEject: Bool        { get { s.monitorInputAutoEject } set { s.monitorInputAutoEject = newValue; objectWillChange.send() } }
+    var displayResyncOnPlug: Bool          { get { s.displayResyncOnPlug } set { s.displayResyncOnPlug = newValue; objectWillChange.send() } }
+    var lockScreenAgentActivity: Bool {
+        get { s.lockScreenAgentActivity }
+        set { s.lockScreenAgentActivity = newValue; objectWillChange.send(); AgentLockScreen.shared.settingChanged() }
+    }
+    var notchDropTray: Bool {
+        get { s.notchDropTray }
+        set {
+            s.notchDropTray = newValue
+            objectWillChange.send()
+            if newValue { NotchDropZone.shared.start() } else { NotchDropZone.shared.stop() }
+        }
+    }
+    func notchPaneEnabled(_ page: AgentNotchDashboardView.Page) -> Bool {
+        !s.notchDisabledPanes.contains(page.rawValue)
+    }
+
+    func setNotchPane(_ page: AgentNotchDashboardView.Page, enabled: Bool) {
+        var disabled = Set(s.notchDisabledPanes)
+        if enabled { disabled.remove(page.rawValue) } else { disabled.insert(page.rawValue) }
+        s.notchDisabledPanes = disabled.sorted()
+        objectWillChange.send()
+        AgentNotchCard.shared.settingChanged()
+    }
+    var notchNoticeSound: Bool {
+        get { s.notchNoticeSound }
+        set { s.notchNoticeSound = newValue; objectWillChange.send() }
+    }
+    var notchAgentDoneNotice: Bool {
+        get { s.notchAgentDoneNotice }
+        set { s.notchAgentDoneNotice = newValue; objectWillChange.send(); AgentDoneNotice.shared.settingChanged() }
+    }
+    var notchLimitResetNotice: Bool {
+        get { s.notchLimitResetNotice }
+        set { s.notchLimitResetNotice = newValue; objectWillChange.send(); LimitResetNotice.shared.settingChanged() }
+    }
+    var notchChargerNotice: Bool {
+        get { s.notchChargerNotice }
+        set { s.notchChargerNotice = newValue; objectWillChange.send(); ChargerNotchNotice.shared.settingChanged() }
+    }
+    var notchAmphetamineNotice: Bool {
+        get { s.notchAmphetamineNotice }
+        set { s.notchAmphetamineNotice = newValue; objectWillChange.send(); SystemEventNotchNotice.shared.settingChanged() }
+    }
+    var notchDisplayNotice: Bool {
+        get { s.notchDisplayNotice }
+        set { s.notchDisplayNotice = newValue; objectWillChange.send(); SystemEventNotchNotice.shared.settingChanged() }
+    }
+    var notchWARPNotice: Bool {
+        get { s.notchWARPNotice }
+        set { s.notchWARPNotice = newValue; objectWillChange.send(); SystemEventNotchNotice.shared.settingChanged() }
+    }
+    var notchAppNotifications: Bool {
+        get { s.notchAppNotifications }
+        set { s.notchAppNotifications = newValue; objectWillChange.send(); SystemNotificationNotch.shared.settingChanged() }
+    }
+    var notchNotificationApps: [NotchNotificationApp] {
+        get { s.notchNotificationApps }
+        set { s.notchNotificationApps = newValue; objectWillChange.send(); SystemNotificationNotch.shared.settingChanged() }
+    }
+    var notchAgentCard: Bool {
+        get { s.notchAgentCard }
+        set { s.notchAgentCard = newValue; objectWillChange.send(); AgentNotchCard.shared.settingChanged() }
+    }
+    var lockScreenAgentStay: LockScreenStay {
+        get { s.lockScreenAgentStay }
+        set { s.lockScreenAgentStay = newValue; objectWillChange.send(); AgentLockScreen.shared.settingChanged() }
+    }
+    var externalBrightnessSync: Bool {
+        get { s.externalBrightnessSync }
+        set { s.externalBrightnessSync = newValue; objectWillChange.send(); if newValue { ExternalBrightnessSync.shared.resync() } }
+    }
     var musicDisplayMode: MusicDisplayMode { get { s.musicDisplayMode }     set { s.musicDisplayMode = newValue;     objectWillChange.send() } }
     var musicLingerDuration: TimeInterval  { get { s.musicLingerDuration }  set { s.musicLingerDuration = newValue;  objectWillChange.send() } }
     var musicSource: MusicSource            { get { s.musicSource }         set { s.musicSource = newValue;         objectWillChange.send() } }
@@ -182,7 +254,6 @@ final class SettingsViewModel: ObservableObject {
     var topCornersUnderMenuBar: Bool       { get { s.topCornersUnderMenuBar } set { s.topCornersUnderMenuBar = newValue; objectWillChange.send() } }
     var topCornersFullscreenOnly: Bool     { get { s.topCornersFullscreenOnly } set { s.topCornersFullscreenOnly = newValue; objectWillChange.send() } }
     var cornerGrowEnabled: Bool            { get { s.cornerGrowEnabled }     set { s.cornerGrowEnabled = newValue;     objectWillChange.send() } }
-    var lidOpeningGlassEnabled: Bool        { get { s.lidOpeningGlassEnabled } set { s.lidOpeningGlassEnabled = newValue; objectWillChange.send() } }
     var dockIcon: Bool                     { get { s.dockIcon }             set { s.dockIcon = newValue;             objectWillChange.send() } }
     var brightFocusAlpha: CGFloat          { get { s.brightFocusAlpha }     set { s.brightFocusAlpha = newValue;     objectWillChange.send() } }
     var dimFocusAlpha: CGFloat             { get { s.dimFocusAlpha }        set { s.dimFocusAlpha = newValue;        objectWillChange.send() } }
@@ -210,6 +281,8 @@ final class SettingsViewModel: ObservableObject {
     var tilingControlBarMode: TilingControlBarMode { get { s.tilingControlBarMode } set { s.tilingControlBarMode = newValue; objectWillChange.send() } }
     var tilingControlBarScope: TilingControlBarScope { get { s.tilingControlBarScope } set { s.tilingControlBarScope = newValue; objectWillChange.send() } }
     var tilingPillScope: TilingPillScope { get { s.tilingPillScope } set { s.tilingPillScope = newValue; objectWillChange.send() } }
+    var tilingColumnTabPills: Bool { get { s.tilingColumnTabPills } set { s.tilingColumnTabPills = newValue; objectWillChange.send() } }
+    var tilingColumnPillPosition: TilingColumnPillPosition { get { s.tilingColumnPillPosition } set { s.tilingColumnPillPosition = newValue; objectWillChange.send() } }
     var tilingOneAppPerDeskspace: Bool { get { s.tilingOneAppPerDeskspace } set { s.tilingOneAppPerDeskspace = newValue; objectWillChange.send() } }
     var tilingAutoDeleteEmptySpaces: Bool { get { s.tilingAutoDeleteEmptySpaces } set { s.tilingAutoDeleteEmptySpaces = newValue; objectWillChange.send() } }
     var tilingPadding: CGFloat               { get { s.tilingPadding } set { s.tilingPadding = max(0, min(32, newValue)); objectWillChange.send() } }
@@ -226,6 +299,8 @@ final class SettingsViewModel: ObservableObject {
     var notchPreviewThumbHeight: CGFloat     { get { s.notchPreviewThumbHeight } set { s.notchPreviewThumbHeight = newValue; objectWillChange.send() } }
     var notchPreviewShowOtherSpaces: Bool    { get { s.notchPreviewShowOtherSpaces } set { s.notchPreviewShowOtherSpaces = newValue; objectWillChange.send() } }
     var notchShowDock: Bool                  { get { s.notchShowDock } set { s.notchShowDock = newValue; objectWillChange.send() } }
+    var previewMinimizeButton: Bool          { get { s.previewMinimizeButton } set { s.previewMinimizeButton = newValue; objectWillChange.send() } }
+    var previewFullscreenButton: Bool        { get { s.previewFullscreenButton } set { s.previewFullscreenButton = newValue; objectWillChange.send() } }
     var appSwitcherShowDock: Bool            { get { s.appSwitcherShowDock } set { s.appSwitcherShowDock = newValue; objectWillChange.send() } }
     var displaplacerEnabled: Bool { get { s.displaplacerEnabled } set { s.displaplacerEnabled = newValue; objectWillChange.send() } }
     var displaplacerPresets: [DisplaplacerPreset] { get { s.displaplacerPresets } set { s.displaplacerPresets = newValue; objectWillChange.send() } }
@@ -237,6 +312,73 @@ final class SettingsViewModel: ObservableObject {
     var systemHUDPresentationMode: SystemHUDPresentationMode { get { s.systemHUDPresentationMode } set { s.systemHUDPresentationMode = newValue; objectWillChange.send() } }
     var systemHUDDeviceIcons: Bool { get { s.systemHUDDeviceIcons } set { s.systemHUDDeviceIcons = newValue; objectWillChange.send() } }
     var systemHUDInTilingBar: Bool { get { s.systemHUDInTilingBar } set { s.systemHUDInTilingBar = newValue; objectWillChange.send() } }
+    var edgeKeysMode: EdgeKeysMode { get { s.edgeKeysMode } set { s.edgeKeysMode = newValue; objectWillChange.send() } }
+    var edgeKeysStripMatchMenuBar: Bool { get { s.edgeKeysStripMatchMenuBar } set { s.edgeKeysStripMatchMenuBar = newValue; objectWillChange.send() } }
+    var edgeKeysStripHeight: Double { get { s.edgeKeysStripHeight } set { s.edgeKeysStripHeight = max(24, min(48, newValue)); objectWillChange.send() } }
+    var edgeKeysTriggerKey: Int {
+        get { s.edgeKeysTriggerKey }
+        set {
+            let key = max(1, min(12, newValue))
+            guard key == s.edgeKeysTriggerKey || s.edgeKeysCanReserve(key) else { return }
+            s.edgeKeysTriggerKey = key
+            s.reserveEdgeKeysModifier()
+            objectWillChange.send()
+        }
+    }
+    func edgeKeysCanReserve(_ key: Int) -> Bool {
+        key == s.edgeKeysReservedKey || s.edgeKeysCanReserve(key)
+    }
+    var edgeKeysTriggerTapActs: Bool { get { s.edgeKeysTriggerTapActs } set { s.edgeKeysTriggerTapActs = newValue; objectWillChange.send() } }
+    var edgeKeysDoublePressWindow: Double { get { s.edgeKeysDoublePressWindow } set { s.edgeKeysDoublePressWindow = max(0, min(0.5, newValue)); objectWillChange.send() } }
+    var edgeKeysPinnedPlayer: Bool { get { s.edgeKeysPinnedPlayer } set { s.edgeKeysPinnedPlayer = newValue; objectWillChange.send() } }
+    var edgeKeysMediaPlayer: Bool { get { s.edgeKeysMediaPlayer } set { s.edgeKeysMediaPlayer = newValue; objectWillChange.send() } }
+    var edgeKeysSP8CEVideo: Bool { get { s.edgeKeysSP8CEVideo } set { s.edgeKeysSP8CEVideo = newValue; objectWillChange.send() } }
+    var edgeKeysShowEsc: Bool { get { s.edgeKeysShowEsc } set { s.edgeKeysShowEsc = newValue; objectWillChange.send() } }
+    var edgeKeysPlayerInEsc: Bool { get { s.edgeKeysPlayerInEsc } set { s.edgeKeysPlayerInEsc = newValue; objectWillChange.send() } }
+    var calendarStatusItem: Bool { get { s.calendarStatusItem } set { s.calendarStatusItem = newValue; objectWillChange.send() } }
+    var calendarMaxTitleLength: Int { get { s.calendarMaxTitleLength } set { s.calendarMaxTitleLength = newValue; objectWillChange.send() } }
+    var edgeKeysWeatherInEsc: Bool { get { s.edgeKeysWeatherInEsc } set { s.edgeKeysWeatherInEsc = newValue; objectWillChange.send() } }
+    var edgeKeysCalendarInEsc: Bool { get { s.edgeKeysCalendarInEsc } set { s.edgeKeysCalendarInEsc = newValue; objectWillChange.send() } }
+    var edgeKeysUsageInEsc: Bool { get { s.edgeKeysUsageInEsc } set { s.edgeKeysUsageInEsc = newValue; objectWillChange.send() } }
+    var edgeKeysUsageBars: Bool { get { s.edgeKeysUsageBars } set { s.edgeKeysUsageBars = newValue; objectWillChange.send() } }
+    var edgeKeysStatsInTouchID: Bool { get { s.edgeKeysStatsInTouchID } set { s.edgeKeysStatsInTouchID = newValue; objectWillChange.send() } }
+    var edgeKeysAppKeysFollowPointer: Bool { get { s.edgeKeysAppKeysFollowPointer } set { s.edgeKeysAppKeysFollowPointer = newValue; objectWillChange.send() } }
+    var edgeKeysShowTouchID: Bool { get { s.edgeKeysShowTouchID } set { s.edgeKeysShowTouchID = newValue; objectWillChange.send() } }
+    var edgeKeysAppKeys: Bool { get { s.edgeKeysAppKeys } set { s.edgeKeysAppKeys = newValue; objectWillChange.send() } }
+    var edgeKeysAppKeysLearn: Bool { get { s.edgeKeysAppKeysLearn } set { s.edgeKeysAppKeysLearn = newValue; objectWillChange.send() } }
+    var edgeKeysKeyPlacement: EdgeKeysKeyPlacement { get { s.edgeKeysKeyPlacement } set { s.edgeKeysKeyPlacement = newValue; objectWillChange.send() } }
+    var edgeKeysHideInFullscreen: Bool { get { s.edgeKeysHideInFullscreen } set { s.edgeKeysHideInFullscreen = newValue; objectWillChange.send() } }
+    var edgeKeysLayerModifier: EdgeKeysModifier {
+        get { s.edgeKeysLayerModifier }
+        set {
+            guard newValue != .functionKey || s.edgeKeysCanReserve(s.edgeKeysTriggerKey) else { return }
+            s.edgeKeysLayerModifier = newValue
+            s.reserveEdgeKeysModifier()
+            objectWillChange.send()
+        }
+    }
+    var edgeKeysLayerHoldDelay: Double { get { s.edgeKeysLayerHoldDelay } set { s.edgeKeysLayerHoldDelay = max(0, min(1, newValue)); objectWillChange.send() } }
+    var edgeKeysRightShiftExclusive: Bool { get { s.edgeKeysRightShiftExclusive } set { s.edgeKeysRightShiftExclusive = newValue; objectWillChange.send() } }
+    var edgeKeysRedFingerprint: Bool { get { s.edgeKeysRedFingerprint } set { s.edgeKeysRedFingerprint = newValue; objectWillChange.send() } }
+    var edgeKeysTouchIDHint: Bool { get { s.edgeKeysTouchIDHint } set { s.edgeKeysTouchIDHint = newValue; objectWillChange.send() } }
+    var edgeKeysFirstRow: [Int: EdgeKeyAction] {
+        get { s.edgeKeysFirstRow }
+        set {
+            var actions = newValue
+            if let key = s.edgeKeysReservedKey { actions[key] = EdgeKeyAction.none }
+            s.edgeKeysFirstRow = actions
+            objectWillChange.send()
+        }
+    }
+    var edgeKeysSecondRow: [Int: EdgeKeyAction] {
+        get { s.edgeKeysSecondRow }
+        set {
+            var actions = newValue
+            if let key = s.edgeKeysReservedKey { actions[key] = EdgeKeyAction.none }
+            s.edgeKeysSecondRow = actions
+            objectWillChange.send()
+        }
+    }
     var inputSourceHUDEnabled: Bool { get { s.inputSourceHUDEnabled } set { s.inputSourceHUDEnabled = newValue; objectWillChange.send() } }
     var showDeveloper: Bool        { get { s.showDeveloper }        set { s.showDeveloper = newValue;        objectWillChange.send() } }
     var hardwareStatsEnabled: Bool        { get { s.hardwareStatsEnabled }      set { s.hardwareStatsEnabled = newValue;      objectWillChange.send() } }
@@ -257,6 +399,7 @@ final class SettingsViewModel: ObservableObject {
     var hardwareStatsPowerRaw: Bool       { get { s.hardwareStatsPowerRaw }     set { s.hardwareStatsPowerRaw = newValue;     objectWillChange.send() } }
     var hardwareStatsPowerSamples: Double { get { Double(s.hardwareStatsPowerSamples) } set { s.hardwareStatsPowerSamples = max(10, Int(newValue)); objectWillChange.send() } }
     var hardwareStatsBatteryStyle: String { get { s.hardwareStatsBatteryStyle } set { s.hardwareStatsBatteryStyle = newValue; objectWillChange.send() } }
+    var hardwareStatsBatteryChargingDecimals: Bool { get { s.hardwareStatsBatteryChargingDecimals } set { s.hardwareStatsBatteryChargingDecimals = newValue; objectWillChange.send() } }
     var hardwareStatsModuleOrder: [String] { get { s.hardwareStatsModuleOrder } set { s.hardwareStatsModuleOrder = newValue; objectWillChange.send() } }
     var hardwareStatsHiddenCards: [String] { get { s.hardwareStatsHiddenCards } set { s.hardwareStatsHiddenCards = newValue; objectWillChange.send() } }
     var hardwareStatsColumns: Int          { get { s.hardwareStatsColumns }     set { s.hardwareStatsColumns = max(1, min(3, newValue)); objectWillChange.send() } }
@@ -305,7 +448,7 @@ final class SettingsViewModel: ObservableObject {
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, about, menubar, spacer, tiling, hud, corner, lidGlass, music, dock, displaplacer, hardware, developer
+    case general, about, menubar, spacer, tiling, hud, edgeKeys, corner, music, dock, displaplacer, hardware, developer
     var id: String { rawValue }
 
     var title: String {
@@ -316,8 +459,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .spacer:       return "Space Indicator"
         case .tiling:       return "Tiling"
         case .hud:          return "System HUD"
+        case .edgeKeys:     return "Edge Keys"
         case .corner:       return "Corners"
-        case .lidGlass:     return "Lid Glass"
         case .music:        return "Music"
         case .dock:         return "Window Preview"
         case .displaplacer: return "Displays"
@@ -334,8 +477,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .spacer:       return "rectangle.split.3x1.fill"
         case .tiling:       return "rectangle.split.2x1.fill"
         case .hud:          return "slider.horizontal.3"
+        case .edgeKeys:     return "keyboard.fill"
         case .corner:       return "viewfinder"
-        case .lidGlass:     return "laptopcomputer.and.arrow.down"
         case .music:        return "music.note"
         case .dock:         return "macwindow.on.rectangle"
         case .displaplacer: return "display.2"
@@ -356,8 +499,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .spacer:       return Color(hex: 0x117cfc)
         case .tiling:       return Color(hex: 0x30d158)
         case .hud:          return Color(hex: 0xbf5af2)
+        case .edgeKeys:     return Color(hex: 0xff9f0a)
         case .corner:       return Color(hex: 0x5e5ce6)
-        case .lidGlass:     return Color(hex: 0x64d2ff)
         case .music:        return Color(hex: 0xff2d55)
         case .dock:         return Color(hex: 0x32d74b)
         case .displaplacer: return Color(hex: 0x0A84FF)
@@ -374,8 +517,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .spacer:       return "See your Desktop Spaces in the menu bar"
         case .tiling:       return "Tile windows with a control bar on each display"
         case .hud:          return "Replace the macOS volume and brightness popup"
+        case .edgeKeys:     return "Show the function keys on the bottom edge of the screen"
         case .corner:       return "Round the corners of your displays"
-        case .lidGlass:     return "Reveal the desktop with glass as your MacBook opens"
         case .music:        return "See what is playing and control your music"
         case .dock:         return "Preview and switch windows from the Dock or Cmd-Tab"
         case .displaplacer: return "Manage displays, inputs, and saved layouts"
@@ -428,18 +571,18 @@ struct PaneHeader: View {
     var toggle: Binding<Bool>? = nil
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: section.icon)
-                .font(.system(size: 20, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(section.iconTint)
-                .frame(width: 40, height: 40)
-                .background(section.iconTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                .frame(width: 34, height: 34)
+                .background(section.iconTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 3) {
                 Text(section.title)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .kerning(-0.3)
                 Text(section.description)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -473,15 +616,163 @@ struct SettingsToggleRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                 Text(detail)
-                    .font(.callout)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .toggleStyle(.switch)
         .padding(.vertical, 3)
+        .help(detail)
+        .accessibilityHint(detail)
     }
 }
+
+/// Native navigation and value selectors share sizing, keyboard behavior and
+/// accessibility. Keep the form surface opaque; AppKit owns the glass control.
+struct SettingsSegment<Value: Hashable> {
+    let title: String
+    let value: Value
+    var enabled: Bool
+
+    init(_ title: String, _ value: Value, enabled: Bool = true) {
+        self.title = title
+        self.value = value
+        self.enabled = enabled
+    }
+}
+
+@available(macOS 14.0, *)
+struct SettingsSegmentedPicker<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [SettingsSegment<Value>]
+    var navigation = false
+    var showsLabel = true
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if showsLabel { Text(title) }
+            selector
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder private var selector: some View {
+        #if compiler(>=6.4)
+        if #available(macOS 27.0, *) {
+            NativeSettingsSegments(
+                title: title, labels: options.map(\.title),
+                enabled: options.map { isEnabled && $0.enabled },
+                selectedIndex: options.firstIndex(where: { $0.value == selection }) ?? -1,
+                navigation: navigation
+            ) { index in
+                guard options.indices.contains(index), isEnabled, options[index].enabled else { return }
+                selection = options[index].value
+            }
+        } else {
+            fallback
+        }
+        #else
+        fallback
+        #endif
+    }
+
+    private var fallback: some View {
+        Picker(title, selection: $selection) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                Text(option.title).tag(option.value).disabled(!option.enabled)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+    }
+}
+
+#if compiler(>=6.4)
+@available(macOS 27.0, *)
+private struct NativeSettingsSegments: NSViewRepresentable {
+    let title: String
+    let labels: [String]
+    let enabled: [Bool]
+    let selectedIndex: Int
+    let navigation: Bool
+    let onSelect: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelect: onSelect) }
+
+    func makeNSView(context: Context) -> HostView {
+        let control = NSSegmentedControl()
+        control.trackingMode = .selectOne
+        control.segmentStyle = .automatic
+        control.segmentDistribution = .fillEqually
+        control.role = navigation ? .tabs : .valueSelection
+        control.borderShape = .capsule
+        control.controlSize = navigation ? .large : .regular
+        control.font = .systemFont(ofSize: 13, weight: .medium)
+        control.target = context.coordinator
+        control.action = #selector(Coordinator.select(_:))
+        let host = HostView(control: control)
+        configure(control)
+        return host
+    }
+
+    func updateNSView(_ view: HostView, context: Context) {
+        context.coordinator.onSelect = onSelect
+        configure(view.control)
+        view.invalidateIntrinsicContentSize()
+    }
+
+    private func configure(_ control: NSSegmentedControl) {
+        let role: NSSegmentedControl.Role = navigation ? .tabs : .valueSelection
+        let size: NSControl.ControlSize = navigation ? .large : .regular
+        if control.role != role { control.role = role }
+        if control.controlSize != size { control.controlSize = size }
+        control.font = .systemFont(ofSize: 13, weight: .medium)
+        if control.segmentCount != labels.count { control.segmentCount = labels.count }
+        for index in labels.indices {
+            control.setLabel(labels[index], forSegment: index)
+            control.setEnabled(enabled[index], forSegment: index)
+            control.setToolTip(labels[index], forSegment: index)
+        }
+        control.selectedSegment = selectedIndex
+        control.setAccessibilityLabel(title)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: HostView, context: Context) -> CGSize? {
+        let ideal = nsView.control.intrinsicContentSize
+        return CGSize(width: proposal.width ?? ideal.width, height: ideal.height)
+    }
+
+    final class Coordinator: NSObject {
+        var onSelect: (Int) -> Void
+        init(onSelect: @escaping (Int) -> Void) { self.onSelect = onSelect }
+        @objc func select(_ sender: NSSegmentedControl) {
+            let index = sender.selectedSegment
+            guard index >= 0, index < sender.segmentCount, sender.isEnabled(forSegment: index) else { return }
+            onSelect(index)
+        }
+    }
+
+    final class HostView: NSView {
+        let control: NSSegmentedControl
+        init(control: NSSegmentedControl) {
+            self.control = control
+            super.init(frame: .zero)
+            control.autoresizingMask = [.width, .height]
+            addSubview(control)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override var intrinsicContentSize: NSSize { control.intrinsicContentSize }
+        override func layout() {
+            super.layout()
+            control.frame = bounds
+        }
+    }
+}
+#endif
 
 // MARK: - Visual Effect Blur (bridges NSVisualEffectView)
 
@@ -521,6 +812,8 @@ struct HeaderHeightKey: PreferenceKey {
 struct PaneContainer<Content: View>: View {
     let section: SettingsSection
     var headerToggle: Binding<Bool>? = nil
+    var tabs: [String] = []
+    var tabSelection: Binding<Int>? = nil
     @ViewBuilder let content: Content
     var body: some View {
         VStack(spacing: 0) {
@@ -528,6 +821,13 @@ struct PaneContainer<Content: View>: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 20)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let tabSelection, !tabs.isEmpty {
+                SettingsSegmentedPicker(title: "Settings category", selection: tabSelection,
+                                        options: tabs.enumerated().map { SettingsSegment($0.element, $0.offset) },
+                                        navigation: true, showsLabel: false)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+            }
             Divider().opacity(0.45)
             Form { content }
                 .formStyle(.grouped)
@@ -535,6 +835,9 @@ struct PaneContainer<Content: View>: View {
                 .environment(\.defaultMinListHeaderHeight, 0)
                 .contentMargins(.top, 8, for: .scrollContent)
                 .controlSize(.regular)
+                .toggleStyle(.switch)
+                .font(.system(size: 13))
+                .id(tabSelection?.wrappedValue ?? 0)
         }
     }
 }
@@ -660,13 +963,13 @@ struct SettingsWindow: View {
                     sidebarRow(.general)
                     sidebarHeading("Appearance")
                     sidebarRow(.corner)
-                    sidebarRow(.lidGlass)
                     sidebarRow(.spacer)
                     sidebarRow(.menubar)
                     sidebarHeading("Controls")
                     sidebarRow(.tiling)
                     sidebarRow(.dock)
                     sidebarRow(.hud)
+                    sidebarRow(.edgeKeys)
                     sidebarRow(.music)
                     sidebarHeading("System")
                     sidebarRow(.displaplacer)
@@ -702,8 +1005,8 @@ struct SettingsWindow: View {
         case .spacer:       SpacerPane(vm: vm)
         case .tiling:       TilingPane(vm: vm)
         case .hud:          HUDReplacerPane(vm: vm)
+        case .edgeKeys:     EdgeKeysPane(vm: vm)
         case .corner:       CornermizerPane(vm: vm)
-        case .lidGlass:     LidGlassPane(vm: vm)
         case .music:        MusicPane(vm: vm)
         case .dock:         DockPane(vm: vm)
         case .displaplacer: DisplaplacerPane(vm: vm)

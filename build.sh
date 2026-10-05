@@ -7,7 +7,13 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="MSG"
-BUILD_DIR="$SCRIPT_DIR/build"
+# Keep the running build untouched when compiling a preview in build/preview.
+MSG_BUILD_SUBDIR="${MSG_BUILD_SUBDIR:-build}"
+if [[ ! "$MSG_BUILD_SUBDIR" =~ ^build(/[a-zA-Z0-9_-]+)?$ ]]; then
+    echo "Invalid MSG_BUILD_SUBDIR" >&2
+    exit 1
+fi
+BUILD_DIR="$SCRIPT_DIR/$MSG_BUILD_SUBDIR"
 SRC_DIR="$SCRIPT_DIR/MSG"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
@@ -15,14 +21,18 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
 echo "▸ Cleaning previous build..."
+mkdir -p "$BUILD_DIR"
 rm -rf "$APP_BUNDLE"
 
 echo "▸ Creating bundle structure..."
 mkdir -p "$MACOS" "$RESOURCES"
 
+SPACE_JUMP_O="${TMPDIR:-/tmp}/SpaceJump_$$.o"
+trap 'rm -f "$SPACE_JUMP_O"' EXIT
+
 echo "▸ Building native Space-jump bridge..."
 xcrun -sdk macosx clang -c "$SRC_DIR/SpaceJump.c" \
-    -o "$BUILD_DIR/SpaceJump.o" \
+    -o "$SPACE_JUMP_O" \
     -target arm64-apple-macos13.0 \
     -O2
 
@@ -40,8 +50,23 @@ xcrun -sdk macosx swiftc \
     InputSourceMonitor.swift \
     AudioSpectrumTap.swift \
     CornerWindow.swift \
-    LidOpeningGlass.swift \
     LockScreenTouchID.swift \
+    AudioDeviceRouting.swift \
+    CloudflareWARP.swift \
+    ChargerNotchNotice.swift \
+    SystemEventNotchNotice.swift \
+    SystemNotificationNotch.swift \
+    KeyEdgeHUD.swift \
+    MusicEdgeHUD.swift \
+    EdgeKeyAppKeys.swift \
+    PlayerExtras.swift \
+    CalendarFeed.swift \
+    CalendarStatusItem.swift \
+    KeyboardCleaner.swift \
+    AIUsageFeed.swift \
+    AIUsageCap.swift \
+    EdgeKeyStrip.swift \
+    WeatherMonitor.swift \
     AppDelegate.swift \
     HardwareMonitor.swift \
     HardwareStatusItem.swift \
@@ -51,6 +76,16 @@ xcrun -sdk macosx swiftc \
     SettingsMenu.swift \
     Displaplacer.swift \
     DisplayInput.swift \
+    BrightnessSync.swift \
+    AgentLockScreen.swift \
+    AgentNotchCard.swift \
+    AgentNotchDashboard.swift \
+    NotchPanes.swift \
+    NotchDropZone.swift \
+    NotchHUD.swift \
+    LimitResetNotice.swift \
+    AgentDoneNotice.swift \
+    CortexActivityPill.swift \
     MusicMonitor.swift \
     MediaRemoteAdapter.swift \
     MusicPopover.swift \
@@ -82,8 +117,9 @@ xcrun -sdk macosx swiftc \
     SettingsPreviews.swift \
     FanHelperShared.swift \
     FanControlClient.swift \
-    "$BUILD_DIR/SpaceJump.o" \
+    "$SPACE_JUMP_O" \
     -o "$MACOS/$APP_NAME" \
+    -module-cache-path "$BUILD_DIR/SwiftModuleCache" \
     -sdk "$(xcrun -sdk macosx --show-sdk-path)" \
     -target arm64-apple-macos13.0 \
     -framework AppKit \
@@ -95,6 +131,7 @@ xcrun -sdk macosx swiftc \
     -framework IOKit \
     -framework CoreWLAN \
     -framework CoreLocation \
+    -framework EventKit \
     -framework ImageIO \
     -F/System/Library/PrivateFrameworks \
     -framework MediaRemote \
@@ -158,11 +195,11 @@ sign_bundle() {
     local STAGE_DIR="/tmp/msg_codesign_$$"
     rm -rf "$STAGE_DIR"
     mkdir -p "$STAGE_DIR"
-    cp -R "$APP_BUNDLE" "$STAGE_DIR/$APP_NAME.app"
+    ditto "$APP_BUNDLE" "$STAGE_DIR/$APP_NAME.app"
     xattr -cr "$STAGE_DIR/$APP_NAME.app"
     if codesign --force --sign "$@" "$STAGE_DIR/$APP_NAME.app"; then
         rm -rf "$APP_BUNDLE"
-        cp -R "$STAGE_DIR/$APP_NAME.app" "$APP_BUNDLE"
+        ditto "$STAGE_DIR/$APP_NAME.app" "$APP_BUNDLE"
         rm -rf "$STAGE_DIR"
         return 0
     fi

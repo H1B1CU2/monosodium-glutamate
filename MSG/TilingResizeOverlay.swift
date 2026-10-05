@@ -1,5 +1,25 @@
 import AppKit
 
+/// One visible tab stack in a reserved, screen-edge rail.
+struct TilingColumnPill {
+    let id: String
+    let railFrame: CGRect
+    let tabCount: Int
+    let tabIDs: [CGWindowID]
+    let selectedIndex: Int
+    let edgeAttached: Bool
+    let isLeft: Bool
+}
+
+/// Shared clock for the real window slide and its adjacent tab marker.
+enum TilingTabSwitchTiming {
+    /// The side pill's move: as long as the window's slide, so they land together.
+    static let transitionDuration: CFTimeInterval = 0.32
+    static let windowSlideDuration: CFTimeInterval = 0.32
+    /// Once the real window is up beneath, the slide dissolves into it.
+    static let windowSettleFadeDuration: CFTimeInterval = 0.12
+}
+
 /// Manages interactive floating resize handle panels for tiled window dividers.
 /// Uses compact, individual pill-sized panels only where dividers exist,
 /// ensuring zero full-screen overlays so app clicks and scrolling are never blocked.
@@ -9,6 +29,7 @@ final class TilingResizeOverlayController {
     var onResizeEnd: (() -> Void)?
 
     private var panels: [String: TilingHandlePanel] = [:]
+    private var columnPills: [String: TilingColumnPillPanel] = [:]
     private var dropPreviewPanel: TilingDropPreviewPanel?
     private var resizePreviewPanels: [CGWindowID: TilingDropPreviewPanel] = [:]
     private var activeDividers: [TilingDivider] = []
@@ -25,6 +46,8 @@ final class TilingResizeOverlayController {
     func stop() {
         isDragging = false
         panels.values.forEach { $0.orderOut(nil) }
+        columnPills.values.forEach { $0.closePill() }
+        columnPills = [:]
         dropPreviewPanel?.orderOut(nil)
         dropPreviewPanel = nil
         resizePreviewPanels.values.forEach { $0.orderOut(nil) }
@@ -33,8 +56,19 @@ final class TilingResizeOverlayController {
         activeDividers = []
     }
 
-    func update(dividers: [String: [TilingDivider]], tiledWindowIDs: Set<CGWindowID> = []) {
+    func update(dividers: [String: [TilingDivider]], tiledWindowIDs: Set<CGWindowID> = [],
+                columnTabs: [TilingColumnPill] = []) {
         guard !isDragging else { return }
+        let activePills = Set(columnTabs.map(\.id))
+        for (id, panel) in columnPills where !activePills.contains(id) {
+            panel.hidePill()
+            columnPills.removeValue(forKey: id)
+        }
+        for pill in columnTabs where pill.tabCount > 1 {
+            let panel = columnPills[pill.id] ?? TilingColumnPillPanel()
+            columnPills[pill.id] = panel
+            panel.show(pill)
+        }
         let allDividers = dividers.values.flatMap { $0 }
         activeDividers = allDividers
         self.tiledWindowIDs = tiledWindowIDs
@@ -48,6 +82,14 @@ final class TilingResizeOverlayController {
 
         // Check if cursor is already near a divider
         handleMouseMove(at: NSEvent.mouseLocation, force: true)
+    }
+
+    /// Begin the rail motion on the same frame as the swipe's window transition,
+    /// instead of waiting for Accessibility and the next tiling refresh.
+    func selectColumnTab(_ windowID: CGWindowID, displayUUID: String) {
+        for (id, panel) in columnPills where id.hasPrefix("\(displayUUID)-") {
+            panel.select(windowID)
+        }
     }
 
     func handleMouseMove(at screenPoint: CGPoint, force: Bool = false) {
@@ -198,6 +240,308 @@ final class TilingResizeOverlayController {
 
     func updateHandlePosition(dividerID: String, coordinate: CGFloat) {
         panels[dividerID]?.clampHandlePosition(to: coordinate)
+    }
+}
+
+/// Mouse-transparent, sized to the exact space reserved beside the window.
+private final class TilingColumnPillPanel: NSPanel {
+    private let pillView = TilingColumnPillView(frame: .zero)
+    private var transitionGeneration = 0
+    private var tabIDs: [CGWindowID] = []
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)))
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle, .transient]
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        animationBehavior = .none
+        hidesOnDeactivate = false
+        ignoresMouseEvents = true
+        contentView = pillView
+    }
+
+    func show(_ pill: TilingColumnPill) {
+        transitionGeneration &+= 1
+        tabIDs = pill.tabIDs
+        let height = TilingColumnPillView.height(for: pill.tabCount)
+        let frame = CGRect(x: pill.railFrame.minX,
+                           y: pill.railFrame.midY - height / 2,
+                           width: pill.railFrame.width, height: height)
+        pillView.frame = CGRect(origin: .zero, size: frame.size)
+        pillView.update(count: pill.tabCount, selected: pill.selectedIndex,
+                        edgeAttached: pill.edgeAttached, isLeft: pill.isLeft)
+        if !isVisible {
+            setFrame(frame, display: true)
+            alphaValue = 0
+            orderFrontRegardless()
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { alphaValue = 1 }
+            else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.18
+                    animator().alphaValue = 1
+                }
+            }
+        } else if abs(self.frame.minX - frame.minX) > 1 ||
+                    abs(self.frame.minY - frame.minY) > 1 ||
+                    abs(self.frame.height - frame.height) > 1 {
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { setFrame(frame, display: true) }
+            else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.18
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    animator().setFrame(frame, display: true)
+                }
+            }
+        }
+    }
+
+    func select(_ windowID: CGWindowID) {
+        guard let index = tabIDs.firstIndex(of: windowID) else { return }
+        pillView.update(count: tabIDs.count, selected: index,
+                        edgeAttached: pillView.edgeAttached, isLeft: pillView.isLeft)
+    }
+
+    func hidePill() {
+        transitionGeneration &+= 1
+        let generation = transitionGeneration
+        pillView.stopAnimation()
+        guard isVisible else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            orderOut(nil)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.transitionGeneration == generation else { return }
+                self.orderOut(nil)
+            }
+        }
+    }
+
+    func closePill() {
+        transitionGeneration &+= 1
+        pillView.stopAnimation()
+        orderOut(nil)
+    }
+}
+
+private final class TilingColumnPillView: NSView {
+    private static let dot = TilingLayout.columnPillThickness
+    private static let selectedLength: CGFloat = 14
+    private static let spacing: CGFloat = 5
+    private static let padding: CGFloat = 5
+    private static let dimColor = NSColor.white.withAlphaComponent(0.42).cgColor
+    private static let brightColor = NSColor.white.withAlphaComponent(0.96).cgColor
+
+    private var count = 0
+    /// Visual index (1 = top) of the tab the pill marks.
+    private var selected = 0
+    /// Dim dots, one per tab, and the one bright pill that travels between them.
+    private var dots: [CAShapeLayer] = []
+    private let highlight = CAShapeLayer()
+    private(set) var edgeAttached = false
+    private(set) var isLeft = false
+
+    override var isOpaque: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setUp()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setUp()
+    }
+
+    private func setUp() {
+        wantsLayer = true
+        highlight.fillColor = Self.brightColor
+        layer?.addSublayer(highlight)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        renderFinalState()
+    }
+
+    static func height(for count: Int) -> CGFloat {
+        selectedLength + CGFloat(max(0, count - 1)) * (dot + spacing) + padding * 2
+    }
+
+    func update(count: Int, selected: Int, edgeAttached: Bool, isLeft: Bool) {
+        if self.edgeAttached != edgeAttached || self.isLeft != isLeft {
+            self.edgeAttached = edgeAttached
+            self.isLeft = isLeft
+            renderFinalState()
+        }
+        guard count > 1 else { stopAnimation(); return }
+        // The window transition moves UP when a swipe advances to the next
+        // tab. Reverse the visual index so the pill travels UP with it.
+        let next = TilingLayout.verticalPillIndex(tabIndex: selected, count: count)
+        if count != self.count {
+            stopAnimation()
+            self.count = count
+            self.selected = next
+            rebuildDots()
+            renderFinalState()
+            return
+        }
+        guard next != self.selected else { return }
+        let from = self.selected
+        self.selected = next
+        stopAnimation()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            renderFinalState()
+            return
+        }
+        animate(from: from, to: next)
+    }
+
+    /// The bright pill travels with the window it marks: its leading end
+    /// sets off at once, the trailing end follows a beat later, so it
+    /// stretches toward the new tab and gathers there — one pill in motion,
+    /// never two half-lit ones. Same length and curve as the window slide.
+    private func animate(from: Int, to: Int) {
+        let duration = TilingTabSwitchTiming.transitionDuration
+        let steps = 36
+        var dotPaths = Array(repeating: [CGPath](), count: count)
+        var dotAlphas = Array(repeating: [NSNumber](), count: count)
+        var pillPaths: [CGPath] = []
+        for step in 0...steps {
+            let frame = renderedFrame(from: from, to: to, t: CGFloat(step) / CGFloat(steps))
+            pillPaths.append(frame.pill)
+            for index in 0..<count {
+                dotPaths[index].append(frame.dots[index].path)
+                dotAlphas[index].append(NSNumber(value: Float(frame.dots[index].alpha)))
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        func keyframes(_ keyPath: String, _ values: [Any]) -> CAKeyframeAnimation {
+            let animation = CAKeyframeAnimation(keyPath: keyPath)
+            animation.values = values
+            animation.duration = duration
+            animation.calculationMode = .linear
+            return animation
+        }
+        highlight.path = pillPaths.last
+        highlight.add(keyframes("path", pillPaths), forKey: "tabPath")
+        for index in 0..<count {
+            let dot = dots[index]
+            dot.path = dotPaths[index].last
+            dot.opacity = dotAlphas[index].last?.floatValue ?? 1
+            dot.add(keyframes("path", dotPaths[index]), forKey: "tabPath")
+            dot.add(keyframes("opacity", dotAlphas[index]), forKey: "tabAlpha")
+        }
+        CATransaction.commit()
+    }
+
+    func stopAnimation() {
+        highlight.removeAnimation(forKey: "tabPath")
+        for dot in dots {
+            dot.removeAnimation(forKey: "tabPath")
+            dot.removeAnimation(forKey: "tabAlpha")
+        }
+    }
+
+    private func rebuildDots() {
+        dots.forEach { $0.removeFromSuperlayer() }
+        dots = (0..<count).map { _ in
+            let dot = CAShapeLayer()
+            dot.frame = bounds
+            dot.fillColor = Self.dimColor
+            layer?.insertSublayer(dot, below: highlight)
+            return dot
+        }
+    }
+
+    private func renderFinalState() {
+        guard dots.count == count, count > 1 else { return }
+        let frame = renderedFrame(from: selected, to: selected, t: 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        highlight.frame = bounds
+        highlight.path = frame.pill
+        for (dot, item) in zip(dots, frame.dots) {
+            dot.frame = bounds
+            dot.path = item.path
+            dot.opacity = Float(item.alpha)
+        }
+        CATransaction.commit()
+    }
+
+    /// Top to bottom, each tab's slot with `selected` (visual, 1-based) long.
+    private func slots(selected: Int) -> [CGRect] {
+        var y = bounds.maxY - Self.padding
+        var rects: [CGRect] = []
+        for index in 1...count {
+            let length = index == selected ? Self.selectedLength : Self.dot
+            y -= length
+            rects.append(CGRect(x: railX, y: y, width: Self.dot, height: length))
+            y -= Self.spacing
+        }
+        return rects
+    }
+
+    private var railX: CGFloat {
+        edgeAttached
+            ? (isLeft ? TilingLayout.columnPillEdgeOffset : bounds.maxX - Self.dot - TilingLayout.columnPillEdgeOffset)
+            : bounds.midX - Self.dot / 2
+    }
+
+    private func renderedFrame(from: Int, to: Int, t: CGFloat) -> (pill: CGPath, dots: [(path: CGPath, alpha: CGFloat)]) {
+        let before = slots(selected: from), after = slots(selected: to)
+        func clamp(_ v: CGFloat) -> CGFloat { max(0, min(1, v)) }
+        func lerp(_ a: CGFloat, _ b: CGFloat, _ p: CGFloat) -> CGFloat { a + (b - a) * p }
+        func easeOut(_ p: CGFloat) -> CGFloat { 1 - pow(1 - p, 3) }
+        func easeInOut(_ p: CGFloat) -> CGFloat { p < 0.5 ? 4 * p * p * p : 1 - pow(-2 * p + 2, 3) / 2 }
+        // Leading end quick, trailing end a beat behind.
+        let lead = easeOut(clamp(t / 0.7))
+        let trail = easeInOut(clamp((t - 0.14) / 0.86))
+        func rect(_ a: CGRect, _ b: CGRect, _ p: CGFloat) -> CGRect {
+            CGRect(x: a.minX, y: lerp(a.minY, b.minY, p), width: a.width, height: lerp(a.height, b.height, p))
+        }
+        func path(_ r: CGRect) -> CGPath {
+            let radius = min(r.width, r.height) / 2
+            return CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        }
+
+        let start = before[from - 1], end = after[to - 1]
+        let pill: CGRect
+        if from == to {
+            pill = end
+        } else {
+            // Going down the rail (y shrinking): the bottom end leads.
+            let down = to > from
+            let leadEdge = down ? lerp(start.minY, end.minY, lead) : lerp(start.maxY, end.maxY, lead)
+            let trailEdge = down ? lerp(start.maxY, end.maxY, trail) : lerp(start.minY, end.minY, trail)
+            pill = CGRect(x: start.minX, y: min(leadEdge, trailEdge), width: start.width,
+                          height: max(Self.dot, abs(leadEdge - trailEdge)))
+        }
+
+        var dots: [(CGPath, CGFloat)] = []
+        for index in 1...count {
+            let a = before[index - 1], b = after[index - 1]
+            if index == to {
+                // Under the arriving pill: gone as the pill gets there.
+                let dotAtEnd = CGRect(x: b.minX, y: b.midY - Self.dot / 2, width: Self.dot, height: Self.dot)
+                dots.append((path(rect(a, dotAtEnd, trail)), from == to ? 0 : 1 - lead))
+            } else if index == from {
+                // Left behind: shows once the trailing end has let go.
+                dots.append((path(b), trail))
+            } else {
+                // The rest shift over as the long slot moves.
+                dots.append((path(rect(a, b, trail)), 1))
+            }
+        }
+        return (path(pill), dots)
     }
 }
 

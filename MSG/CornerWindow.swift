@@ -283,7 +283,15 @@ final class CornerView: NSView {
         // 1512x33 at y=0) and the app's content starts at y=33, exactly as on the
         // desktop. Snapping this to 0 for fullscreen puts the masks on the
         // display's hardware-rounded corner, where they are invisible.
-        let topY: CGFloat = (underBar ? (screen.frame.maxY - screen.visibleFrame.maxY) : 0) + 1
+        // Under the menu bar: its bottom edge, one point past the notch at
+        // most. The +1 was for a menu bar the notch's height; macOS now makes
+        // it a point taller itself, and adding another hung the corners 2 pt
+        // below the notch, a step under the bar's black.
+        let barInset = screen.frame.maxY - screen.visibleFrame.maxY
+        let notch = screen.safeAreaInsets.top
+        let topY: CGFloat = underBar
+            ? (notch > 0 ? max(barInset, notch + 1) : barInset + 1)
+            : 1
         // No menu-bar proxy here. `underBar && !NSMenu.menuBarVisible()` used to
         // stand in for "no menu bar, so nothing to sit below", but hiding is the
         // wrong response — an invisible corner mask is the one failure mode with

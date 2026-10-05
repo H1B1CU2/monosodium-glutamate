@@ -13,17 +13,18 @@ enum TilingTabSwitcherLayout {
     static let windowCornerRadius: CGFloat = 12
     static let cardGap: CGFloat = 12
     static let defaultThumbHeight: CGFloat = 185
+    static let minThumbHeight: CGFloat = 100
     static let cardPadding: CGFloat = 6
     static let cardRadius: CGFloat = 14
-    static let stepTravel: CGFloat = 0.06
     /// Travel per tab once the column is on screen. Short, so the selection
     /// keeps up with the fingers rather than trailing them.
     static let uiStepTravel: CGFloat = 0.03
-    static let transitionDuration: CFTimeInterval = 0.34
+    static let transitionDuration = TilingTabSwitchTiming.windowSlideDuration
+    static let transitionFadeDuration = TilingTabSwitchTiming.windowSettleFadeDuration
     static let fadeDuration: CFTimeInterval = 0.14
     /// Quick swipe threshold: if user finishes gesture within this window,
     /// switch tabs directly without showing the preview UI.
-    static let quickSwipeThreshold: TimeInterval = 0.15
+    static let quickSwipeThreshold: TimeInterval = 0.25
 }
 
 // MARK: - Model
@@ -120,11 +121,31 @@ private final class TilingTabSwitcherModel: ObservableObject {
 
     func cellHeight(for tab: TilingBarWindow) -> CGFloat {
         let layout = TilingBarPreviewLayout.self
-        let win = window(for: tab)
-        let appName = tab.appName.isEmpty ? tab.name : tab.appName
-        let capHeight = layout.captionHeight(for: win, appName: appName, cardWidth: cardWidth)
+        let capHeight = captionHeight(for: tab)
         let capSpace = capHeight > 0 ? (layout.captionGap + capHeight) : 0
         return layout.identityHeight + layout.identityGap + thumbHeight + layout.windowCardFrame * 2 + capSpace
+    }
+
+    /// Measured at the width the card's caption actually wraps to — its own
+    /// thumbnail plus 12 — not the column's, or a narrow card's two-line
+    /// caption is sized as one and the column overflows its panel.
+    func captionHeight(for tab: TilingBarWindow) -> CGFloat {
+        let win = window(for: tab)
+        let appName = tab.appName.isEmpty ? tab.name : tab.appName
+        return TilingBarPreviewLayout.captionHeight(for: win, appName: appName,
+                                                    cardWidth: thumbWidth(for: tab) + 16)
+    }
+
+    /// Shrinks the thumbnails until the whole column fits the viewport, so a
+    /// few tabs never scroll with their first and last cards cut off. Only a
+    /// column too long even at the smallest size scrolls.
+    func fitThumbHeight() {
+        var height = TilingTabSwitcherLayout.defaultThumbHeight
+        thumbHeight = height
+        while listHeight > viewportHeight && height > TilingTabSwitcherLayout.minThumbHeight {
+            height = max(TilingTabSwitcherLayout.minThumbHeight, height - 5)
+            thumbHeight = height
+        }
     }
 
     var listHeight: CGFloat {
@@ -194,7 +215,7 @@ private struct TilingTabSwitcherView: View {
                 onClose: {},
                 selected: isSelected,
                 reservesCaption: false,
-                captionHeight: nil,
+                captionHeight: model.captionHeight(for: tab),
                 canHover: false,
                 pid: tab.pid,
                 appIcon: tab.icon,
@@ -252,6 +273,7 @@ private struct TilingTabSwitcherView: View {
 final class TilingTabSwitcher {
     /// Brings a tab forward for real, through the bar's own activation.
     var activate: ((TilingBarWindow, String) -> Void)?
+    var onSwitchAnimationStart: ((CGWindowID, String) -> Void)?
     var isMissionControlActive: () -> Bool = { false }
 
     private struct Session {
@@ -260,6 +282,11 @@ final class TilingTabSwitcher {
         let stackFrame: CGRect
         var selected: Int
         var lastOffset: CGFloat = 0
+        /// Where the column picked up from when it came on screen: the tab
+        /// the quick swipe had reached and the fingers' travel at that moment.
+        var baseIndex: Int
+        var baseOffset: CGFloat = 0
+        var loggedFirstChange = false
     }
 
     private var session: Session?
@@ -301,21 +328,39 @@ final class TilingTabSwitcher {
     // MARK: Swipe input
 
     func begin(_ group: TilingTabGroup) {
-        guard let visible = Self.withoutHiddenTabs(group) else { return }
-        let group = anchoredToPointer(visible)
+        // These are the explicit tabs in the tiling layout. A non-front tab
+        // can briefly report "offscreen" while its app changes z-order; that
+        // must not make the entire swipe session disappear.
+        guard group.tabs.count > 1 else { return }
+        // Only over the column itself: with the pointer on the Edge Keys strip,
+        // the menu bar or another window, a vertical swipe isn't a tab switch.
+        let pointer = NSEvent.mouseLocation
+        guard group.tabs.contains(where: { $0.frame.insetBy(dx: -8, dy: 0).contains(pointer) }) else { return }
+        let group = anchoredToPointer(group)
         let current = group.tabs[group.currentIndex]
+        NSLog("[MSG Tab Swipe] begin current=%d count=%d window=%u", group.currentIndex,
+              group.tabs.count, current.windowID)
         // Only this column's tabs; windows from earlier swipes are released.
         fullImages = fullImages.filter { id, _ in group.tabs.contains { $0.windowID == id } }
-        session = Session(group: group, stackFrame: current.frame, selected: group.currentIndex)
+        session = Session(group: group, stackFrame: current.frame, selected: group.currentIndex,
+                          baseIndex: group.currentIndex)
         isPresented = false
         capture(group)
 
         // Only present the preview UI if user holds or swipes beyond the quick swipe threshold
         presentationWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            guard let self, let session = self.session else { return }
+            guard let self, var session = self.session else { return }
             self.isPresented = true
+            // Pick up from here, so the column opens on the tab already
+            // reached instead of re-measuring the whole swipe at its finer step.
+            session.baseIndex = session.selected
+            session.baseOffset = session.lastOffset
+            self.session = session
             self.present(session.group, stackFrame: session.stackFrame)
+            self.model.selected = session.selected
+            NSLog("[MSG Tab Swipe] present current=%d selected=%d offset=%.4f",
+                  session.group.currentIndex, session.selected, Double(session.lastOffset))
         }
         presentationWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + TilingTabSwitcherLayout.quickSwipeThreshold, execute: item)
@@ -345,17 +390,6 @@ final class TilingTabSwitcher {
         return nil
     }
 
-    /// The group minus windows that are out of sight — hidden (⌘H), minimized,
-    /// or ordered out — which a swipe shouldn't flip to. The current tab keeps
-    /// its identity; nil when fewer than two tabs remain.
-    private static func withoutHiddenTabs(_ group: TilingTabGroup) -> TilingTabGroup? {
-        let current = group.tabs.indices.contains(group.currentIndex) ? group.tabs[group.currentIndex].windowID : nil
-        let tabs = group.tabs.filter { !PreviewHiddenStyle.isHidden(pid: $0.pid, windowID: $0.windowID) }
-        guard tabs.count > 1 else { return nil }
-        let index = tabs.firstIndex { $0.windowID == current } ?? 0
-        return TilingTabGroup(displayUUID: group.displayUUID, screen: group.screen, tabs: tabs, currentIndex: index)
-    }
-
     /// The swipe works on the window under the pointer, not the focused one:
     /// with the focus in the left window and the pointer resting on the right
     /// column, the column was centred on — and flipped from — the left window.
@@ -376,25 +410,35 @@ final class TilingTabSwitcher {
 
     func change(_ offset: CGFloat) {
         guard var session else { return }
+        if !session.loggedFirstChange {
+            NSLog("[MSG Tab Swipe] first change offset=%.4f", Double(offset))
+            session.loggedFirstChange = true
+        }
         session.lastOffset = offset
         let count = session.group.tabs.count
-        let first = CGFloat(TrackpadSwipeMonitor.recognitionTravel)
-        let magnitude = abs(offset)
-        let travel = isPresented ? TilingTabSwitcherLayout.uiStepTravel : TilingTabSwitcherLayout.stepTravel
-        let steps = magnitude < first ? 0 : 1 + Int((magnitude - first) / travel)
-        // Natural direction:
-        // Moving fingers DOWN on trackpad (offset < 0) advances down through the list (+steps)
-        // Moving fingers UP on trackpad (offset > 0) moves back up through the list (-steps)
-        let delta = (offset < 0) ? steps : -steps
-        // A quick swipe wraps around — past the last tab comes the first — so
-        // repeated flicks cycle through every tab. With the column on screen
-        // it stops at the ends instead, where the user can see them.
-        let raw = session.group.currentIndex + delta
-        let index = isPresented ? max(0, min(count - 1, raw)) : (raw % count + count) % count
+        let index: Int
+        if isPresented {
+            // The column is up: each `uiStepTravel` of travel since it opened
+            // is one tab, stopping at the ends where the user can see them.
+            // Fingers DOWN (offset < 0) move down the list.
+            let steps = Int((session.baseOffset - offset) / TilingTabSwitcherLayout.uiStepTravel)
+            index = max(0, min(count - 1, session.baseIndex + steps))
+        } else {
+            // A quick flick is one tab, however far or fast it travels —
+            // measuring it in steps skipped tabs, and on three tabs a long
+            // flick wrapped right back to where it started. Repeated flicks
+            // wrap around, so every tab is reachable.
+            let first = CGFloat(TrackpadSwipeMonitor.recognitionTravel)
+            guard abs(offset) >= first else { self.session = session; return }
+            let raw = session.group.currentIndex + (offset < 0 ? 1 : -1)
+            index = (raw % count + count) % count
+        }
         let moved = index != session.selected
         session.selected = index
         self.session = session
         guard moved else { return }
+        NSLog("[MSG Tab Swipe] select index=%d offset=%.4f presented=%d", index,
+              Double(offset), isPresented ? 1 : 0)
         if isPresented {
             model.selected = index
             // A detent under the fingers for each tab passed.
@@ -414,9 +458,13 @@ final class TilingTabSwitcher {
         isPresented = false
 
         let group = session.group
-        guard session.selected != group.currentIndex, !isMissionControlActive() else { return }
+        let missionControl = isMissionControlActive()
+        NSLog("[MSG Tab Swipe] end current=%d selected=%d offset=%.4f missionControl=%d",
+              group.currentIndex, session.selected, Double(session.lastOffset), missionControl ? 1 : 0)
+        guard session.selected != group.currentIndex, !missionControl else { return }
         let from = group.tabs[group.currentIndex]
         let to = group.tabs[session.selected]
+        onSwitchAnimationStart?(to.windowID, group.displayUUID)
         if !reduceMotion {
             // Apple natural scrolling:
             // Swiping DOWN on trackpad (lastOffset < 0) pushes the animation UP.
@@ -427,10 +475,21 @@ final class TilingTabSwitcher {
             let transitionFrame = (targetFrame.width > 0 && targetFrame.height > 0) ? targetFrame : session.stackFrame
             transition.run(from: fullImages[from.windowID] ?? model.window(for: from).image,
                            to: fullImages[to.windowID] ?? model.window(for: to).image,
-                           frame: transitionFrame, animateUp: animateUp, screen: group.screen)
+                           frame: transitionFrame, animateUp: animateUp, screen: group.screen,
+                           target: to.windowID,
+                           others: group.tabs.map(\.windowID).filter { $0 != to.windowID })
         }
         lastActivated = (to.windowID, CACurrentMediaTime())
         activate?(to, group.displayUUID)
+        // Once it's up, keep a picture of it: a tab behind another app can't
+        // be captured, so the next switch back to it slides in this one
+        // rather than a blank card.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            Task { @MainActor in
+                let full = await WindowPreviewCapture.captureWindow(pid: to.pid, windowID: to.windowID)
+                if full.image.size.width >= to.frame.width * 0.5 { self?.fullImages[to.windowID] = full.image }
+            }
+        }
     }
 
     /// Tiling stopped mid-swipe.
@@ -464,10 +523,10 @@ final class TilingTabSwitcher {
         model.current = group.currentIndex
         model.selected = group.currentIndex
 
-        model.thumbHeight = TilingTabSwitcherLayout.defaultThumbHeight
         model.stackFrame = stackFrame
         model.viewportHeight = visible.height * 0.82
         model.captures = model.captures.filter { id, _ in group.tabs.contains { $0.windowID == id } }
+        model.fitThumbHeight()
         model.appeared = false
 
         // Show window blur backdrop
@@ -502,19 +561,19 @@ final class TilingTabSwitcher {
 
     private func hide() {
         restoreCursor()
+        generation &+= 1
+        let token = generation
         if let blurPanel, blurPanel.isVisible {
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = TilingTabSwitcherLayout.fadeDuration
                 blurPanel.animator().alphaValue = 0
-            }, completionHandler: { [weak blurPanel] in
+            }, completionHandler: { [weak self, weak blurPanel] in
+                guard self?.generation == token else { return }
                 blurPanel?.orderOut(nil)
-                blurPanel?.alphaValue = 1
             })
         }
 
         guard let panel, panel.isVisible else { return }
-        generation &+= 1
-        let token = generation
         withAnimation(.easeOut(duration: TilingTabSwitcherLayout.fadeDuration)) { model.appeared = false }
         guard !reduceMotion else {
             panel.orderOut(nil)
@@ -526,7 +585,6 @@ final class TilingTabSwitcher {
                                     completion: { [weak self, weak panel] finished in
             guard finished, let self, self.generation == token else { return }
             panel?.orderOut(nil)
-            panel?.alphaValue = 1
         })
     }
 
@@ -566,7 +624,10 @@ final class TilingTabSwitcher {
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.fullImages[tab.windowID] = full.image
+                // A quick swipe can start its slide before this tab's picture.
+                self.transition.updateIncoming(full.image, for: tab.windowID)
                 self.model.captures[tab.windowID] = captured
+                self.model.fitThumbHeight()
                 if let session = self.session {
                     self.updatePanelFrame(session: session)
                 }
@@ -650,15 +711,22 @@ final class TilingTabSwitcher {
 // MARK: - Transition
 
 /// The tab switch itself, played over the tab column: the chosen tab slides in
-/// from the side the preview indicates while the old one lifts away and dims.
+/// over the old one, which drifts the same way more slowly and darkens.
 @available(macOS 14.0, *)
 private final class TilingTabTransition {
     private var panel: NSPanel?
     private let container = CALayer()
     private let outgoing = CALayer()
+    /// Darkens the old tab as it's covered: a see-through old tab let the
+    /// real window beneath show through it mid-slide.
+    private let shade = CALayer()
     private let incoming = CALayer()
-    private var timeline: PreviewPanelTimeline?
     private var generation = 0
+    /// The window the slide stands in for, and whether its picture is still
+    /// the placeholder (its capture may land mid-slide).
+    private var incomingID: CGWindowID = 0
+    private var incomingIsPlaceholder = false
+    private var settleTimer: Timer?
 
     private static func cgImage(from image: NSImage) -> CGImage? {
         if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
@@ -669,14 +737,16 @@ private final class TilingTabTransition {
         return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }
 
-    /// Ease-out close to a quartic: quick off the mark, long gentle landing.
-    private static let easeOut = CAMediaTimingFunction(controlPoints: 0.25, 1, 0.5, 1)
+    /// Quick off the mark, a long soft landing — close to a critically
+    /// damped spring, without its drawn-out tail.
+    private static let slideCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.9, 0.28, 1)
 
     /// Played by Core Animation in the render server, not stepped from the
     /// main thread: the switch raises the real window and retiles as it
     /// starts, and that main-thread work used to drop the stepped frames and
     /// make the slide stutter.
-    func run(from: NSImage, to: NSImage, frame: CGRect, animateUp: Bool, screen: NSScreen) {
+    func run(from: NSImage, to: NSImage, frame: CGRect, animateUp: Bool, screen: NSScreen,
+             target: CGWindowID, others: [CGWindowID]) {
         guard frame.width > 0, frame.height > 0,
               let fromImage = Self.cgImage(from: from),
               let toImage = Self.cgImage(from: to) else { return }
@@ -684,56 +754,124 @@ private final class TilingTabTransition {
         guard let panel else { return }
         generation &+= 1
         let token = generation
-        timeline?.cancel()
-        timeline = nil
+        settleTimer?.invalidate()
+        settleTimer = nil
 
         let bounds = CGRect(origin: .zero, size: frame.size)
         // When animateUp is true (swipe down gesture), invert direction to -1 so
         // the transition visually travels upward.
         let direction: CGFloat = animateUp ? -1 : 1
+        // A placeholder (no capture yet) sits at its own size on the window's
+        // colour instead of being blown up into a blur.
+        incomingID = target
+        incomingIsPlaceholder = to.size.width < frame.width * 0.5
 
         // The starting state, applied without animation.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for layer in [container, outgoing, incoming] { layer.removeAllAnimations() }
+        for layer in [container, outgoing, shade, incoming] { layer.removeAllAnimations() }
         container.frame = bounds
         container.opacity = 1
         outgoing.contents = fromImage
         incoming.contents = toImage
+        incoming.contentsGravity = incomingIsPlaceholder ? .center : .resizeAspectFill
+        incoming.backgroundColor = incomingIsPlaceholder ? NSColor(white: 0.16, alpha: 1).cgColor : nil
         outgoing.frame = bounds
-        outgoing.opacity = 1
-        incoming.frame = bounds.offsetBy(dx: 0, dy: -direction * bounds.height)
+        shade.frame = bounds
+        shade.opacity = 0
+        incoming.frame = bounds
+        incoming.shadowPath = CGPath(rect: bounds, transform: nil)
         CATransaction.commit()
 
         panel.setFrame(frame, display: true)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
 
-        // The slide: implicit animations from the state above.
+        let duration = TilingTabSwitcherLayout.transitionDuration
+        func slide(_ layer: CALayer, from start: CGFloat, to end: CGFloat) {
+            let animation = CABasicAnimation(keyPath: "position.y")
+            animation.fromValue = bounds.midY + start
+            animation.toValue = bounds.midY + end
+            animation.duration = duration
+            animation.timingFunction = Self.slideCurve
+            layer.position.y = bounds.midY + end
+            layer.add(animation, forKey: "slide")
+        }
         CATransaction.begin()
-        CATransaction.setAnimationDuration(TilingTabSwitcherLayout.transitionDuration)
-        CATransaction.setAnimationTimingFunction(Self.easeOut)
+        CATransaction.setDisableActions(true)
         CATransaction.setCompletionBlock { [weak self] in
             guard let self, self.generation == token else { return }
-            // Dissolve into the real window, which is up beneath by now.
+            self.settle(token: token, target: target, others: others)
+        }
+        slide(incoming, from: -direction * bounds.height, to: 0)
+        slide(outgoing, from: 0, to: direction * bounds.height * 0.3)
+        let darken = CABasicAnimation(keyPath: "opacity")
+        darken.fromValue = 0
+        darken.toValue = 0.45
+        darken.duration = duration
+        darken.timingFunction = Self.slideCurve
+        shade.opacity = 0.45
+        shade.add(darken, forKey: "darken")
+        CATransaction.commit()
+    }
+
+    /// The capture that was still on its way when the slide began.
+    func updateIncoming(_ image: NSImage, for windowID: CGWindowID) {
+        guard incomingIsPlaceholder, windowID == incomingID, panel?.isVisible == true,
+              let cg = Self.cgImage(from: image) else { return }
+        incomingIsPlaceholder = false
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 0.12
+        incoming.add(fade, forKey: "capture")
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        incoming.contents = cg
+        incoming.contentsGravity = .resizeAspectFill
+        incoming.backgroundColor = nil
+        CATransaction.commit()
+    }
+
+    /// Dissolve only once the real window is up beneath: going early showed
+    /// the old window again for a few frames before the new one came up.
+    private func settle(token: Int, target: CGWindowID, others: [CGWindowID]) {
+        let deadline = CACurrentMediaTime() + 0.6
+        let check = { [weak self] in
+            guard let self, self.generation == token else { return }
+            guard Self.isFront(target, over: others) || CACurrentMediaTime() > deadline else { return }
+            self.settleTimer?.invalidate()
+            self.settleTimer = nil
             CATransaction.begin()
-            CATransaction.setAnimationDuration(TilingTabSwitcherLayout.fadeDuration)
+            CATransaction.setAnimationDuration(TilingTabSwitcherLayout.transitionFadeDuration)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
             CATransaction.setCompletionBlock { [weak self] in
                 guard let self, self.generation == token else { return }
                 self.panel?.orderOut(nil)
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self.container.opacity = 1
-                CATransaction.commit()
+                // Leave the panel transparent until the next run sets up its
+                // initial state. WindowServer can present orderOut one frame
+                // after this callback; restoring opacity here flashes the old
+                // transition image over the real window on that frame.
             }
             self.container.opacity = 0
             CATransaction.commit()
         }
-        incoming.frame = bounds
-        outgoing.frame = bounds.offsetBy(dx: 0, dy: direction * bounds.height * 0.35)
-        outgoing.opacity = 0.4
-        CATransaction.commit()
+        check()
+        guard generation == token, container.opacity != 0 else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { _ in check() }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+    }
+
+    /// Whether `target` is in front of every other tab of its column.
+    private static func isFront(_ target: CGWindowID, over others: [CGWindowID]) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return true }
+        let column = Set(others + [target])
+        for info in list {
+            guard let id = info[kCGWindowNumber as String] as? CGWindowID, column.contains(id) else { continue }
+            return id == target
+        }
+        return false
     }
 
     private func buildPanelIfNeeded() {
@@ -746,9 +884,17 @@ private final class TilingTabTransition {
         container.cornerCurve = .continuous
         for layer in [outgoing, incoming] {
             layer.contentsGravity = .resizeAspectFill
-            layer.masksToBounds = true
-            container.addSublayer(layer)
+            layer.masksToBounds = false
         }
+        shade.backgroundColor = NSColor.black.cgColor
+        // The arriving tab casts a soft shadow onto the one it covers.
+        incoming.shadowColor = NSColor.black.cgColor
+        incoming.shadowOpacity = 0.45
+        incoming.shadowRadius = 14
+        incoming.shadowOffset = .zero
+        container.addSublayer(outgoing)
+        container.addSublayer(shade)
+        container.addSublayer(incoming)
         view.layer?.addSublayer(container)
 
         let p = NSPanel(contentRect: view.frame, styleMask: [.borderless, .nonactivatingPanel],

@@ -6,60 +6,70 @@ import AppKit
 @available(macOS 14.0, *)
 struct DockPane: View {
     @ObservedObject var vm: SettingsViewModel
+    @State private var selectedTab = 0
     @State private var previewWallpaper: NSImage?
 
     var body: some View {
-        PaneContainer(section: .dock) {
-            Section {
-                SettingsToggleRow("Dock previews", detail: "Point at a Dock app to see its windows.", isOn: Binding(
-                    get: { vm.dockPreviewEnabled },
-                    set: {
-                        vm.dockPreviewEnabled = $0
-                        NotificationCenter.default.post(name: .dockPreviewChanged, object: nil)
-                    }
-                ))
-                SettingsToggleRow("Notch previews", detail: "Point at the screen notch to preview open windows.", isOn: Binding(
-                    get: { vm.notchPreviewEnabled },
-                    set: {
-                        vm.notchPreviewEnabled = $0
-                        NotificationCenter.default.post(name: .notchPreviewChanged, object: nil)
-                    }
-                ))
-                SettingsToggleRow("Cmd-Tab previews", detail: "Preview windows while switching apps with the keyboard.", isOn: Binding(
-                    get: { vm.appSwitcherPreviewEnabled },
-                    set: {
-                        vm.appSwitcherPreviewEnabled = $0
-                        NotificationCenter.default.post(name: .appSwitcherPreviewChanged, object: nil)
-                    }
-                ))
-            } footer: {
-                Text("Choose where you want window previews. Each works independently.")
-            }
-
-            if vm.dockPreviewEnabled || vm.appSwitcherPreviewEnabled {
+        PaneContainer(section: .dock, tabs: ["Dock", "Notch", "Cmd-Tab", "Appearance"],
+                      tabSelection: $selectedTab) {
+            switch selectedTab {
+            case 0:
                 Section {
-                    settingSlider("Preview size", value: Binding(
-                        get: { Double(vm.dockPreviewThumbHeight) },
-                        set: { vm.dockPreviewThumbHeight = CGFloat($0) }
-                    ), range: 90...260, step: 10,
-                       valueLabel: "\(Int(vm.dockPreviewThumbHeight)) pt")
+                    SettingsToggleRow("Dock previews", detail: "Point at a Dock app to see its windows.", isOn: Binding(
+                        get: { vm.dockPreviewEnabled },
+                        set: {
+                            vm.dockPreviewEnabled = $0
+                            NotificationCenter.default.post(name: .dockPreviewChanged, object: nil)
+                        }
+                    ))
+                }
+                if vm.dockPreviewEnabled { dockSettings }
+            case 1:
+                Section {
+                    SettingsToggleRow("Notch previews", detail: "Point at the screen notch to preview open windows.", isOn: Binding(
+                        get: { vm.notchPreviewEnabled },
+                        set: {
+                            vm.notchPreviewEnabled = $0
+                            NotificationCenter.default.post(name: .notchPreviewChanged, object: nil)
+                        }
+                    ))
+                }
+                if vm.notchPreviewEnabled { notchSettings }
+            case 2:
+                Section {
+                    SettingsToggleRow("Cmd-Tab previews", detail: "Preview windows while switching apps with the keyboard.", isOn: Binding(
+                        get: { vm.appSwitcherPreviewEnabled },
+                        set: {
+                            vm.appSwitcherPreviewEnabled = $0
+                            NotificationCenter.default.post(name: .appSwitcherPreviewChanged, object: nil)
+                        }
+                    ))
+                }
+                if vm.appSwitcherPreviewEnabled { switcherSettings }
+            default:
+                if vm.dockPreviewEnabled || vm.appSwitcherPreviewEnabled {
+                    Section {
+                        settingSlider("Preview size", value: Binding(
+                            get: { Double(vm.dockPreviewThumbHeight) },
+                            set: { vm.dockPreviewThumbHeight = CGFloat($0) }
+                        ), range: 90...260, step: 10,
+                           valueLabel: "\(Int(vm.dockPreviewThumbHeight)) pt")
+                    } header: {
+                        Text("Appearance")
+                    } footer: {
+                        Text("Window thumbnail size for both Dock and Cmd-Tab previews.")
+                    }
+                }
+                Section {
+                    SettingsToggleRow("Minimize button", detail: "Yellow sends the window to the Dock.",
+                                      isOn: $vm.previewMinimizeButton)
+                    SettingsToggleRow("Full screen button", detail: "Green toggles full screen in apps that support it.",
+                                      isOn: $vm.previewFullscreenButton)
                 } header: {
-                    Text("Appearance")
+                    Text("Card controls")
                 } footer: {
-                    Text("Window thumbnail size for both Dock and Cmd-Tab previews.")
+                    Text("Shown on every window preview when you point at a card. Red always closes the window, or quits the app when it is the app's only card.")
                 }
-            }
-
-            if vm.dockPreviewEnabled { dockSettings }
-            if vm.notchPreviewEnabled { notchSettings }
-            if vm.appSwitcherPreviewEnabled { switcherSettings }
-            if vm.dockPreviewEnabled || vm.notchPreviewEnabled || (vm.appSwitcherPreviewEnabled && vm.appSwitcherMode == "replacement") {
-                Section("Card controls") {
-                    Label("Red closes a window, or quits its app when only one card is shown for that app.", systemImage: "xmark.circle")
-                    Label("Green toggles full screen in supported apps.", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
             }
         }
     }

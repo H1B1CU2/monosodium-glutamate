@@ -625,7 +625,21 @@ enum WindowPreviewCapture {
         }
         guard await activationIsCurrent(generation, from: originalPID, to: pid) else { return }
         if let target { raiseAXWindow(target) }
-        guard wasOffSpace else { return }
+        guard wasOffSpace else {
+            // Still not showing: some apps only put a closed window away
+            // (ChatGPT, Music) — neither minimized nor hidden, so nothing above
+            // brings it back. Ask the app to reopen, as a click in the Dock does.
+            guard windowID != 0 else { return }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard await activationIsCurrent(generation, from: originalPID, to: pid),
+                  !windowIsOnScreen(windowID) else { return }
+            let url: URL? = await MainActor.run {
+                guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return nil }
+                return app.bundleURL
+            }
+            if let url { try? await reopenForNativeActivation(url) }
+            return
+        }
 
         if await waitForNativeSpace(windowID, generation: generation, originalPID: originalPID, pid: pid) { return }
         guard await activationIsCurrent(generation, from: originalPID, to: pid) else { return }
@@ -653,6 +667,11 @@ enum WindowPreviewCapture {
         if await activationIsCurrent(generation, from: originalPID, to: pid) {
             NSLog("[MSG Window Preview] Native activation did not reach window %u's Space for pid %d", windowID, pid)
         }
+    }
+
+    private static func windowIsOnScreen(_ windowID: CGWindowID) -> Bool {
+        let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]])?.first
+        return (info?[kCGWindowIsOnscreen as String] as? Bool) == true
     }
 
     @MainActor
@@ -686,6 +705,13 @@ enum WindowPreviewCapture {
         if AXUIElementCopyAttributeValue(el, kAXCloseButtonAttribute as CFString, &closeButton) == .success {
             AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
         }
+    }
+
+    /// Sends the window to the Dock, as its yellow button does. Involves the
+    /// slow AX lookup — call from off the main thread.
+    static func minimizeWindow(pid: pid_t, windowID: CGWindowID) async {
+        guard let el = axWindow(pid: pid, windowID: windowID) else { return }
+        AXUIElementSetAttributeValue(el, kAXMinimizedAttribute as CFString, true as CFTypeRef)
     }
 
     /// Toggle the window's native fullscreen state, never its zoom/maximise state.

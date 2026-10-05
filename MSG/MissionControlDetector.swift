@@ -96,6 +96,17 @@ enum WindowListScanner {
                 continue
             }
             if owner == "coreautha", layer > 0 { touchIDPrompt = true; continue }
+            // The same panel hosted inside an app (System Settings asking for
+            // Touch ID) has no coreautha window: it's the app's own, untitled
+            // and exactly the standard 260 pt wide.
+            if !touchIDPrompt, layer >= 0, owner != "MSG", owner != "Window Server",
+               (w[kCGWindowName as String] as? String).map({ $0.isEmpty || $0 == "Untitled" }) ?? true,
+               let bounds = w[kCGWindowBounds as String] as? [String: Any],
+               let width = bounds["Width"] as? CGFloat, let height = bounds["Height"] as? CGFloat,
+               width == 260, height > 200, height < 420 {
+                touchIDPrompt = true
+                continue
+            }
             guard !mc, owner == "WindowManager", layer > 0, layer < 1000 else { continue }
             // Name check preserved verbatim from MissionControlDetector — see the
             // rationale comment there about Screen Recording permission and Stage Manager.

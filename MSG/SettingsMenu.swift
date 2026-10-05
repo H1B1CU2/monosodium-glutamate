@@ -210,6 +210,9 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
         // ── Quit ────────────────────
         menu.addItem(.separator())
         addRefreshDisplayItem()
+        let alignItem = NSMenuItem(title: "Align Keyboard…", action: #selector(alignKeyboardAction), keyEquivalent: "")
+        alignItem.target = self
+        menu.addItem(alignItem)
         let openItem = NSMenuItem(title: "Open Settings…", action: #selector(openSettingsAction), keyEquivalent: "s")
         openItem.target = self
         menu.addItem(openItem)
@@ -387,6 +390,7 @@ final class SettingsMenu: NSObject, NSMenuDelegate {
     // MARK: - Actions
 
     @objc private func openSettingsAction() { onOpenSettings?() }
+    @objc private func alignKeyboardAction() { FunctionRowCalibration.shared.open() }
 
     @objc func selStack(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? StackMode { settings.stackMode = s }
